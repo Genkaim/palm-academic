@@ -3,8 +3,13 @@ package cn.edu.cupk.portalreader
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -25,11 +30,14 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -43,6 +51,29 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import java.nio.charset.Charset
+import java.text.Collator
+import java.util.Locale
+
+private val schoolNameCollator: Collator = Collator.getInstance(Locale.CHINA)
+private val gbkCharset: Charset = Charset.forName("GBK")
+private val pinyinInitialBoundaries = listOf(
+    -20319 to 'A', -20284 to 'B', -19776 to 'C', -19219 to 'D', -18711 to 'E',
+    -18527 to 'F', -18240 to 'G', -17923 to 'H', -17418 to 'J', -16475 to 'K',
+    -16213 to 'L', -15641 to 'M', -15166 to 'N', -14923 to 'O', -14915 to 'P',
+    -14631 to 'Q', -14150 to 'R', -14091 to 'S', -13319 to 'T', -12839 to 'W',
+    -12557 to 'X', -11848 to 'Y', -11056 to 'Z'
+)
+
+private fun schoolInitial(name: String): String {
+    val first = name.trim().firstOrNull() ?: return "#"
+    val latinInitial = first.uppercaseChar().takeIf { it in 'A'..'Z' }
+    if (latinInitial != null) return latinInitial.toString()
+    val bytes = first.toString().toByteArray(gbkCharset)
+    if (bytes.size < 2) return "#"
+    val code = bytes[0].toInt() * 256 + bytes[1].toInt() + 256
+    return pinyinInitialBoundaries.lastOrNull { code >= it.first }?.second?.toString() ?: "#"
+}
 
 class SchoolSelectionActivity : PortalActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,12 +117,21 @@ private fun SchoolSelectionContent(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
     var schools by remember { mutableStateOf(SchoolAdapterRepository.options(context)) }
     var refreshing by remember { mutableStateOf(false) }
-    var statusText by remember { mutableStateOf<String?>(null) }
+    val groupedSchools = remember(schools) {
+        schools.sortedWith { left, right ->
+            schoolNameCollator.compare(left.name, right.name).takeIf { it != 0 }
+                ?: left.id.compareTo(right.id)
+        }
+            .groupBy { schoolInitial(it.name) }
+            .toSortedMap(compareBy<String> { it == "#" }.thenBy { it })
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("选择学校") },
@@ -101,29 +141,48 @@ private fun SchoolSelectionContent(
                     }
                 },
                 actions = {
-                    IconButton(
+                    FilledTonalButton(
+                        modifier = Modifier.padding(end = 8.dp),
                         enabled = !refreshing,
                         onClick = {
                             refreshing = true
-                            statusText = "正在从 GitHub 检查学校适配…"
                             scope.launch {
-                                SchoolAdapterRepository.refreshFromGitHub(context)
-                                    .onSuccess { result ->
-                                        schools = SchoolAdapterRepository.options(context)
-                                        statusText = "已更新 ${result.schoolCount} 所学校的适配配置"
-                                        Toast.makeText(context, "学校适配已是最新", Toast.LENGTH_SHORT).show()
-                                    }
-                                    .onFailure { error ->
-                                        statusText = error.message ?: "学校适配更新失败"
-                                    }
+                                val message = SchoolAdapterRepository.refreshFromGitHub(context)
+                                    .fold(
+                                        onSuccess = { result ->
+                                            schools = SchoolAdapterRepository.options(context)
+                                            "已更新 ${result.schoolCount} 所学校的适配配置"
+                                        },
+                                        onFailure = { error ->
+                                            error.message ?: "学校适配更新失败"
+                                        }
+                                    )
                                 refreshing = false
+                                snackbarHostState.currentSnackbarData?.dismiss()
+                                snackbarHostState.showSnackbar(message)
                             }
                         }
                     ) {
-                        if (refreshing) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Outlined.Refresh, "刷新学校适配")
+                        AnimatedContent(
+                            targetState = refreshing,
+                            transitionSpec = {
+                                fadeIn(tween(180, easing = FastOutSlowInEasing)) togetherWith
+                                    fadeOut(tween(100))
+                            },
+                            label = "school-adapter-refresh"
+                        ) { isRefreshing ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (isRefreshing) {
+                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Text("更新中")
+                                } else {
+                                    Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
+                                    Text("刷新适配")
+                                }
+                            }
                         }
                     }
                 }
@@ -145,43 +204,44 @@ private fun SchoolSelectionContent(
                     )
                 }
             }
-            statusText?.let { message ->
-                item {
+            groupedSchools.forEach { (initial, group) ->
+                item(key = "school-initial-$initial") {
                     Text(
-                        message,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 4.dp)
+                        text = initial,
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 8.dp, top = 6.dp, bottom = 2.dp)
                     )
                 }
-            }
-            items(schools, key = { it.id }) { school ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().clickable { onSelected(school.id) },
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                items(group, key = { it.id }) { school ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { onSelected(school.id) },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
                     ) {
-                        RadioButton(
-                            selected = school.id == selectedSchoolId,
-                            onClick = { onSelected(school.id) }
-                        )
-                        Spacer(Modifier.size(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                school.name,
-                                fontWeight = if (school.id == selectedSchoolId) {
-                                    FontWeight.SemiBold
-                                } else FontWeight.Normal
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = school.id == selectedSchoolId,
+                                onClick = { onSelected(school.id) }
                             )
-                            Text(
-                                school.id,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Spacer(Modifier.size(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    school.name,
+                                    fontWeight = if (school.id == selectedSchoolId) {
+                                        FontWeight.SemiBold
+                                    } else FontWeight.Normal
+                                )
+                                Text(
+                                    school.id,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }

@@ -341,22 +341,17 @@ fun WebMaterialReader(
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
+                settings.blockNetworkImage = true
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 configurePortalWebDarkening(settings, PortalThemePreferences.isDark(context))
                 addJavascriptInterface(MaterialReaderBridge(onContent), "PalmAcademicBridge")
                 webViewClient = object : WebViewClient() {
-                    override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
-                        onLoading(true)
-                    }
+                    private fun isLoginPage(pageUrl: String?): Boolean =
+                        pageUrl != null && Uri.parse(pageUrl).path?.trimEnd('/')?.endsWith("/login") == true
 
-                    override fun onPageFinished(view: WebView, finishedUrl: String?) {
-                        if (finishedUrl != null && Uri.parse(finishedUrl).path?.endsWith("/login") == true) {
-                            onSessionExpired()
-                            return
-                        }
-                        PortalSessionStore.captureFromWebView()
+                    private fun injectReader(view: WebView) {
                         val hostApi = """
                             window.PalmAcademicHost = {
                               apiVersion: 1,
@@ -369,6 +364,30 @@ fun WebMaterialReader(
                         view.evaluateJavascript(hostApi) {
                             view.evaluateJavascript(adapterScript, null)
                         }
+                    }
+
+                    override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                        onLoading(true)
+                    }
+
+                    override fun onPageCommitVisible(view: WebView, url: String?) {
+                        if (isLoginPage(url)) {
+                            onSessionExpired()
+                            return
+                        }
+                        // Start observing the DOM as soon as it is drawable instead of waiting
+                        // for images and other nonessential subresources to finish.
+                        injectReader(view)
+                    }
+
+                    override fun onPageFinished(view: WebView, finishedUrl: String?) {
+                        if (isLoginPage(finishedUrl)) {
+                            onSessionExpired()
+                            return
+                        }
+                        PortalSessionStore.captureFromWebView()
+                        // Fallback for WebView implementations that do not issue commit-visible.
+                        injectReader(view)
                     }
 
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =

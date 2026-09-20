@@ -167,7 +167,6 @@
   }
 
   function gradePage() {
-    if (!gpaRankData) return null;
     const tables = Array.from(document.querySelectorAll('table.student-grade-table'));
     const sections = tables.map((table, tableIndex) => {
       const rows = Array.from(table.querySelectorAll('tr'));
@@ -190,15 +189,17 @@
       return cards.length ? {type:'cards', title:semester, cards} : null;
     }).filter(Boolean);
     if (!sections.length) return null;
-    const rankValue = (rank, count, rate) => {
-      const base = `${rank ?? '--'}/${count ?? '--'}`;
-      return rate == null ? base : `${base} · 前${Number(rate).toFixed(2)}%`;
-    };
-    sections.unshift({type:'stats', title:'GPA与排名', items:[
-      {label:'GPA', value:String(gpaRankData.gpa ?? '--')},
-      {label:'班级排名', value:rankValue(gpaRankData.adminclassRank, gpaRankData.adminclassStdCount, gpaRankData.adminclassRankRate)},
-      {label:'专业排名', value:rankValue(gpaRankData.rank, gpaRankData.majorStdCount, gpaRankData.rankRate)}
-    ]});
+    if (gpaRankData !== null) {
+      const rankValue = (rank, count, rate) => {
+        const base = `${rank ?? '--'}/${count ?? '--'}`;
+        return rate == null ? base : `${base} · 前${Number(rate).toFixed(2)}%`;
+      };
+      sections.unshift({type:'stats', title:'GPA与排名', items:[
+        {label:'GPA', value:String(gpaRankData.gpa ?? '--')},
+        {label:'班级排名', value:rankValue(gpaRankData.adminclassRank, gpaRankData.adminclassStdCount, gpaRankData.adminclassRankRate)},
+        {label:'专业排名', value:rankValue(gpaRankData.rank, gpaRankData.majorStdCount, gpaRankData.rankRate)}
+      ]});
+    }
     const semesterChoice = selectChoice('#semester', 'semester', '选择学期', [{value:'', label:'全部学期'}]);
     return page(
       '课程成绩',
@@ -318,11 +319,7 @@
     if (gpaRankLoading || gpaRankData || !location.pathname.includes('/grade/sheet')) return;
     const source = Array.from(document.scripts).map(script => script.textContent || '').join('\n');
     const studentId = source.match(/var\s+studentId\s*=\s*(\d+)/)?.[1];
-    if (!studentId) {
-      gpaRankData = {};
-      publish();
-      return;
-    }
+    if (!studentId) return;
     gpaRankLoading = true;
     const gradeBasePath = location.pathname.split('/semester-index/')[0].replace(/\/$/, '');
     fetch(`${gradeBasePath}/get-gpa-rank-by-std/${studentId}`, {credentials:'same-origin'})
@@ -337,9 +334,9 @@
     if (actionId === 'semester') {
       const changed = setSelectValue(path.includes('/course-table') ? '#allSemesters' : '#semester', value);
       if (changed) {
-        setTimeout(publish, 250);
-        setTimeout(publish, 1000);
-        setTimeout(publish, 2200);
+        setTimeout(publish, 120);
+        setTimeout(publish, 600);
+        setTimeout(publish, 1400);
       }
       return changed;
     }
@@ -347,20 +344,28 @@
   }
 
   let timer;
+  let lastPayloadJson = '';
+  function publishNow() {
+    if (selectLatestSemesterIfNeeded()) return;
+    loadGpaRank();
+    const payload = read();
+    if (!payload) return;
+    const payloadJson = JSON.stringify(payload);
+    if (payloadJson === lastPayloadJson) return;
+    lastPayloadJson = payloadJson;
+    PalmAcademicHost.publish(payload);
+  }
+
   function publish() {
     clearTimeout(timer);
-    timer = setTimeout(() => {
-      if (selectLatestSemesterIfNeeded()) return;
-      const payload = read();
-      if (payload) PalmAcademicHost.publish(payload);
-    }, 180);
+    timer = setTimeout(publishNow, 70);
   }
 
   window.PalmAcademicAdapter = {apiVersion:1, read, publish, perform};
   const observer = new MutationObserver(publish);
   observer.observe(document.body, {childList:true, subtree:true, characterData:true});
-  publish();
-  setTimeout(publish, 800);
-  setTimeout(publish, 1800);
+  publishNow();
+  setTimeout(publish, 350);
+  setTimeout(publish, 1000);
   loadGpaRank();
 })();

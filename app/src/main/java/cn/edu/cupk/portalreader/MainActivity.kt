@@ -12,6 +12,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -241,6 +244,11 @@ private fun LoginContent(
     }
     val imeProgress = if (imeBottom == 0) 0f
     else (imeBottom.toFloat() / observedImeHeight.coerceAtLeast(1)).coerceIn(0f, 1f)
+    val animatedImeProgress by animateFloatAsState(
+        targetValue = imeProgress,
+        animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing),
+        label = "login-ime-lift"
+    )
     val loginLiftPx = with(density) { 140.dp.toPx() }
     val headerLiftPx = with(density) { 18.dp.toPx() }
 
@@ -264,8 +272,8 @@ private fun LoginContent(
             item {
                 Column(
                     modifier = Modifier.graphicsLayer {
-                        alpha = 1f - imeProgress
-                        translationY = -headerLiftPx * imeProgress
+                        alpha = 1f - animatedImeProgress
+                        translationY = -headerLiftPx * animatedImeProgress
                     }
                 ) {
                     Surface(Modifier.size(64.dp), RoundedCornerShape(20.dp), color = PortalBlue) {
@@ -289,7 +297,7 @@ private fun LoginContent(
                 }
                 androidx.compose.material3.Card(
                     modifier = Modifier.graphicsLayer {
-                        translationY = -loginLiftPx * imeProgress
+                        translationY = -loginLiftPx * animatedImeProgress
                     },
                     shape = RoundedCornerShape(24.dp),
                     colors = CardDefaults.cardColors(containerColor = PortalCardBackground)

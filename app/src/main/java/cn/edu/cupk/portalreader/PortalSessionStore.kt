@@ -69,6 +69,20 @@ object PortalSessionStore {
         val header = persistedCookieHeader() ?: return false
         val cookies = header.split(';').map(String::trim).filter { it.contains('=') }
         if (cookies.isEmpty()) return false
+        val manager = CookieManager.getInstance().apply { setAcceptCookie(true) }
+        val currentCookies = manager.getCookie(PortalConfig.BASE).orEmpty()
+            .split(';')
+            .map(String::trim)
+            .filter { it.contains('=') }
+            .associate { it.substringBefore('=').trim() to it.substringAfter('=').trim() }
+        val cookiesAlreadyInstalled = cookies.all { cookie ->
+            currentCookies[cookie.substringBefore('=').trim()] == cookie.substringAfter('=').trim()
+        }
+        if (cookiesAlreadyInstalled) {
+            if (Looper.myLooper() == Looper.getMainLooper()) onComplete()
+            else Handler(Looper.getMainLooper()).post(onComplete)
+            return true
+        }
         val install = { installCookies(cookies, onComplete) }
         if (Looper.myLooper() == Looper.getMainLooper()) install()
         else Handler(Looper.getMainLooper()).post(install)

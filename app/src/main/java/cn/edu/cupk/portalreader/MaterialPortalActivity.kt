@@ -18,6 +18,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -79,7 +81,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import org.json.JSONArray
 import org.json.JSONObject
@@ -317,17 +321,17 @@ private fun MaterialPortalContent(
                             ) +
                                 slideInVertically(
                                     animationSpec = tween(
-                                        durationMillis = 340,
+                                        durationMillis = 280,
                                         easing = FastOutSlowInEasing
                                     ),
-                                    initialOffsetY = { it / 10 }
+                                    initialOffsetY = { it / 32 }
                                 ) +
                                 scaleIn(
                                     animationSpec = tween(
-                                        durationMillis = 300,
+                                        durationMillis = 260,
                                         easing = FastOutSlowInEasing
                                     ),
-                                    initialScale = 0.965f
+                                    initialScale = 0.992f
                                 )
                             ) togetherWith (
                             fadeOut(animationSpec = tween(110)) +
@@ -495,20 +499,31 @@ private fun PageControls(
                 ChoiceMenu(choice, onAction)
             }
             if (scheduleDays.isNotEmpty()) {
-                Text("快速选择日期", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     item(key = "all-schedule-days") {
+                        val selected = selectedScheduleDay == null
                         FilterChip(
-                            selected = selectedScheduleDay == null,
+                            selected = selected,
                             onClick = { onScheduleDaySelected(null) },
-                            label = { Text("全部显示") }
+                            label = { Text("全部显示") },
+                            border = BorderStroke(
+                                1.dp,
+                                if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
+                            )
                         )
                     }
                     items(scheduleDays, key = { it.name }) { day ->
+                        val selected = selectedScheduleDay == day.name
                         FilterChip(
-                            selected = selectedScheduleDay == day.name,
+                            selected = selected,
                             onClick = { onScheduleDaySelected(day.name) },
-                            label = { Text(day.name.replace("星期", "周")) }
+                            label = { Text(day.name.replace("星期", "周")) },
+                            border = BorderStroke(
+                                1.dp,
+                                if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
+                            )
                         )
                     }
                 }
@@ -587,38 +602,58 @@ private fun ChoiceMenu(choice: MaterialChoice, onAction: (String, String) -> Uni
     var expanded by remember(choice.id) { mutableStateOf(false) }
     val selectedLabel = choice.options.firstOrNull { it.value == choice.value }?.label
         ?: choice.options.firstOrNull()?.label.orEmpty()
-    Box {
+    Box(Modifier.fillMaxWidth()) {
         OutlinedButton(
             onClick = { expanded = true },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.outlinedButtonColors(containerColor = PortalPageBackground)
         ) {
-            Box(modifier = Modifier.weight(1f)) {
+            Box(modifier = Modifier.fillMaxWidth()) {
                 AnimatedContent(
                     targetState = selectedLabel.ifBlank { "请选择" },
+                    modifier = Modifier.align(Alignment.Center),
                     transitionSpec = { fadeIn() togetherWith fadeOut() },
                     label = "secondary-menu-selection"
-                ) { label -> Text(label) }
-            }
-            Icon(Icons.Outlined.KeyboardArrowDown, "展开学期菜单")
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            shape = RoundedCornerShape(16.dp),
-            containerColor = PortalControlBackground,
-            tonalElevation = 0.dp,
-            shadowElevation = 8.dp
-        ) {
-            choice.options.forEach { option ->
-                DropdownMenuItem(
-                    text = { Text(option.label) },
-                    onClick = {
-                        expanded = false
-                        if (option.value != choice.value) onAction(choice.id, option.value)
-                    }
+                ) { label ->
+                    Text(text = label, textAlign = TextAlign.Center)
+                }
+                Icon(
+                    Icons.Outlined.KeyboardArrowDown,
+                    "展开学期菜单",
+                    modifier = Modifier.align(Alignment.CenterEnd)
                 )
+            }
+        }
+        Box(Modifier.align(Alignment.BottomEnd)) {
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.widthIn(min = 236.dp, max = 320.dp),
+                offset = DpOffset(0.dp, 4.dp),
+                shape = RoundedCornerShape(16.dp),
+                containerColor = MaterialTheme.colorScheme.background,
+                tonalElevation = 0.dp,
+                shadowElevation = 12.dp
+            ) {
+                choice.options.forEach { option ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = option.label,
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Center,
+                                fontWeight = if (option.value == choice.value) {
+                                    FontWeight.SemiBold
+                                } else FontWeight.Normal
+                            )
+                        },
+                        onClick = {
+                            expanded = false
+                            if (option.value != choice.value) onAction(choice.id, option.value)
+                        }
+                    )
+                }
             }
         }
     }

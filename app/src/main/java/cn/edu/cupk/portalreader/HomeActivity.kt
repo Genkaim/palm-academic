@@ -80,8 +80,6 @@ class HomeActivity : PortalActivity() {
                     onOpenItem = ::openItem,
                     onOpenNotifications = {
                         notificationSettingsLauncher.launch(Intent(this, NotificationSettingsActivity::class.java))
-                        @Suppress("DEPRECATION")
-                        overridePendingTransition(R.anim.fade_in, R.anim.activity_stay)
                     },
                     onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                     onSessionExpired = ::returnToLogin,
