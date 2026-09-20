@@ -14,6 +14,14 @@
 
 一个 PR 应只包含一所学校的适配。修复已有适配时使用 `fix/adapter-<school-id>` 分支，并在 PR 中说明受影响页面。
 
+提交前在仓库根目录执行：
+
+```powershell
+node tools/validate-adapters.mjs
+```
+
+该命令不构建 App，会检查 JSON、文件引用、作者邮箱、HTTPS 地址、默认作息、节次时间格式、菜单结构和 JavaScript 语法。PR 创建后，GitHub Actions 会再次执行同一检查；检查通过后才进入人工审核。
+
 ## 作者联系方式
 
 每个学校定义必须提供：
@@ -44,5 +52,15 @@
 - `scheduleProfiles[].unitTimes` 覆盖所有节次并含默认 profile。
 - 已实际检查 iCalendar 和 WakeUp CSV 导出的上课时间。
 - 适配器只读取当前学校域名的数据，不上传用户数据。
+
+## 审核与合并
+
+1. 自动检查必须通过；失败原因会直接显示在 PR 的 Checks 中。
+2. `CODEOWNERS` 会请求维护者审核学校配置和适配器。
+3. 人工审核重点检查登录域名、外部网络请求、写操作、隐私数据和课表导出时间。
+4. 建议在仓库设置中为 `main` 开启分支保护，要求本工作流通过且至少一名代码所有者批准，禁止直接推送。
+5. 合并后配置立即进入 `main`，用户可在学校选择页点击刷新获取；不需要等待新版 APK。
+
+自动校验不能证明学校页面解析一定正确，因此真实登录、各 `quick` 页面和导出文件仍需由提交者人工验证。
 
 完整字段和 JavaScript 接口见 [`docs/ADAPTER_GUIDE.md`](docs/ADAPTER_GUIDE.md)。

@@ -25,6 +25,8 @@
 
 建议通过 Fork + Pull Request 提交适配，不接受 App 直接上传远程脚本。具体文件范围、PR 内容和自测要求见 [贡献指南](CONTRIBUTING.md)。
 
+提交前可运行 `node tools/validate-adapters.mjs`；仓库会在 Pull Request 中自动重复检查配置结构、作者邮箱、作息时间和 JavaScript 语法。
+
 App 的学校页面会从以下仓库目录检查更新：
 
 - `app/src/main/assets/schools/`

@@ -1,0 +1,5 @@
+# 学校配置和阅读适配器会接触已登录页面，必须由仓库维护者审核。
+/app/src/main/assets/schools/ @Genkaim
+/app/src/main/assets/adapters/ @Genkaim
+/tools/validate-adapters.mjs @Genkaim
+/.github/workflows/validate-adapters.yml @Genkaim

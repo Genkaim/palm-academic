@@ -1,0 +1,34 @@
+name: Validate school adapters
+
+on:
+  pull_request:
+    paths:
+      - "app/src/main/assets/schools/**"
+      - "app/src/main/assets/adapters/**"
+      - "tools/validate-adapters.mjs"
+      - ".github/workflows/validate-adapters.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app/src/main/assets/schools/**"
+      - "app/src/main/assets/adapters/**"
+      - "tools/validate-adapters.mjs"
+      - ".github/workflows/validate-adapters.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate JSON, metadata, schedules and JavaScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate adapters
+        run: node tools/validate-adapters.mjs
