@@ -1,0 +1,14 @@
+/signing.properties
+/release-key/
+*.jks
+*.keystore
+/.gradle/
+/.idea/
+/.kotlin/
+/local.properties
+/**/build/
+*.apk
+*.aab
+captures/
+.DS_Store
+Thumbs.db
