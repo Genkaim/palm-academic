@@ -233,7 +233,7 @@ private fun SettingsContent(
                                     .onFailure { error ->
                                         Toast.makeText(
                                             context,
-                                            error.message ?: "检查更新失败",
+                                            "${error.message ?: "检查更新失败"}。服务托管于Github，请注意网络环境",
                                             Toast.LENGTH_LONG
                                         ).show()
                                     }

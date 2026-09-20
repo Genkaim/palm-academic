@@ -2,6 +2,7 @@ package cn.edu.cupk.portalreader
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
@@ -64,6 +65,8 @@ private val pinyinInitialBoundaries = listOf(
     -14631 to 'Q', -14150 to 'R', -14091 to 'S', -13319 to 'T', -12839 to 'W',
     -12557 to 'X', -11848 to 'Y', -11056 to 'Z'
 )
+private const val ADAPTER_GUIDE_URL =
+    "https://github.com/Genkaim/palm-academic/blob/main/docs/ADAPTER_GUIDE.md"
 
 private fun schoolInitial(name: String): String {
     val first = name.trim().firstOrNull() ?: return "#"
@@ -154,7 +157,7 @@ private fun SchoolSelectionContent(
                                             "已更新 ${result.schoolCount} 所学校的适配配置"
                                         },
                                         onFailure = { error ->
-                                            error.message ?: "学校适配更新失败"
+                                            "${error.message ?: "学校适配更新失败"}。服务托管于Github，请注意网络环境"
                                         }
                                     )
                                 refreshing = false
@@ -244,6 +247,34 @@ private fun SchoolSelectionContent(
                             }
                         }
                     }
+                }
+            }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 18.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "没有找到你的学校？",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = "查看适配指引",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
+                        ),
+                        modifier = Modifier.clickable {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(ADAPTER_GUIDE_URL))
+                                )
+                            }
+                        }
+                    )
                 }
             }
         }
