@@ -21,6 +21,9 @@
 2. 新增 `schools/<school>.json`，声明菜单入口及哪些页面使用原生重绘。
 3. 新增或复用 `adapters/<school>-reader.js`，通过 `PalmAcademicHost.publish()` 发布结构化页面。
 4. 务必配置 `readerConfig.scheduleProfiles[].unitTimes`；缺少时间会导致课表看似正常，但导出的日历/WakeUp 文件没有正确的上课时间。
+5. 在学校定义中提供适配作者名称和可联系邮箱；邮箱会公开显示在 GitHub，可使用 GitHub `noreply` 邮箱。
+
+建议通过 Fork + Pull Request 提交适配，不接受 App 直接上传远程脚本。具体文件范围、PR 内容和自测要求见 [贡献指南](CONTRIBUTING.md)。
 
 App 的学校页面会从以下仓库目录检查更新：
 

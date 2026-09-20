@@ -72,6 +72,10 @@ app/src/main/assets/
   "schemaVersion": 1,
   "id": "example-eams",
   "name": "示例大学",
+  "author": {
+    "name": "适配作者或 GitHub 用户名",
+    "email": "author@example.com"
+  },
   "baseUrl": "https://jw.example.edu.cn/student",
   "readerAdapter": "adapters/example-reader.js",
   "auth": {
@@ -92,6 +96,8 @@ app/src/main/assets/
 }
 ```
 
+- `author.name`：适配作者姓名或 GitHub 用户名，必填。
+- `author.email`：适配维护联系邮箱，必填。该字段会公开进入 GitHub 仓库；不希望公开私人邮箱时，可填写 GitHub 提供的 `ID+用户名@users.noreply.github.com` 邮箱。
 - `quick: true`：使用隐藏 WebView + JavaScript 适配器读取并由 Android 原生重绘。
 - 未设置或为 `false`：直接显示教务官网页面，不需要为该页实现结构化解析。
 - `path` 可以是相对 `/student` 的路径，也可以是完整 HTTPS URL。
@@ -234,3 +240,15 @@ WebView 只允许 HTTPS，以及 GET/HEAD 和少量只读查询型 POST 路径�
 - 课表地点、教师、周次和节次解析正确。
 - 导出的 `.ics` 与 WakeUp CSV 时间正确，尤其是多校区和晚课。
 - 不在适配器中记录、上传或输出 Cookie、账号、密码及个人教务数据。
+
+## 7. 提交适配
+
+推荐使用 GitHub Pull Request，而不是邮件附件、网盘文件或由 App 直接上传：适配器会运行在已登录的教务页面中，PR 可以保留审查记录、逐行查看 JavaScript，并在出现问题时单独回滚。
+
+1. Fork `Genkaim/palm-academic`，从最新 `main` 创建 `adapter/<school-id>` 分支。
+2. 一个 PR 只提交一所学校，并尽量只修改注册表、该校定义和该校适配器三个文件。
+3. PR 中填写学校名称、正式教务网址、作者邮箱、已验证页面及课表时间来源。
+4. 不提交账号、密码、Cookie、学号、真实课表截图或包含个人信息的网页响应。
+5. 提交后由维护者检查路径、只读行为、域名、导出时间和适配器代码，再合并到 `main`；用户随后可在 App 学校选择页刷新。
+
+详细流程与命名规范见仓库根目录的 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。

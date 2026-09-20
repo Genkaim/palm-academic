@@ -61,6 +61,7 @@ object SchoolAdapterRepository {
     private const val REMOTE_CACHE_DIRECTORY = "remote-school-adapters"
     private const val DEFAULT_SCHOOL_ID = "cupk"
     private const val DEFAULT_ORIGIN = "https://eams.cupk.edu.cn"
+    private val EMAIL_PATTERN = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")
 
     @Volatile
     private var selectedSchoolId = DEFAULT_SCHOOL_ID
@@ -239,6 +240,10 @@ object SchoolAdapterRepository {
     private fun validateDefinition(root: JSONObject) {
         require(root.optInt("schemaVersion", 0) == 1) { "不支持的学校定义版本" }
         require(root.has("groups")) { "学校定义缺少 groups" }
+        val author = root.optJSONObject("author")
+            ?: error("学校定义缺少 author")
+        require(author.optString("name").isNotBlank()) { "学校定义缺少作者名称" }
+        require(EMAIL_PATTERN.matches(author.optString("email"))) { "学校定义中的作者邮箱无效" }
         requireSafeAssetPath(root.getString("readerAdapter"), "adapters/", ".js")
     }
 
