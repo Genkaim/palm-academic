@@ -103,8 +103,29 @@ function validateDefinition(assetPath) {
   assetPath, "author.email 缺失或格式无效");
   requireValue(isHttpsUrl(definition.baseUrl), assetPath, "baseUrl 必须是无凭据的 HTTPS 地址");
   requireValue(Array.isArray(definition.groups), assetPath, "groups 必须是数组");
+  const monitor = definition.monitor;
+  if (requireValue(monitor && typeof monitor === "object", assetPath, "monitor 不能为空")) {
+    for (const key of ["coursePagePath", "courseDataPathTemplate", "gradePath", "examPath"]) {
+      requireValue(typeof monitor[key] === "string" &&
+        (monitor[key].startsWith("/") || isHttpsUrl(monitor[key])), assetPath,
+      `monitor.${key} 必须是站内绝对路径或 HTTPS 地址`);
+    }
+    requireValue(monitor.courseDataPathTemplate?.includes("{semesterId}"), assetPath,
+      "monitor.courseDataPathTemplate 必须包含 {semesterId}");
+    if (monitor.semesterIdPatterns !== undefined) {
+      if (requireValue(Array.isArray(monitor.semesterIdPatterns) &&
+        monitor.semesterIdPatterns.length > 0, assetPath, "semesterIdPatterns 不能为空")) {
+        monitor.semesterIdPatterns.forEach((pattern, index) => {
+          try { new RegExp(pattern); } catch (error) {
+            reportError(`${assetPath}.semesterIdPatterns[${index}]`, `正则无效：${error.message}`);
+          }
+        });
+      }
+    }
+  }
 
   if (Array.isArray(definition.groups)) {
+    const quickTypes = [];
     definition.groups.forEach((group, groupIndex) => {
       const groupScope = `${assetPath}.groups[${groupIndex}]`;
       requireValue(typeof group?.title === "string" && group.title.trim(), groupScope, "title 不能为空");
@@ -117,8 +138,13 @@ function validateDefinition(assetPath) {
         "path 必须是站内绝对路径或 HTTPS 地址");
         requireValue(item.quick === undefined || typeof item.quick === "boolean", itemScope,
           "quick 必须是布尔值");
+        if (item.quick === true) quickTypes.push(item.nativeType);
       });
     });
+    const requiredQuickTypes = ["schedule", "grade", "exam", "program"];
+    requireValue(quickTypes.length === 4 &&
+      requiredQuickTypes.every((type) => quickTypes.includes(type)), assetPath,
+    "必须各提供一个 nativeType 为 schedule、grade、exam、program 的快捷入口");
   }
 
   const adapterPath = definition.readerAdapter;
@@ -140,15 +166,19 @@ function validateDefinition(assetPath) {
 }
 
 const index = readJson(indexPath, "schools/index.json");
+let builtInSchools = [];
 if (index) {
-  requireValue(index.schemaVersion === 1, "schools/index.json", "schemaVersion 必须为 1");
+  requireValue(index.schemaVersion === 2, "schools/index.json", "schemaVersion 必须为 2");
   requireValue(Number.isInteger(index.configVersion) && index.configVersion > 0,
     "schools/index.json", "configVersion 必须是正整数");
-  if (requireValue(Array.isArray(index.schools) && index.schools.length > 0,
-    "schools/index.json", "schools 不能为空")) {
+  requireValue(Array.isArray(index.imported), "schools/index.json", "imported 必须是数组");
+  if (requireValue(Array.isArray(index.builtIn) && index.builtIn.length > 0,
+    "schools/index.json", "builtIn 不能为空")) {
+    builtInSchools = index.builtIn;
     const ids = new Set();
-    index.schools.forEach((school, schoolIndex) => {
-      const scope = `schools/index.json.schools[${schoolIndex}]`;
+    const definitions = new Set();
+    index.builtIn.forEach((school, schoolIndex) => {
+      const scope = `schools/index.json.builtIn[${schoolIndex}]`;
       requireValue(typeof school?.id === "string" && /^[a-z0-9-]+$/.test(school.id),
         scope, "id 只能包含小写字母、数字和连字符");
       requireValue(!ids.has(school.id), scope, `学校 id 重复：${school.id}`);
@@ -158,6 +188,9 @@ if (index) {
       const definitionPath = school?.definitionAsset;
       if (requireValue(isSafeAssetPath(definitionPath, "schools/", ".json"), scope,
         "definitionAsset 路径无效")) {
+        requireValue(!definitions.has(definitionPath), scope,
+          "每所学校必须使用独立 definitionAsset");
+        definitions.add(definitionPath);
         referencedDefinitions.add(definitionPath);
         requireValue(existsSync(join(assetsRoot, definitionPath)), scope, `找不到 ${definitionPath}`);
       }
@@ -167,6 +200,8 @@ if (index) {
 }
 
 for (const definitionPath of referencedDefinitions) validateDefinition(definitionPath);
+requireValue(referencedAdapters.size === builtInSchools.length, "schools/index.json",
+  "每所内置学校必须使用一个独立、完整的 readerAdapter");
 
 for (const file of readdirSync(join(assetsRoot, "schools"))) {
   const assetPath = `schools/${file}`;
@@ -188,5 +223,5 @@ if (errors.length) {
   process.exit(1);
 }
 
-console.log(`适配校验通过：${index?.schools?.length ?? 0} 所学校，` +
+console.log(`适配校验通过：${builtInSchools.length} 所学校，` +
   `${referencedDefinitions.size} 个定义，${referencedAdapters.size} 个适配器。`);

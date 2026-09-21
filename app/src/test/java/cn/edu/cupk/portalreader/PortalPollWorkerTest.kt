@@ -69,6 +69,25 @@ class PortalPollWorkerTest {
     }
 
     @Test
+    fun parsedDataJson_keepsFirstRowWhenTableHasNoHeaderCells() {
+        val html = "<table><tr><td>高等数学</td><td>95</td></tr></table>"
+        val json = PortalSnapshot.parsedDataJson(html, "grade")
+
+        assertTrue(json.contains("高等数学"))
+        assertTrue(json.contains("95"))
+        assertTrue(json.contains("\"headers\": []"))
+    }
+
+    @Test
+    fun parsedDataJson_fallsBackToAnyTableWhenConfiguredClassDiffers() {
+        val html = "<table class=\"school-specific\"><tr><th>课程</th></tr><tr><td>大学英语</td></tr></table>"
+        val json = PortalSnapshot.parsedDataJson(html, "grade", "student-grade-table")
+
+        assertTrue(json.contains("大学英语"))
+        assertTrue(json.contains("\"text\": \"课程 大学英语\""))
+    }
+
+    @Test
     fun historyDisplayContent_convertsLegacyHtmlToJson() {
         val displayed = PortalSnapshot.historyDisplayContent("<html><body>旧成绩 88</body></html>")
 

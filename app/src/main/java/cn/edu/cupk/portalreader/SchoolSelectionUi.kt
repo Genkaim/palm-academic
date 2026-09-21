@@ -5,12 +5,13 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,14 +23,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -112,6 +117,23 @@ private fun SchoolSelectionContent(
     val scope = rememberCoroutineScope()
     var schools by remember { mutableStateOf(SchoolAdapterRepository.options(context)) }
     var refreshing by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
+    val importRule = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            importing = true
+            scope.launch {
+                val message = SchoolAdapterRepository.importLocalRule(context, uri).fold(
+                    onSuccess = { result ->
+                        schools = SchoolAdapterRepository.options(context)
+                        "已导入 ${result.schoolName}"
+                    },
+                    onFailure = { "导入失败，请检查规则" }
+                )
+                importing = false
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     val groupedSchools = remember(schools) {
         schools.sortedWith { left, right ->
             schoolNameCollator.compare(left.name, right.name).takeIf { it != 0 }
@@ -132,9 +154,14 @@ private fun SchoolSelectionContent(
                     }
                 },
                 actions = {
-                    IconButton(
-                        modifier = Modifier.padding(end = 8.dp),
+                    Button(
+                        modifier = Modifier.padding(end = 12.dp),
                         enabled = !refreshing,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                         onClick = {
                             refreshing = true
                             scope.launch {
@@ -151,13 +178,17 @@ private fun SchoolSelectionContent(
                             }
                         }
                     ) {
-                        Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
-                            if (refreshing) {
-                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(Icons.Outlined.Refresh, "刷新学校适配")
-                            }
+                        if (refreshing) {
+                            CircularProgressIndicator(
+                                Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(Icons.Outlined.Refresh, contentDescription = null, Modifier.size(18.dp))
                         }
+                        Spacer(Modifier.size(6.dp))
+                        Text(if (refreshing) "刷新中" else "刷新")
                     }
                 }
             )
@@ -201,7 +232,7 @@ private fun SchoolSelectionContent(
                                     } else FontWeight.Normal
                                 )
                                 Text(
-                                    school.id,
+                                    if (school.imported) "本地导入 · ${school.id}" else school.id,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -236,6 +267,23 @@ private fun SchoolSelectionContent(
                             }
                         }
                     )
+                }
+            }
+            item {
+                OutlinedButton(
+                    onClick = {
+                        importRule.launch(arrayOf("application/json", "text/json", "text/plain"))
+                    },
+                    enabled = !importing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (importing) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Outlined.FileOpen, contentDescription = null)
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    Text(if (importing) "正在导入" else "导入本地规则")
                 }
             }
         }

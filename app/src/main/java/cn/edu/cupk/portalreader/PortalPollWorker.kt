@@ -56,59 +56,53 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             return@withContext finish("登录已过期", Result.success())
         }
         runCatching {
-            val coursePage = get(PortalConfig.COURSE_TABLE)
-            details += coursePage.toHistoryDetail(
-                category = "课表入口",
-                summary = if (coursePage.isSuccessful()) "请求成功" else "请求失败",
-                technicalDetails = "此响应用于解析当前学期 ID。"
-            )
+            val school = SchoolAdapterRepository.load(applicationContext)
+            val coursePage = get(school.monitor.coursePageUrl(school.baseUrl))
             if (coursePage.isAuthenticationFailure()) {
                 val notified = notifyAuthenticationFailure(preferences)
-                details += authenticationDetail(notified, "课表入口返回登录页或未授权状态")
+                details += coursePage.toHistoryDetail("课表", "登录状态失效")
+                details += authenticationDetail(notified, "课表页面返回登录页或未授权状态")
                 return@withContext finish("登录已过期", Result.success())
             }
-            if (!coursePage.isSuccessful()) error("课表入口请求失败：HTTP ${coursePage.code}")
+            if (!coursePage.isSuccessful()) {
+                details += coursePage.toHistoryDetail("课表", "请求失败")
+                error("课表页面请求失败：HTTP ${coursePage.code}")
+            }
 
-            val semesterId = Regex(
-                "currentSemester\\s*=.*?[\"']?id[\"']?\\s*:\\s*(\\d+)",
-                setOf(RegexOption.DOT_MATCHES_ALL)
-            ).find(coursePage.body)?.groupValues?.getOrNull(1)
-                ?: Regex("var\\s+semesterId\\s*=\\s*(\\d+)").find(coursePage.body)?.groupValues?.getOrNull(1)
+            val semesterId = school.monitor.extractSemesterId(coursePage.body)
 
             if (semesterId != null) {
-                val courseData = get(
-                    "${PortalConfig.COURSE_TABLE}/get-data" +
-                        "?bizTypeId=2&semesterId=$semesterId&searchTeachingSyllabus=true"
-                )
+                val courseData = get(school.monitor.courseDataUrl(school.baseUrl, semesterId))
                 if (courseData.isAuthenticationFailure()) {
                     val notified = notifyAuthenticationFailure(preferences)
-                    details += courseData.toHistoryDetail("课表数据", "登录状态失效")
+                    details += combinedCourseDetail(coursePage, courseData, "登录状态失效")
                     details += authenticationDetail(notified, "课表数据接口返回登录页或未授权状态")
                     return@withContext finish("登录已过期", Result.success())
                 }
                 if (!courseData.isSuccessful()) {
-                    details += courseData.toHistoryDetail("课表数据", "请求失败")
+                    details += combinedCourseDetail(coursePage, courseData, "请求失败")
                     error("课表数据请求失败：HTTP ${courseData.code}")
                 }
                 val coursePayload = courseData.body.trim()
-                if (!coursePayload.startsWith('[') && !coursePayload.startsWith('{')) {
-                    details += courseData.toHistoryDetail(
-                        category = "课表数据",
+                if (coursePayload.isBlank()) {
+                    details += combinedCourseDetail(
+                        coursePage,
+                        courseData,
                         summary = "响应格式无法识别",
-                        technicalDetails = "预期 JSON 数组或对象，实际首字符为 ${coursePayload.firstOrNull() ?: "（空）"}。"
+                        technicalDetails = "课表数据响应为空。"
                     )
                     error("课表接口返回了无法识别的数据")
                 }
-                details += updateCourseSnapshot(preferences, semesterId, courseData)
+                details += updateCourseSnapshot(preferences, semesterId, coursePage, courseData)
             } else {
-                details += PortalPollHistoryDetail(
-                    category = "课表学期解析",
+                details += coursePage.toHistoryDetail(
+                    category = "课表",
                     summary = "未识别当前学期",
                     technicalDetails = "已尝试 currentSemester.id 与 var semesterId 两种解析规则。"
                 )
             }
 
-            val gradeData = get(PortalConfig.GRADE)
+            val gradeData = get(school.monitor.url(school.baseUrl, school.monitor.gradePath))
             if (gradeData.isAuthenticationFailure()) {
                 val notified = notifyAuthenticationFailure(preferences)
                 details += gradeData.toHistoryDetail("成绩", "登录状态失效")
@@ -120,11 +114,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 error("成绩请求失败：HTTP ${gradeData.code}")
             }
             val visibleGrades = PortalSnapshot.visibleDocument(gradeData.body)
-            val parsedGrades = PortalSnapshot.parsedDataJson(
-                gradeData.body,
-                type = "grade",
-                tableClass = "student-grade-table"
-            )
+            val parsedGrades = PortalSnapshot.parsedDataJson(gradeData.body, type = "grade")
             if (visibleGrades.isNotBlank()) {
                 details += updateGradeSnapshot(preferences, gradeData, visibleGrades, parsedGrades)
             } else {
@@ -136,7 +126,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 )
             }
 
-            val examData = get(PortalConfig.EXAM)
+            val examData = get(school.monitor.url(school.baseUrl, school.monitor.examPath))
             if (examData.isAuthenticationFailure()) {
                 val notified = notifyAuthenticationFailure(preferences)
                 details += examData.toHistoryDetail("考试", "登录状态失效")
@@ -147,16 +137,13 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 details += examData.toHistoryDetail("考试", "请求失败")
                 error("考试请求失败：HTTP ${examData.code}")
             }
-            val parsedExams = PortalSnapshot.parsedDataJson(
-                examData.body,
-                type = "exam",
-                tableClass = "exam-table"
-            )
-            if (!PortalSnapshot.hasTable(examData.body, "exam-table")) {
+            val parsedExams = PortalSnapshot.parsedDataJson(examData.body, type = "exam")
+            val examRows = PortalSnapshot.tableRows(examData.body)
+            if (examRows.isEmpty() && PortalSnapshot.visibleDocument(examData.body).isBlank()) {
                 details += examData.toHistoryDetail(
                     category = "考试",
                     summary = "页面结构无法识别",
-                    technicalDetails = "未找到 class 包含 exam-table 的表格。",
+                    technicalDetails = "未解析到表格行或可见文本。",
                     parsedContent = parsedExams
                 )
                 error("考试安排页面结构无法识别")
@@ -164,7 +151,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             details += updateExamSnapshot(
                 preferences,
                 examData,
-                PortalSnapshot.tableRows(examData.body, "exam-table"),
+                examRows,
                 parsedExams
             )
             preferences.edit()
@@ -266,6 +253,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
     private fun updateCourseSnapshot(
         preferences: android.content.SharedPreferences,
         semesterId: String,
+        entryResponse: ResponseData,
         response: ResponseData
     ): PortalPollHistoryDetail {
         val courseBody = response.body
@@ -293,7 +281,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         val notified = changed && enabled &&
             notify(3000, "课表变动", "检测到课表新增或课程安排发生变化，请及时查看。")
         return PortalPollHistoryDetail(
-            category = "课表数据",
+            category = "课表",
             summary = when {
                 oldHash == null -> "已建立初始数据"
                 changed -> "检测到变动"
@@ -306,6 +294,10 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             finalUrl = response.finalUrl,
             responseCode = response.code,
             technicalDetails = buildString {
+                appendLine("课表入口请求：${entryResponse.requestedUrl}")
+                appendLine(entryResponse.transportDetails)
+                appendLine()
+                appendLine("课表数据请求：${response.requestedUrl}")
                 appendLine(response.transportDetails)
                 appendLine()
                 appendLine("学期 ID：$semesterId")
@@ -319,13 +311,38 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         )
     }
 
+    private fun combinedCourseDetail(
+        entryResponse: ResponseData,
+        dataResponse: ResponseData,
+        summary: String,
+        technicalDetails: String = ""
+    ) = PortalPollHistoryDetail(
+        category = "课表",
+        summary = summary,
+        requestUrl = entryResponse.requestedUrl,
+        finalUrl = dataResponse.finalUrl,
+        responseCode = dataResponse.code,
+        technicalDetails = buildString {
+            appendLine("课表入口请求：${entryResponse.requestedUrl}")
+            appendLine(entryResponse.transportDetails)
+            appendLine()
+            appendLine("课表数据请求：${dataResponse.requestedUrl}")
+            appendLine(dataResponse.transportDetails)
+            if (technicalDetails.isNotBlank()) {
+                appendLine()
+                append(technicalDetails)
+            }
+        },
+        currentContent = PortalSnapshot.parsedDataJson(dataResponse.body, "course")
+    )
+
     private fun updateExamSnapshot(
         preferences: android.content.SharedPreferences,
         response: ResponseData,
         rows: Set<String>,
         parsedContent: String
     ): PortalPollHistoryDetail {
-        val snapshot = rows.sorted().joinToString("\u001E")
+        val snapshot = rows.sorted().joinToString("\u001E").ifBlank { parsedContent }
         // v2 保存完整行而非前三列；使用新基线键避免升级后因快照格式变化误报。
         val previous = preferences.getString("exam_rows_v2", null)
         val previousContent = preferences.getString("exam_parsed_json_v2", null)

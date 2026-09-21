@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "id": "cupk-eams",
-  "name": "中国石油大学（北京）克拉玛依校区",
+  "id": "cup-eams",
+  "name": "中国石油大学（北京）",
   "author": {
     "name": "Genkaim",
     "email": "cxh2066172407@outlook.com"
   },
-  "baseUrl": "https://eams.cupk.edu.cn/student",
-  "readerAdapter": "adapters/cupk-reader.js",
+  "baseUrl": "https://bk.cup.edu.cn/student",
+  "readerAdapter": "adapters/cup-reader.js",
   "auth": {
     "type": "salted-sha1",
     "loginPath": "/login",

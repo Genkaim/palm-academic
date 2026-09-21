@@ -25,10 +25,11 @@ object PortalSnapshot {
         if (normalized.isBlank() || normalized in setOf("[]", "{}", "null")) return false
         return normalized.contains("courseName", ignoreCase = true) ||
             normalized.contains("lessonName", ignoreCase = true) ||
-            normalized.contains("courseId", ignoreCase = true)
+            normalized.contains("courseId", ignoreCase = true) ||
+            parseTables(value).any { it.rows.isNotEmpty() }
     }
 
-    fun tableRows(html: String, className: String): Set<String> {
+    fun tableRows(html: String, className: String? = null): Set<String> {
         return parseTables(html, className)
             .flatMap { it.rows }
             .map { cells -> cells.joinToString(" | ") }
@@ -41,30 +42,43 @@ object PortalSnapshot {
             .toSet()
     }
 
-    fun parseTables(html: String, className: String): List<ParsedTable> = Regex(
-        """<table\b[^>]*class\s*=\s*[\"'][^\"']*\b${Regex.escape(className)}\b[^\"']*[\"'][^>]*>([\s\S]*?)</table>""",
+    fun parseTables(html: String, className: String? = null): List<ParsedTable> = Regex(
+        """<table\b([^>]*)>([\s\S]*?)</table>""",
         RegexOption.IGNORE_CASE
-    ).findAll(html).mapNotNull { tableMatch ->
-        val rows = Regex("""<tr\b[^>]*>([\s\S]*?)</tr>""", RegexOption.IGNORE_CASE)
-            .findAll(tableMatch.groupValues[1])
-            .map { row ->
-                Regex("""<t[dh]\b[^>]*>([\s\S]*?)</t[dh]>""", RegexOption.IGNORE_CASE)
-                    .findAll(row.groupValues[1])
+    ).findAll(html).filter { tableMatch ->
+        className == null || Regex(
+            """class\s*=\s*[\"'][^\"']*\b${Regex.escape(className)}\b[^\"']*[\"']""",
+            RegexOption.IGNORE_CASE
+        ).containsMatchIn(tableMatch.groupValues[1])
+    }.mapNotNull { tableMatch ->
+        val parsedRows = Regex("""<tr\b[^>]*>([\s\S]*?)</tr>""", RegexOption.IGNORE_CASE)
+            .findAll(tableMatch.groupValues[2])
+            .mapNotNull { row ->
+                val rowHtml = row.groupValues[1]
+                val cells = Regex("""<t[dh]\b[^>]*>([\s\S]*?)</t[dh]>""", RegexOption.IGNORE_CASE)
+                    .findAll(rowHtml)
                     .map { visibleDocument(it.groupValues[1]) }
                     .toList()
+                cells.takeIf { it.any(String::isNotBlank) }?.let {
+                    it to Regex("""<th\b""", RegexOption.IGNORE_CASE).containsMatchIn(rowHtml)
+                }
             }
-            .filter { cells -> cells.any(String::isNotBlank) }
             .toList()
-        if (rows.isEmpty()) null else ParsedTable(
-            headers = rows.first(),
-            rows = rows.drop(1)
-        )
+        if (parsedRows.isEmpty()) null else {
+            val firstIsHeader = parsedRows.first().second
+            ParsedTable(
+                headers = if (firstIsHeader) parsedRows.first().first else emptyList(),
+                rows = parsedRows.drop(if (firstIsHeader) 1 else 0).map { it.first }
+            )
+        }
     }.toList()
 
     fun parsedDataJson(html: String, type: String, tableClass: String? = null): String {
         val normalized = html.trim()
         if (normalized.startsWith('{') || normalized.startsWith('[')) return prettyJson(normalized)
-        val tables = tableClass?.let { parseTables(html, it) }.orEmpty()
+        val requestedTables = tableClass?.let { parseTables(html, it) }.orEmpty()
+        val tables = requestedTables.ifEmpty { parseTables(html) }
+        val visibleText = visibleDocument(html)
         return buildString {
             appendLine("{")
             appendLine("  \"type\": ${jsonString(type)},")
@@ -84,7 +98,7 @@ object PortalSnapshot {
                 appendLine()
             }
             appendLine("  ],")
-            appendLine("  \"text\": ${jsonString(if (tables.isEmpty()) visibleDocument(html) else "")}")
+            appendLine("  \"text\": ${jsonString(visibleText)}")
             append('}')
         }
     }

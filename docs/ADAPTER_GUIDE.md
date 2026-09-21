@@ -1,81 +1,63 @@
 # 学校适配指南
 
-PalmAcademic 的 Android 渲染层与学校网页解析逻辑彼此独立。学校相关内容位于：
+PalmAcademic 的 Android 渲染层与学校网页解析逻辑彼此独立。每所学校必须拥有一个定义文件和一个完整、独立的脚本；脚本不得依赖其他学校的脚本。
 
 ```text
 app/src/main/assets/
 ├── schools/
-│   ├── index.json          # 学校注册表、域名、作息时间
-│   └── <school>.json       # 菜单和阅读适配器引用
+│   ├── index.json          # 内置与本地导入学校索引
+│   └── <school>.json       # 该校页面、监测接口和脚本引用
 └── adapters/
-    └── <school>-reader.js  # DOM/API 到 PagePayload 的转换
+    └── <school>-reader.js  # 该校全部四个快捷入口的读取逻辑
 ```
 
-合并到仓库 `main` 分支后，用户可以在 App 的“选择学校”页面点击右上角刷新，不必等待下一版 APK。
+合并到仓库 `main` 分支后，用户可在 App 的“选择学校”页面刷新内置规则；刷新不会覆盖本地导入规则。
 
 ## 1. 注册学校
 
-在 `schools/index.json` 的 `schools` 数组添加：
+在 `schools/index.json` 的 `builtIn` 数组添加学校。`imported` 只由 App 管理，在线/App 更新不得写入或清空它。
 
 ```json
 {
-  "id": "example-university",
-  "name": "示例大学",
-  "origin": "https://jw.example.edu.cn",
-  "definitionAsset": "schools/example-university.json",
-  "readerConfig": {
-    "scheduleProfiles": [
-      {
-        "locationPattern": "东校区",
-        "unitTimes": {
-          "1": ["08:00", "08:45"],
-          "2": ["08:50", "09:35"]
-        }
-      },
-      {
-        "locationPattern": "",
-        "unitTimes": {
-          "1": ["08:30", "09:15"],
-          "2": ["09:20", "10:05"]
-        }
+  "schemaVersion": 2,
+  "configVersion": 2,
+  "builtIn": [
+    {
+      "id": "example-university",
+      "name": "示例大学",
+      "origin": "https://jw.example.edu.cn",
+      "definitionAsset": "schools/example-university.json",
+      "readerConfig": {
+        "scheduleProfiles": [
+          {
+            "locationPattern": "",
+            "unitTimes": {
+              "1": ["08:00", "08:45"],
+              "2": ["08:50", "09:35"]
+            }
+          }
+        ]
       }
-    ]
-  }
+    }
+  ],
+  "imported": []
 }
 ```
 
-字段要求：
+- `id` 仅使用小写字母、数字和连字符，仓库内唯一。
+- `origin` 必须是 HTTPS，不包含末尾 `/student`。
+- 每所学校使用独立的 `definitionAsset` 和 `readerAdapter`。
+- `scheduleProfiles` 必须包含 `locationPattern: ""` 的默认作息；节次时间使用 24 小时制。多校区按地点正则从具体到默认排列。
+- 作息会用于原生课表、iCalendar 和 WakeUp CSV，必须覆盖该校全部节次并实际检查导出时间。
 
-- `id`：仅小写字母、数字和连字符，仓库内唯一。
-- `origin`：必须是 HTTPS，不包含末尾 `/student`。
-- `definitionAsset`：必须指向 `schools/` 内的 JSON 文件。
-- `readerConfig`：原样暴露给阅读适配器的学校级配置。
-
-### 课表导出时间（必须检查）
-
-`scheduleProfiles` 不只是页面显示配置。适配器利用它把“第 1 节”转换为 `startTime/endTime`，Android 导出 iCalendar 和 WakeUp CSV 时也会以默认 profile 的 `unitTimes` 作为回退。
-
-- `locationPattern` 是匹配上课地点的正则表达式，按数组顺序选择第一个匹配项。
-- 必须提供一个 `locationPattern: ""` 的默认 profile，建议放在最后。
-- 节次 key 必须是字符串，例如 `"1"`；值必须是 24 小时制 `[开始, 结束]`。
-- 覆盖学校可能出现的全部节次。遗漏第 11/12 节是最常见的导出错误。
-- 多校区作息不同时，为每个校区添加带 `locationPattern` 的 profile，再提供默认 profile。
-
-验证时不要只看 App 课表页面，还应实际导出 `.ics` 和 WakeUp CSV，检查早晚课程的开始、结束时间。
-
-## 2. 定义菜单
-
-新增 `schools/example-university.json`：
+## 2. 定义菜单与监测接口
 
 ```json
 {
   "schemaVersion": 1,
   "id": "example-eams",
   "name": "示例大学",
-  "author": {
-    "name": "适配作者或 GitHub 用户名",
-    "email": "author@example.com"
-  },
+  "author": {"name": "adapter-author", "email": "author@example.com"},
   "baseUrl": "https://jw.example.edu.cn/student",
   "readerAdapter": "adapters/example-reader.js",
   "auth": {
@@ -84,171 +66,211 @@ app/src/main/assets/
     "saltPath": "/login-salt",
     "homePath": "/home"
   },
-  "groups": [
-    {
-      "title": "选课与课表",
-      "items": [
-        {"title": "我的课表", "path": "/for-std/course-table", "quick": true},
-        {"title": "选课信息", "path": "/for-std/course-select"}
-      ]
-    }
-  ]
+  "monitor": {
+    "coursePagePath": "/for-std/course-table",
+    "courseDataPathTemplate": "/for-std/course-table/get-data?semesterId={semesterId}",
+    "gradePath": "/for-std/grade/sheet",
+    "examPath": "/for-std/exam-arrange",
+    "semesterIdPatterns": ["[\"']semesterId[\"']\\s*:\\s*[\"']?(\\d+)"]
+  },
+  "groups": []
 }
 ```
 
-- `author.name`：适配作者姓名或 GitHub 用户名，必填。
-- `author.email`：适配维护联系邮箱，必填。该字段会公开进入 GitHub 仓库；不希望公开私人邮箱时，可填写 GitHub 提供的 `ID+用户名@users.noreply.github.com` 邮箱。
-- `quick: true`：使用隐藏 WebView + JavaScript 适配器读取并由 Android 原生重绘。
-- 未设置或为 `false`：直接显示教务官网页面，不需要为该页实现结构化解析。
-- `path` 可以是相对 `/student` 的路径，也可以是完整 HTTPS URL。
+`path` 和监测路径可为相对 `baseUrl` 的路径或完整 HTTPS URL。`courseDataPathTemplate` 必须含 `{semesterId}`；`semesterIdPatterns` 是按顺序匹配当前学期 ID 的正则，第一组捕获值必须是学期 ID。不同登录协议仍需同步扩展 Android 的登录实现。
 
-当前账号密码登录协议仍由 Android 端实现，新增不同登录协议需要同步扩展 `AuthRepository`，不能仅靠 JSON 完成。
+## 3. 四个快捷入口
 
-## 3. 阅读适配器接口
+每所学校必须各提供一次下列 `nativeType`。四者都由同一个该校脚本读取并原生重绘。
 
-宿主在页面加载完成后注入：
+| `nativeType` | 推荐标题 | 必须提供的核心数据 |
+|---|---|---|
+| `schedule` | 我的课表 | 学期、开学日期、星期、课程名、周次、节次、地点、教师 |
+| `grade` | 课程成绩 | 课程名、成绩及页面可见的学分、绩点、课程性质等字段 |
+| `exam` | 考试信息 | 课程名、日期时间、地点、座位等页面可见字段 |
+| `program` | 培养方案完成情况 | 学分统计与可递归展开的模块、课程完成状态 |
+
+```json
+{"title":"我的课表","path":"/course-table","quick":true,"nativeType":"schedule"}
+```
+
+非重绘功能不设置 `quick`/`nativeType`，App 直接打开官网页面。选课、申请、查询等普通页面只需提供正确 `path`；不得在适配脚本里自动执行写操作。
+
+## 4. 单脚本接口
+
+宿主在页面完成后注入 `PalmAcademicHost`。一个学校的脚本必须自行包含四个快捷入口所需的 DOM/API 解析、学期切换和发布逻辑，不得 `import`、拼接或调用另一所学校的适配脚本。
 
 ```js
 window.PalmAcademicHost = {
   apiVersion: 1,
-  schoolConfig: {/* index.json 中的 readerConfig */},
-  publish(payload) {/* 发送给 Android */}
+  schoolConfig: {},
+  publish(payload) {}
 };
-```
 
-适配器必须暴露：
-
-```js
 window.PalmAcademicAdapter = {
   apiVersion: 1,
-  read,                         // 读取当前页面并返回 PagePayload
-  publish,                      // 调用 PalmAcademicHost.publish(read())
-  perform(actionId, value)      // 响应学期选择等原生 UI 操作
+  read(),
+  publish(),
+  perform(actionId, value)
 };
 ```
 
-最小实现：
+最小发布结构：
 
 ```js
 (function () {
   if (!window.PalmAcademicHost || window.PalmAcademicAdapter) return;
-
   function read() {
     return {
       title: document.title,
       sourceUrl: location.href,
       choices: [],
       actions: [],
-      sections: [{
-        type: "text",
-        title: "内容",
-        paragraphs: [document.body.innerText.trim()]
-      }]
+      sections: [{type: "text", title: "内容", paragraphs: [document.body.innerText.trim()]}]
     };
   }
-
-  function publish() {
-    PalmAcademicHost.publish(read());
-  }
-
-  function perform(actionId, value) {
-    return false;
-  }
-
+  function publish() { PalmAcademicHost.publish(read()); }
+  function perform() { return false; }
   window.PalmAcademicAdapter = {apiVersion: 1, read, publish, perform};
   publish();
 })();
 ```
 
-## 4. PagePayload
+## 5. 四类数据格式
 
-顶层结构：
+所有入口发布统一的 `PagePayload`：
 
 ```ts
 type PagePayload = {
   title: string;
   sourceUrl: string;
-  choices?: Choice[];
-  actions?: Action[];
+  choices?: {id:string; label:string; value:string; options:{value:string; label:string}[]}[];
+  actions?: {id:string; label:string; value:string}[];
   sections: Section[];
 };
-
-type Choice = {
-  id: string;
-  label: string;
-  value: string;
-  options: {value: string; label: string}[];
-};
-
-type Action = {id: string; label: string; value: string};
 ```
 
-支持的 section：
+课表使用 `schedule` section：
 
-| `type` | 必需数据 | 用途 |
-|---|---|---|
-| `text` | `paragraphs: string[]` | 说明和空状态 |
-| `fields` | `fields: {label,value}[]` | 单条详情 |
-| `table` | `headers: string[]`, `rows: string[][]` | 普通表格 |
-| `cards` | `cards: Card[]` | 成绩、考试等卡片 |
-| `stats` | `items: {label,value}[]` | GPA、排名等指标 |
-| `links` | `links: {title,url}[]` | 可打开的官网链接 |
-| `schedule` | `semesterStartDate`, `days` | 周课表及导出 |
-| `program` | 学分与递归 `modules` | 培养方案完成情况 |
-
-`Card` 可包含：
-
-```ts
-type Card = {
-  title: string;
-  subtitle?: string;
-  accent?: string;
-  fields?: {label: string; value: string}[];
-  schedule?: {
-    weeks: string;
-    startSection: string;
-    endSection: string;
-    teacher?: string;
-    location?: string;
-    startTime?: string; // HH:mm
-    endTime?: string;   // HH:mm
-  };
-};
+```json
+{
+  "type": "schedule",
+  "semesterStartDate": "2026-09-07",
+  "days": [{
+    "name": "周一",
+    "lessons": [{
+      "title": "高等数学",
+      "schedule": {
+        "weeks": "1-16周",
+        "startSection": "1",
+        "endSection": "2",
+        "teacher": "教师",
+        "location": "A101",
+        "startTime": "08:00",
+        "endTime": "09:35"
+      }
+    }]
+  }]
+}
 ```
 
-课表 section 的 `days` 格式为 `{name, lessons: Card[]}[]`。`semesterStartDate` 应尽量提供 `yyyy-MM-dd`，用于把教学周换算为实际日期。
+成绩与考试优先使用 `cards`，把网页可见字段全部放入 `fields`，不要只返回行号或数组索引：
 
-## 5. 操作与页面更新
-
-当用户在原生 UI 选择学期或点击 action 时，Android 调用：
-
-```js
-PalmAcademicAdapter.perform(actionId, value);
+```json
+{
+  "type": "cards",
+  "title": "课程成绩",
+  "cards": [{
+    "title": "高等数学",
+    "subtitle": "必修",
+    "fields": [
+      {"label":"成绩","value":"95"},
+      {"label":"学分","value":"4"},
+      {"label":"绩点","value":"4.5"}
+    ]
+  }]
+}
 ```
 
-适配器应更新官网页面控件或请求数据，并在 DOM/数据稳定后再次调用 `publish()`。可使用 `MutationObserver`，但要防抖，避免在页面频繁变动时连续发布。
+考试同样使用 `cards`，例如字段 `考试时间`、`地点`、`座位号`。如官网天然为表格，也可使用 `table`：`headers: string[]` 与 `rows: string[][]`，但每一行必须包含实际内容。
 
-WebView 只允许 HTTPS，以及 GET/HEAD 和少量只读查询型 POST 路径。适配器不得实现选课、退课、提交申请等写操作。
+培养方案使用 `program`，`modules` 可递归嵌套：
 
-## 6. 提交前检查
+```json
+{
+  "type": "program",
+  "requiredCredits": "160",
+  "completedCredits": "96",
+  "modules": [{
+    "title": "公共基础课",
+    "requiredCredits": "40",
+    "completedCredits": "36",
+    "courses": [{"title":"大学英语","status":"已完成","credits":"2"}],
+    "modules": []
+  }]
+}
+```
 
-- `index.json` 和学校 JSON 能被标准 JSON 解析器读取。
-- 所有远程引用都位于 `schools/` 或 `adapters/`，路径不含 `..`。
-- 学校域名使用 HTTPS，登录页、首页和至少一个普通菜单可访问。
-- 所有 `quick: true` 页面都能发布非空 `PagePayload`。
-- 学期切换后会重新发布内容。
-- 课表地点、教师、周次和节次解析正确。
-- 导出的 `.ics` 与 WakeUp CSV 时间正确，尤其是多校区和晚课。
-- 不在适配器中记录、上传或输出 Cookie、账号、密码及个人教务数据。
+通用 section 还包括 `text`、`fields`、`table`、`cards`、`stats`、`links`。空状态也要发布可读的 `text`，不能仅发布空索引。
 
-## 7. 提交适配
+## 6. 网页和数据如何提供
 
-推荐使用 GitHub Pull Request，而不是邮件附件、网盘文件或由 App 直接上传：适配器会运行在已登录的教务页面中，PR 可以保留审查记录、逐行查看 JavaScript，并在出现问题时单独回滚。
+- `sourceUrl` 使用当前实际页面 URL；入口 `path` 负责让隐藏 WebView 打开正确网页。
+- 可从 DOM 读取，也可复用官网的只读 API；只允许 HTTPS、GET/HEAD 及必要的只读查询 POST。
+- 页面异步加载时等待目标 DOM/API 完成后再 `publish()`；可用带防抖的 `MutationObserver`。
+- 学期选择放在 `choices`。Android 调用 `perform(actionId, value)` 后，脚本更新官网控件或请求对应数据，并再次发布完整结果。
+- 不得读取、记录、上传或输出 Cookie、密码、Token；不得执行选课、退课、提交申请等写操作。
+- 后台检查的 `monitor` 路径必须由该校定义提供，Android 不硬编码某个学校的表格 class 或接口地址。
 
-1. Fork `Genkaim/palm-academic`，从最新 `main` 创建 `adapter/<school-id>` 分支。
-2. 一个 PR 只提交一所学校，并尽量只修改注册表、该校定义和该校适配器三个文件。
-3. PR 中填写学校名称、正式教务网址、作者邮箱、已验证页面及课表时间来源。
-4. 不提交账号、密码、Cookie、学号、真实课表截图或包含个人信息的网页响应。
-5. 提交后由维护者检查路径、只读行为、域名、导出时间和适配器代码，再合并到 `main`；用户随后可在 App 学校选择页刷新。
+## 7. 本地规则包
 
-详细流程与命名规范见仓库根目录的 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。
+“选择学校 → 导入本地规则”接收一个 JSON 文件。App 会为它生成独立的定义和脚本路径，并写入索引的 `imported` 字段。
+
+```json
+{
+  "schemaVersion": 1,
+  "profile": {
+    "id": "example-local",
+    "name": "示例大学（本地）",
+    "origin": "https://jw.example.edu.cn",
+    "readerConfig": {"scheduleProfiles": [{"locationPattern":"","unitTimes":{"1":["08:00","08:45"]}}]}
+  },
+  "definition": {
+    "schemaVersion": 1,
+    "id": "example-local-eams",
+    "name": "示例大学（本地）",
+    "author": {"name":"local","email":"local@example.com"},
+    "baseUrl": "https://jw.example.edu.cn/student",
+    "readerAdapter": "adapters/placeholder.js",
+    "auth": {},
+    "monitor": {
+      "coursePagePath":"/course-table",
+      "courseDataPathTemplate":"/course-table/data?semesterId={semesterId}",
+      "gradePath":"/grade",
+      "examPath":"/exam"
+    },
+    "groups": [{
+      "title":"快捷入口",
+      "items":[
+        {"title":"课表","path":"/course-table","quick":true,"nativeType":"schedule"},
+        {"title":"成绩","path":"/grade","quick":true,"nativeType":"grade"},
+        {"title":"考试","path":"/exam","quick":true,"nativeType":"exam"},
+        {"title":"培养方案","path":"/program","quick":true,"nativeType":"program"}
+      ]
+    }]
+  },
+  "adapterScript": "(function(){ /* 完整独立脚本 */ })();"
+}
+```
+
+文件上限 2 MB。再次导入同一 `id` 会替换该本地规则，但不能覆盖内置学校。
+
+## 8. 提交前检查
+
+1. 运行 `node tools/validate-adapters.mjs`，确保索引、定义和脚本通过校验。
+2. 四个 `nativeType` 均能发布包含实际内容的非空数据，学期切换后会重新发布。
+3. 普通网页入口可以打开；重绘与非重绘功能边界符合第 3 节。
+4. 实测 `.ics` 与 WakeUp CSV，重点检查多校区、晚课、周次和跨节课程。
+5. 一个 PR 只新增一所学校的索引项、定义和完整脚本，不提交账号、Cookie、真实课表或其他个人信息。
+
+推荐通过 GitHub Pull Request 提交，以便逐行审查并单独回滚。详细流程见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。

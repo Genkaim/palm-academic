@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 1,
-  "configVersion": 1,
-  "schools": [
+  "schemaVersion": 2,
+  "configVersion": 2,
+  "builtIn": [
     {
       "id": "cupk",
       "name": "中国石油大学（北京）克拉玛依校区",
@@ -26,7 +26,7 @@
       "id": "cup-beijing",
       "name": "中国石油大学（北京）",
       "origin": "https://bk.cup.edu.cn",
-      "definitionAsset": "schools/cupk.json",
+      "definitionAsset": "schools/cup.json",
       "readerConfig": {
         "scheduleProfiles": [
           {
@@ -40,5 +40,6 @@
         ]
       }
     }
-  ]
+  ],
+  "imported": []
 }
