@@ -52,6 +52,16 @@ jobs:
           path: build/ios-native-xcodebuild.log
           if-no-files-found: ignore
 
+      - name: Expose Xcode errors in annotations
+        if: steps.xcodebuild.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "Xcode build failed; last diagnostics:"
+          if [ -f build/ios-native-xcodebuild.log ]; then
+            grep -E 'error:|warning:|BUILD FAILED|CompileSwift|SwiftEmitModule' build/ios-native-xcodebuild.log | tail -n 40 || true
+          fi
+          echo "::error title=Native iOS Xcode build failed::See the xcodebuild diagnostics above or rerun on the ios-native-rewrite branch."
+
       - name: Stop after failed Xcode build
         if: steps.xcodebuild.outcome == 'failure'
         run: exit 1
