@@ -1,0 +1,62 @@
+{
+  "id": "cupk-eams",
+  "name": "中国石油大学（北京）克拉玛依校区",
+  "baseUrl": "https://eams.cupk.edu.cn/student",
+  "groups": [
+    {"title":"综合服务","items":[
+      {"title":"借教室","path":"/for-std/room-borrow"},
+      {"title":"空闲教室查询","path":"/for-std/room-free"},
+      {"title":"全校开课查询","path":"/for-std/lesson-search"},
+      {"title":"全校专业方案查询","path":"/for-std/majorPrograms"},
+      {"title":"全校公共方案查询","path":"/for-std/publicPrograms"}
+    ]},
+    {"title":"学籍","items":[
+      {"title":"学籍信息","path":"/for-std/student-info"},
+      {"title":"学生信息核对","path":"/for-std/std-info-check-apply"}
+    ]},
+    {"title":"培养方案","items":[
+      {"title":"培养方案","path":"/for-std/program/struct-document/info/index"},
+      {"title":"培养方案完成情况","path":"/for-std/program-completion-preview","quick":true},
+      {"title":"毕业自查","path":"/for-std/graduate-self-review"}
+    ]},
+    {"title":"选课与课表","items":[
+      {"title":"选课信息","path":"/for-std/course-select"},
+      {"title":"我的课表","path":"/for-std/course-table","quick":true},
+      {"title":"我的班级课表","path":"/for-std/adminclass-course-table"},
+      {"title":"全校班级课表查询","path":"/for-student/adminclass-course-table"},
+      {"title":"全校教室课表查询","path":"/for-std/room-course-table"},
+      {"title":"自修申请","path":"/for-std/exempt-listen-apply"}
+    ]},
+    {"title":"考试","items":[
+      {"title":"考试信息","path":"/for-std/exam-arrange","quick":true},
+      {"title":"缓考申请","path":"/for-std/exam-delay-apply"},
+      {"title":"补考确认","path":"/for-std/make-up-exam-confirm"}
+    ]},
+    {"title":"成绩","items":[
+      {"title":"课程成绩","path":"/for-std/grade/sheet","quick":true},
+      {"title":"等级考试成绩","path":"/for-std/other-exam-signup"}
+    ]},
+    {"title":"学分认定","items":[
+      {"title":"课程替代申请","path":"/for-std/course-substitute-apply"}
+    ]},
+    {"title":"学生评教与问卷","items":[
+      {"title":"学生日常反馈","path":"/for-std/extra-system/student-feedback-forstudent/index"},
+      {"title":"学生结课评教","path":"/for-std/extra-system/student-summation-forstudent/index"},
+      {"title":"问卷调查","path":"/for-std/extra-system/student-questionnaire/index"}
+    ]},
+    {"title":"毕业设计（论文）","items":[
+      {"title":"系统入口","path":"/for-std/thesis-prev-system"}
+    ]},
+    {"title":"创新创业","items":[
+      {"title":"大创项目申报","path":"/for-std/entrepre-apply"},
+      {"title":"创新创业项目","path":"/for-std/entrepre"}
+    ]},
+    {"title":"竞赛与成果","items":[
+      {"title":"我的竞赛","path":"/for-std/competition"},
+      {"title":"交流课程成果","path":"/for-std/exchange-achievement-apply"},
+      {"title":"非课程类成果","path":"/for-std/other-achievement-apply"},
+      {"title":"竞赛报名","path":"/for-std/competition-apply"},
+      {"title":"竞赛获奖信息上报","path":"/for-std/competition-award-apply"}
+    ]}
+  ]
+}

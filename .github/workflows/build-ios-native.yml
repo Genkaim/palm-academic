@@ -1,0 +1,60 @@
+name: Build native iOS migration
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ios-native-rewrite
+
+jobs:
+  build-ios-native:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen version
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec iosApp/project.yml --project iosApp/PalmAcademicIOS.xcodeproj
+
+      - name: Build unsigned iPhoneOS app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project iosApp/PalmAcademicIOS.xcodeproj \
+            -scheme PalmAcademic \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build/ios-native \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build | tee build/ios-native-xcodebuild.log
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="build/ios-native/Build/Products/Release-iphoneos/PalmAcademic.app"
+          test -d "$APP_PATH"
+          mkdir -p build/ios-native-ipa/Payload
+          cp -R "$APP_PATH" build/ios-native-ipa/Payload/PalmAcademic.app
+          printf '%s\n' 'Native iOS migration preview: not tested on a physical iPhone or iPad.' > build/ios-native-ipa/NO-PHYSICAL-DEVICE-TEST.txt
+          ditto -c -k --sequesterRsrc --keepParent build/ios-native-ipa/Payload build/PalmAcademic-v0.3.6-ios-native-unsigned.ipa
+
+      - name: Upload unsigned IPA and test note
+        uses: actions/upload-artifact@v4
+        with:
+          name: PalmAcademic-v0.3.6-ios-native-unsigned
+          path: |
+            build/PalmAcademic-v0.3.6-ios-native-unsigned.ipa
+            build/ios-native-ipa/NO-PHYSICAL-DEVICE-TEST.txt
+            build/ios-native-xcodebuild.log

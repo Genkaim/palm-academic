@@ -1,6 +1,6 @@
 # 掌上教务（PalmAcademic）
 
-一个基于 Jetpack Compose + Material 3 的 Android 教务客户端。项目通过“学校配置 + JavaScript 阅读适配器”隔离不同学校的域名、菜单、页面 DOM 与作息时间，不需要为每所学校复制 Android UI。仓库同时包含一个实验性的 iOS WKWebView 客户端。
+一个基于 Jetpack Compose + Material 3 的 Android 教务客户端。项目通过“学校配置 + JavaScript 阅读适配器”隔离不同学校的域名、菜单、页面 DOM 与作息时间，不需要为每所学校复制 Android UI。仓库同时包含 iOS 客户端迁移预览。
 
 ## 功能
 
@@ -50,7 +50,7 @@ Release 签名配置不进入仓库。复制 `signing.properties.example` 为 `s
 .\gradlew.bat assembleRelease
 ```
 
-iOS 原型位于 `iosApp/`，需要 macOS、Xcode 和 XcodeGen。仓库的 `Build unsigned iOS IPA` 工作流可生成未签名 IPA；该包必须使用 Apple 开发者证书或侧载工具重签名后才能安装，并不具备 Android 客户端的完整原生功能。
+iOS 原生迁移预览位于 `iosApp/` 的 `ios-native-rewrite` 分支，需要 macOS、Xcode 和 XcodeGen。GitHub Actions 的 `Build native iOS migration` 工作流会生成未签名 IPA；该包必须使用 Apple 开发者证书或侧载工具重签名后才能安装。此迁移版本目前仅完成 GitHub macOS 编译验证，**没有经过实体 iPhone 或 iPad 实机测试**，不应直接视为可发布版本。
 
 ## 在线更新
 

@@ -1,0 +1,16 @@
+{
+  "schools": [
+    {
+      "id": "cupk",
+      "name": "中国石油大学（北京）克拉玛依校区",
+      "origin": "https://eams.cupk.edu.cn",
+      "definitionAsset": "schools/cupk.json"
+    },
+    {
+      "id": "cup-beijing",
+      "name": "中国石油大学（北京）",
+      "origin": "https://bk.cup.edu.cn",
+      "definitionAsset": "schools/cupk.json"
+    }
+  ]
+}

@@ -12,11 +12,13 @@ targets:
     sources:
       - Sources
       - Resources/Assets.xcassets
+    resources:
+      - Resources/schools
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cn.edu.cupk.portalreader.ios
         PRODUCT_NAME: PalmAcademic
-        MARKETING_VERSION: 0.3.5
+        MARKETING_VERSION: 0.3.6
         CURRENT_PROJECT_VERSION: 1
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1,2"
