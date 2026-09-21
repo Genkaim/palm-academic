@@ -52,6 +52,25 @@ class PortalPollWorkerTest {
     }
 
     @Test
+    fun monitorDefinition_resolvesConfiguredStudentAndSemesterPlaceholders() {
+        val monitor = PortalMonitorDefinition(
+            coursePagePath = "/course-table",
+            courseDataPathTemplate = "/course-data?semester={semesterId}&student={studentId}",
+            gradeDataPathTemplate = "/grade/{studentId}?semester={semesterId}",
+            examDataPathTemplate = "/exam/{studentId}",
+            semesterIdPatterns = listOf("semesterId=(\\d+)"),
+            studentIdPatterns = listOf("/course-table/info/(\\d+)")
+        )
+
+        assertEquals("483", monitor.extractSemesterId("semesterId=483"))
+        assertEquals("102030", monitor.extractStudentId("https://example.test/course-table/info/102030"))
+        assertEquals(
+            "https://example.test/student/course-data?semester=483&student=102030",
+            monitor.courseDataUrl("https://example.test/student", "483", "102030")
+        )
+    }
+
+    @Test
     fun parsedDataJson_exposesTableDataWithoutHtml() {
         val html = """
             <html><body><table class="student-grade-table">
@@ -76,6 +95,21 @@ class PortalPollWorkerTest {
         assertTrue(json.contains("高等数学"))
         assertTrue(json.contains("95"))
         assertTrue(json.contains("\"headers\": []"))
+    }
+
+    @Test
+    fun parsedDataJson_recognizesTdBasedGradeHeaderWithoutInventingAResult() {
+        val html = "<table><tr><td>课程名称</td><td>学分</td><td>成绩</td></tr></table>"
+        val json = PortalSnapshot.parsedDataJson(html, "grade")
+
+        assertTrue(json.contains("\"headers\": [\"课程名称\", \"学分\", \"成绩\"]"))
+        assertTrue(json.contains("\"rows\": [\n      ]"))
+    }
+
+    @Test
+    fun courseEntries_acceptsNonEmptyLessonIdList() {
+        assertTrue(PortalSnapshot.hasCourseEntries("{\"lessonIds\":[12345],\"lessons\":[]}"))
+        assertFalse(PortalSnapshot.hasCourseEntries("{\"lessonIds\":[],\"lessons\":[]}"))
     }
 
     @Test

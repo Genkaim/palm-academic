@@ -16,13 +16,18 @@
   },
   "monitor": {
     "coursePagePath": "/for-std/course-table",
-    "courseDataPathTemplate": "/for-std/course-table/get-data?bizTypeId=2&semesterId={semesterId}&searchTeachingSyllabus=true",
-    "gradePath": "/for-std/grade/sheet",
-    "examPath": "/for-std/exam-arrange",
+    "courseDataPathTemplate": "/for-std/course-table/get-data?bizTypeId=2&semesterId={semesterId}&dataId={studentId}&searchTeachingSyllabus=true",
+    "gradeDataPathTemplate": "/for-std/grade/sheet/info/{studentId}",
+    "examDataPathTemplate": "/for-std/exam-arrange/info/{studentId}",
     "semesterIdPatterns": [
       "currentSemester\\s*=.*?[\"']?id[\"']?\\s*:\\s*(\\d+)",
       "var\\s+semesterId\\s*=\\s*(\\d+)",
       "[\"']semesterId[\"']\\s*:\\s*[\"']?(\\d+)"
+    ],
+    "studentIdPatterns": [
+      "/for-std/course-table/info/(\\d+)",
+      "[\"']studentId[\"']\\s*:\\s*[\"']?(\\d+)",
+      "[\"']dataId[\"']\\s*:\\s*[\"']?(\\d+)"
     ]
   },
   "groups": [

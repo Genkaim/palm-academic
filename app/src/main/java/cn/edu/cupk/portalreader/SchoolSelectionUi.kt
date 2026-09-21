@@ -5,9 +5,15 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,7 +29,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -34,7 +39,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -117,23 +121,6 @@ private fun SchoolSelectionContent(
     val scope = rememberCoroutineScope()
     var schools by remember { mutableStateOf(SchoolAdapterRepository.options(context)) }
     var refreshing by remember { mutableStateOf(false) }
-    var importing by remember { mutableStateOf(false) }
-    val importRule = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            importing = true
-            scope.launch {
-                val message = SchoolAdapterRepository.importLocalRule(context, uri).fold(
-                    onSuccess = { result ->
-                        schools = SchoolAdapterRepository.options(context)
-                        "已导入 ${result.schoolName}"
-                    },
-                    onFailure = { "导入失败，请检查规则" }
-                )
-                importing = false
-                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
     val groupedSchools = remember(schools) {
         schools.sortedWith { left, right ->
             schoolNameCollator.compare(left.name, right.name).takeIf { it != 0 }
@@ -159,7 +146,9 @@ private fun SchoolSelectionContent(
                         enabled = !refreshing,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                            disabledContainerColor = MaterialTheme.colorScheme.primary,
+                            disabledContentColor = MaterialTheme.colorScheme.onPrimary
                         ),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                         onClick = {
@@ -178,17 +167,37 @@ private fun SchoolSelectionContent(
                             }
                         }
                     ) {
-                        if (refreshing) {
-                            CircularProgressIndicator(
-                                Modifier.size(18.dp),
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(Icons.Outlined.Refresh, contentDescription = null, Modifier.size(18.dp))
+                        AnimatedContent(
+                            targetState = refreshing,
+                            transitionSpec = {
+                                (fadeIn(tween(180, easing = FastOutSlowInEasing)) +
+                                    scaleIn(tween(180, easing = FastOutSlowInEasing), initialScale = 0.9f))
+                                    .togetherWith(
+                                        fadeOut(tween(120)) +
+                                            scaleOut(tween(120), targetScale = 0.9f)
+                                    )
+                            },
+                            contentAlignment = Alignment.Center,
+                            label = "schoolRefreshButtonState"
+                        ) { isRefreshing ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isRefreshing) {
+                                    CircularProgressIndicator(
+                                        Modifier.size(18.dp),
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Outlined.Refresh,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Spacer(Modifier.size(6.dp))
+                                Text(if (isRefreshing) "刷新中" else "刷新")
+                            }
                         }
-                        Spacer(Modifier.size(6.dp))
-                        Text(if (refreshing) "刷新中" else "刷新")
                     }
                 }
             )
@@ -232,7 +241,7 @@ private fun SchoolSelectionContent(
                                     } else FontWeight.Normal
                                 )
                                 Text(
-                                    if (school.imported) "本地导入 · ${school.id}" else school.id,
+                                    school.id,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -267,23 +276,6 @@ private fun SchoolSelectionContent(
                             }
                         }
                     )
-                }
-            }
-            item {
-                OutlinedButton(
-                    onClick = {
-                        importRule.launch(arrayOf("application/json", "text/json", "text/plain"))
-                    },
-                    enabled = !importing,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    if (importing) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Outlined.FileOpen, contentDescription = null)
-                    }
-                    Spacer(Modifier.size(8.dp))
-                    Text(if (importing) "正在导入" else "导入本地规则")
                 }
             }
         }

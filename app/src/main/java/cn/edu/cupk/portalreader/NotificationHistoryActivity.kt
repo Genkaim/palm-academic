@@ -1,6 +1,9 @@
 package cn.edu.cupk.portalreader
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,6 +22,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.Card
@@ -123,6 +127,7 @@ private fun HistoryEntryCard(
     expanded: Boolean,
     onToggle: () -> Unit
 ) {
+    val context = LocalContext.current
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
         shape = RoundedCornerShape(18.dp),
@@ -173,6 +178,20 @@ private fun HistoryEntryCard(
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.primary
                                     )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                                        clipboard?.setPrimaryClip(
+                                            ClipData.newPlainText(
+                                                "${detail.category}检查日志",
+                                                historyDetailCopyText(detail)
+                                            )
+                                        )
+                                        Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Icon(Icons.Outlined.ContentCopy, "复制${detail.category}全部内容")
                                 }
                             }
                             DetailLine("结果", detail.summary)
@@ -257,3 +276,36 @@ private val historyTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm
 private fun formatHistoryTime(timestamp: Long): String = Instant.ofEpochMilli(timestamp)
     .atZone(ZoneId.systemDefault())
     .format(historyTimeFormatter)
+
+internal fun historyDetailCopyText(detail: PortalPollHistoryDetail): String = buildString {
+    appendLine("项目：${detail.category}")
+    appendLine("结果：${detail.summary}")
+    appendLine("检测到变化：${if (detail.changed) "是" else "否"}")
+    detail.notificationEnabled?.let {
+        appendLine("该项提醒：${if (it) "已开启" else "未开启"}")
+    }
+    appendLine("通知触发：${if (detail.notificationTriggered) "已成功发出" else "未发出"}")
+    val previous = PortalSnapshot.historyDisplayContent(detail.previousContent)
+    val current = PortalSnapshot.historyDisplayContent(detail.currentContent)
+    if (previous.isNotBlank() || current.isNotBlank()) {
+        appendLine()
+        appendLine("之前 JSON：")
+        appendLine(previous.ifBlank { "（无历史基线）" })
+        appendLine()
+        appendLine("现在 JSON：")
+        appendLine(current.ifBlank { "（空响应）" })
+    }
+    detail.responseCode?.let { appendLine("HTTP 状态：$it") }
+    if (detail.requestUrl.isNotBlank()) appendLine("请求地址：${detail.requestUrl}")
+    if (detail.finalUrl.isNotBlank()) appendLine("最终地址：${detail.finalUrl}")
+    if (detail.technicalDetails.isNotBlank()) {
+        appendLine()
+        appendLine("技术详情：")
+        appendLine(detail.technicalDetails)
+    }
+    if (detail.difference.isNotBlank()) {
+        appendLine()
+        appendLine("差异记录：")
+        append(detail.difference)
+    }
+}.trimEnd()

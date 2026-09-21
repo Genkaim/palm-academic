@@ -105,13 +105,27 @@ function validateDefinition(assetPath) {
   requireValue(Array.isArray(definition.groups), assetPath, "groups 必须是数组");
   const monitor = definition.monitor;
   if (requireValue(monitor && typeof monitor === "object", assetPath, "monitor 不能为空")) {
-    for (const key of ["coursePagePath", "courseDataPathTemplate", "gradePath", "examPath"]) {
+    for (const key of [
+      "coursePagePath",
+      "courseDataPathTemplate",
+      "gradeDataPathTemplate",
+      "examDataPathTemplate"
+    ]) {
       requireValue(typeof monitor[key] === "string" &&
         (monitor[key].startsWith("/") || isHttpsUrl(monitor[key])), assetPath,
       `monitor.${key} 必须是站内绝对路径或 HTTPS 地址`);
     }
     requireValue(monitor.courseDataPathTemplate?.includes("{semesterId}"), assetPath,
       "monitor.courseDataPathTemplate 必须包含 {semesterId}");
+    requireValue(Array.isArray(monitor.studentIdPatterns) && monitor.studentIdPatterns.length > 0,
+      assetPath, "monitor.studentIdPatterns 必须是非空数组");
+    if (Array.isArray(monitor.studentIdPatterns)) {
+      monitor.studentIdPatterns.forEach((pattern, index) => {
+        try { new RegExp(pattern); } catch (error) {
+          reportError(`${assetPath}.studentIdPatterns[${index}]`, `正则无效：${error.message}`);
+        }
+      });
+    }
     if (monitor.semesterIdPatterns !== undefined) {
       if (requireValue(Array.isArray(monitor.semesterIdPatterns) &&
         monitor.semesterIdPatterns.length > 0, assetPath, "semesterIdPatterns 不能为空")) {

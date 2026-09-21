@@ -1,5 +1,8 @@
 package cn.edu.cupk.portalreader
 
+import org.json.JSONArray
+import org.json.JSONObject
+import org.json.JSONTokener
 import java.security.MessageDigest
 
 object PortalSnapshot {
@@ -26,6 +29,10 @@ object PortalSnapshot {
         return normalized.contains("courseName", ignoreCase = true) ||
             normalized.contains("lessonName", ignoreCase = true) ||
             normalized.contains("courseId", ignoreCase = true) ||
+            Regex("\"lessonIds\"\\s*:\\s*\\[\\s*\\d", RegexOption.IGNORE_CASE)
+                .containsMatchIn(normalized) ||
+            Regex("\"lessons\"\\s*:\\s*\\[\\s*\\{", RegexOption.IGNORE_CASE)
+                .containsMatchIn(normalized) ||
             parseTables(value).any { it.rows.isNotEmpty() }
     }
 
@@ -65,13 +72,61 @@ object PortalSnapshot {
             }
             .toList()
         if (parsedRows.isEmpty()) null else {
-            val firstIsHeader = parsedRows.first().second
+            val firstIsHeader = parsedRows.first().second || looksLikeHeaderRow(parsedRows.first().first)
             ParsedTable(
                 headers = if (firstIsHeader) parsedRows.first().first else emptyList(),
                 rows = parsedRows.drop(if (firstIsHeader) 1 else 0).map { it.first }
             )
         }
     }.toList()
+
+    private fun looksLikeHeaderRow(cells: List<String>): Boolean {
+        if (cells.isEmpty()) return false
+        val headerTerms = setOf(
+            "课程", "课程名称", "课程代码", "学期", "学分", "绩点", "成绩", "成绩明细",
+            "分项成绩明细", "总成绩明细", "考试时间", "考试地点", "地点", "座位号",
+            "教师", "老师", "课程性质", "课程类别"
+        )
+        val matches = cells.count { cell ->
+            val normalized = cell.replace(Regex("[：:\\s]+"), "").trim()
+            normalized in headerTerms || headerTerms.any { normalized == it }
+        }
+        return matches >= minOf(2, cells.size)
+    }
+
+    /**
+     * Produces a compact, human-comparable course snapshot. School-specific endpoints remain in
+     * the definition file; this generic filter keeps every non-empty course/lesson/schedule field.
+     */
+    fun courseDataJson(payload: String, semesterId: String): String {
+        val normalized = payload.trim()
+        val root = runCatching { JSONTokener(normalized).nextValue() }.getOrNull()
+        if (root !is JSONObject) return parsedDataJson(payload, "course")
+
+        val result = JSONObject()
+            .put("type", "course")
+            .put("semesterId", semesterId)
+        root.keys().asSequence().toList().sorted().forEach { key ->
+            val lower = key.lowercase()
+            val value = root.opt(key)
+            if (
+                ("course" in lower || "lesson" in lower || "schedule" in lower) &&
+                hasMeaningfulJsonValue(value)
+            ) {
+                result.put(key, value)
+            }
+        }
+        if (result.length() == 2) result.put("dataStatus", "未识别到课程数据")
+        return result.toString(2)
+    }
+
+    private fun hasMeaningfulJsonValue(value: Any?): Boolean = when (value) {
+        null, JSONObject.NULL -> false
+        is String -> value.isNotBlank()
+        is JSONArray -> value.length() > 0
+        is JSONObject -> value.length() > 0
+        else -> true
+    }
 
     fun parsedDataJson(html: String, type: String, tableClass: String? = null): String {
         val normalized = html.trim()

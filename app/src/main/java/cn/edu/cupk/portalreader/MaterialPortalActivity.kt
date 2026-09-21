@@ -68,6 +68,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -245,6 +246,12 @@ private fun MaterialPortalContent(
         loading = true
         readerAction = MaterialReaderAction(id, value, actionToken)
     }
+    val refreshPage: () -> Unit = {
+        error = null
+        loading = true
+        readerAction = null
+        refreshToken++
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -260,12 +267,7 @@ private fun MaterialPortalContent(
                             onExport = { format -> onExport(current, format) }
                         )
                     }
-                    IconButton(onClick = {
-                        error = null
-                        loading = true
-                        readerAction = null
-                        refreshToken++
-                    }) {
+                    IconButton(onClick = refreshPage) {
                         Icon(Icons.Outlined.Refresh, "刷新")
                     }
                 }
@@ -377,7 +379,7 @@ private fun MaterialPortalContent(
                         }
                         MaterialContentStage.FETCHING -> LoadingPane("获取数据…", Modifier.align(Alignment.Center))
                         MaterialContentStage.CONTENT -> page?.let {
-                            MaterialPageList(it, onOpenLink, performAction, loading)
+                            MaterialPageList(it, onOpenLink, performAction, loading, refreshPage)
                         }
                         MaterialContentStage.ERROR -> ErrorCard(error.orEmpty(), Modifier.align(Alignment.Center))
                         MaterialContentStage.SESSION_EXPIRED -> LoadingPane("登录状态已失效", Modifier.align(Alignment.Center))
@@ -388,66 +390,73 @@ private fun MaterialPortalContent(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MaterialPageList(
     page: MaterialPage,
     onOpenLink: (String, String) -> Unit,
     onAction: (String, String) -> Unit,
-    loading: Boolean
+    loading: Boolean,
+    onRefresh: () -> Unit
 ) {
     val schedule = page.sections.filterIsInstance<MaterialSection.Schedule>().firstOrNull()
     var selectedScheduleDay by remember(page.sourceUrl, schedule?.title) {
         mutableStateOf<String?>(null)
     }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().animateContentSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    PullToRefreshBox(
+        isRefreshing = loading,
+        onRefresh = onRefresh,
+        modifier = Modifier.fillMaxSize()
     ) {
-        if (page.choices.isNotEmpty() || page.actions.isNotEmpty() || schedule != null) {
-            item(key = "page-controls") {
-                Box(
-                    Modifier.animateItem(
-                        fadeInSpec = tween(220, easing = FastOutSlowInEasing),
-                        placementSpec = tween(300, easing = FastOutSlowInEasing),
-                        fadeOutSpec = tween(120)
-                    )
-                ) {
-                    PageControls(
-                        page = page,
-                        scheduleDays = schedule?.days.orEmpty(),
-                        selectedScheduleDay = selectedScheduleDay,
-                        onScheduleDaySelected = { selectedScheduleDay = it },
-                        onAction = onAction
-                    )
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().animateContentSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            if (page.choices.isNotEmpty() || page.actions.isNotEmpty() || schedule != null) {
+                item(key = "page-controls") {
+                    Box(
+                        Modifier.animateItem(
+                            fadeInSpec = tween(220, easing = FastOutSlowInEasing),
+                            placementSpec = tween(300, easing = FastOutSlowInEasing),
+                            fadeOutSpec = tween(120)
+                        )
+                    ) {
+                        PageControls(
+                            page = page,
+                            scheduleDays = schedule?.days.orEmpty(),
+                            selectedScheduleDay = selectedScheduleDay,
+                            onScheduleDaySelected = { selectedScheduleDay = it },
+                            onAction = onAction
+                        )
+                    }
                 }
             }
-        }
-        if (loading && page.sections.isNotEmpty()) {
-            item(key = "page-refreshing") {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth().animateItem(
-                        fadeInSpec = tween(160, easing = FastOutSlowInEasing),
-                        placementSpec = tween(220, easing = FastOutSlowInEasing),
-                        fadeOutSpec = tween(100)
+            if (loading && page.sections.isNotEmpty()) {
+                item(key = "page-refreshing") {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().animateItem(
+                            fadeInSpec = tween(160, easing = FastOutSlowInEasing),
+                            placementSpec = tween(220, easing = FastOutSlowInEasing),
+                            fadeOutSpec = tween(100)
+                        )
                     )
-                )
+                }
+            } else if (loading) {
+                item(key = "page-loading") {
+                    Box(
+                        Modifier.fillMaxWidth().padding(vertical = 48.dp).animateItem(
+                            fadeInSpec = tween(160, easing = FastOutSlowInEasing),
+                            placementSpec = tween(280, easing = FastOutSlowInEasing),
+                            fadeOutSpec = tween(100)
+                        ),
+                        contentAlignment = Alignment.Center
+                    ) { LoadingPane("获取数据…") }
+                }
+            } else if (page.sections.isEmpty()) {
+                item { ErrorCard("页面已加载，但当前适配器没有识别出可展示的内容。") }
             }
-        } else if (loading) {
-            item(key = "page-loading") {
-                Box(
-                    Modifier.fillMaxWidth().padding(vertical = 48.dp).animateItem(
-                        fadeInSpec = tween(160, easing = FastOutSlowInEasing),
-                        placementSpec = tween(280, easing = FastOutSlowInEasing),
-                        fadeOutSpec = tween(100)
-                    ),
-                    contentAlignment = Alignment.Center
-                ) { LoadingPane("获取数据…") }
-            }
-        } else if (page.sections.isEmpty()) {
-            item { ErrorCard("页面已加载，但当前适配器没有识别出可展示的内容。") }
-        }
-        page.sections.forEach { section ->
+            page.sections.forEach { section ->
                 item(key = section.hashCode()) {
                     Box(
                         Modifier.animateItem(
@@ -469,6 +478,7 @@ private fun MaterialPageList(
                     }
                 }
             }
+        }
     }
 }
 
@@ -547,9 +557,9 @@ private fun PageControls(
                     }
                 }
             }
+            }
         }
     }
-}
 
 @Composable
 private fun ExportMenu(

@@ -1,14 +1,14 @@
 # 掌上教务（PalmAcademic）
 
-一个基于 Jetpack Compose + Material 3 的 Android 教务客户端。项目通过“学校配置 + JavaScript 阅读适配器”隔离不同学校的域名、菜单、页面 DOM 与作息时间，不需要为每所学校复制 Android UI。仓库同时包含一个实验性的 iOS WKWebView 客户端。
+一个基于 Jetpack Compose + Material 3 的 Android 教务客户端。项目通过“学校配置 + JavaScript 阅读适配器”隔离不同学校的域名、菜单、页面 DOM、后台检查接口与作息时间，不需要为每所学校复制 Android UI。Android 是当前维护和发布的正式客户端；仓库中的 iOS 工程仅为实验原型。
 
 ## 功能
 
 - 历史会话可用时直接进入首页，并在后台验证登录状态。
 - 支持账号密码登录和应用内网页登录。
-- 课表、成绩、考试、培养方案等页面可转换为原生 Material 界面；其他入口直接显示学校官网页面。
+- 课表、成绩、考试、培养方案等页面可转换为原生 Material 界面，支持保留上次数据、进入后刷新和下拉刷新；其他入口直接显示学校官网页面。
 - 课表可导出 iCalendar、WakeUp CSV 和 JSON。
-- WorkManager 后台检测课表、成绩与考试变化，并可选择启用常驻通知保活。
+- WorkManager 后台检测课表、成绩与考试变化，日志保存解析后的前后 JSON、通知状态和诊断信息，并支持逐项复制。
 - 学校选择为独立页面，可从本仓库动态刷新学校配置和阅读适配器。
 - 在设置中通过 GitHub Releases 检查新版本并下载 APK。
 - 支持浅色、深色和跟随系统主题。
@@ -19,7 +19,7 @@
 
 1. 在 `app/src/main/assets/schools/index.json` 注册学校、域名和作息时间。
 2. 新增 `schools/<school>.json`，声明菜单入口及哪些页面使用原生重绘。
-3. 新增或复用 `adapters/<school>-reader.js`，通过 `PalmAcademicHost.publish()` 发布结构化页面。
+3. 新增该校独立的 `adapters/<school>-reader.js`，在同一脚本中提供四个快捷入口，通过 `PalmAcademicHost.publish()` 发布结构化页面；不得依赖其他学校脚本。
 4. 务必配置 `readerConfig.scheduleProfiles[].unitTimes`；缺少时间会导致课表看似正常，但导出的日历/WakeUp 文件没有正确的上课时间。
 5. 在学校定义中提供适配作者名称和可联系邮箱；邮箱会公开显示在 GitHub，可使用 GitHub `noreply` 邮箱。
 
@@ -27,10 +27,7 @@
 
 提交前可运行 `node tools/validate-adapters.mjs`；仓库会在 Pull Request 中自动重复检查配置结构、作者邮箱、作息时间和 JavaScript 语法。
 
-App 的学校页面会从以下仓库目录检查更新：
-
-- `app/src/main/assets/schools/`
-- `app/src/main/assets/adapters/`
+App 刷新学校规则时先读取 `app/src/main/assets/schools/index.json`，再下载其中每个 `definitionAsset` 指向的学校定义，最后下载学校定义中 `readerAdapter` 指向的独立脚本。不会递归扫描整个 `schools/` 或 `adapters/` 目录。
 
 远程文件会经过 HTTPS、路径、大小、JSON schema 和适配器引用校验，并保存到 App 私有目录；更新失败时继续使用 APK 内置版本。
 

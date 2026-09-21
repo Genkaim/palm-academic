@@ -1,35 +1,27 @@
 package cn.edu.cupk.portalreader
 
 import android.content.Context
-import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.InputStream
 
-data class SchoolOption(val id: String, val name: String, val imported: Boolean = false)
+data class SchoolOption(val id: String, val name: String)
 data class SchoolRefreshResult(val schoolCount: Int, val downloadedFileCount: Int)
-data class SchoolImportResult(val schoolId: String, val schoolName: String)
 
 private data class SchoolProfile(
     val id: String,
     val name: String,
     val origin: String,
     val definitionAsset: String,
-    val readerConfig: JSONObject,
-    val imported: Boolean = false
+    val readerConfig: JSONObject
 )
 
 private data class SchoolIndex(
     val builtIn: List<SchoolProfile>,
-    val imported: List<SchoolProfile>,
     val configVersion: Int
-) {
-    val all: List<SchoolProfile> get() = builtIn + imported
-}
+)
 
 object PortalConfig {
     val ORIGIN: String
@@ -58,21 +50,43 @@ data class PortalGroup(val title: String, val items: List<PortalItem>)
 data class PortalMonitorDefinition(
     val coursePagePath: String,
     val courseDataPathTemplate: String,
-    val gradePath: String,
-    val examPath: String,
-    val semesterIdPatterns: List<String>
+    val gradeDataPathTemplate: String,
+    val examDataPathTemplate: String,
+    val semesterIdPatterns: List<String>,
+    val studentIdPatterns: List<String>
 ) {
     fun url(baseUrl: String, path: String): String =
         if (path.startsWith("https://")) path else baseUrl.trimEnd('/') + "/" + path.trimStart('/')
 
     fun coursePageUrl(baseUrl: String): String = url(baseUrl, coursePagePath)
 
-    fun courseDataUrl(baseUrl: String, semesterId: String): String =
-        url(baseUrl, courseDataPathTemplate.replace("{semesterId}", semesterId))
+    fun courseDataUrl(baseUrl: String, semesterId: String, studentId: String): String =
+        dataUrl(baseUrl, courseDataPathTemplate, semesterId, studentId)
+
+    fun gradeDataUrl(baseUrl: String, semesterId: String, studentId: String): String =
+        dataUrl(baseUrl, gradeDataPathTemplate, semesterId, studentId)
+
+    fun examDataUrl(baseUrl: String, semesterId: String, studentId: String): String =
+        dataUrl(baseUrl, examDataPathTemplate, semesterId, studentId)
+
+    private fun dataUrl(
+        baseUrl: String,
+        template: String,
+        semesterId: String,
+        studentId: String
+    ): String = url(
+        baseUrl,
+        template.replace("{semesterId}", semesterId).replace("{studentId}", studentId)
+    )
 
     fun extractSemesterId(page: String): String? = semesterIdPatterns.firstNotNullOfOrNull { pattern ->
         runCatching { Regex(pattern, RegexOption.DOT_MATCHES_ALL) }.getOrNull()
             ?.find(page)?.groupValues?.getOrNull(1)
+    }
+
+    fun extractStudentId(pageAndUrl: String): String? = studentIdPatterns.firstNotNullOfOrNull { pattern ->
+        runCatching { Regex(pattern, RegexOption.DOT_MATCHES_ALL) }.getOrNull()
+            ?.find(pageAndUrl)?.groupValues?.getOrNull(1)
     }
 }
 
@@ -96,7 +110,6 @@ object SchoolAdapterRepository {
     private const val INDEX_ASSET = "schools/index.json"
     private const val REMOTE_REPOSITORY_ROOT = "app/src/main/assets"
     private const val REMOTE_CACHE_DIRECTORY = "remote-school-adapters"
-    private const val MAX_LOCAL_RULE_BYTES = 2 * 1024 * 1024
     private const val DEFAULT_SCHOOL_ID = "cupk"
     private const val DEFAULT_ORIGIN = "https://eams.cupk.edu.cn"
     private val EMAIL_PATTERN = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")
@@ -115,7 +128,7 @@ object SchoolAdapterRepository {
 
     fun options(context: Context): List<SchoolOption> {
         ensureInitialized(context)
-        return profiles.map { SchoolOption(it.id, it.name, it.imported) }
+        return profiles.map { SchoolOption(it.id, it.name) }
     }
 
     fun activeSchoolId(): String = selectedSchoolId
@@ -186,10 +199,13 @@ object SchoolAdapterRepository {
                 courseDataPathTemplate = monitorJson.optString("courseDataPathTemplate")
                     .ifBlank {
                         "/for-std/course-table/get-data" +
-                            "?bizTypeId=2&semesterId={semesterId}&searchTeachingSyllabus=true"
+                            "?bizTypeId=2&semesterId={semesterId}&dataId={studentId}" +
+                            "&searchTeachingSyllabus=true"
                     },
-                gradePath = monitorJson.optString("gradePath", "/for-std/grade/sheet"),
-                examPath = monitorJson.optString("examPath", "/for-std/exam-arrange"),
+                gradeDataPathTemplate = monitorJson.optString("gradeDataPathTemplate")
+                    .ifBlank { monitorJson.optString("gradePath", "/for-std/grade/sheet") },
+                examDataPathTemplate = monitorJson.optString("examDataPathTemplate")
+                    .ifBlank { monitorJson.optString("examPath", "/for-std/exam-arrange") },
                 semesterIdPatterns = monitorJson.optJSONArray("semesterIdPatterns")?.let { patterns ->
                     (0 until patterns.length()).map(patterns::getString)
                 }.orEmpty().ifEmpty {
@@ -197,6 +213,15 @@ object SchoolAdapterRepository {
                         "currentSemester\\s*=.*?[\"']?id[\"']?\\s*:\\s*(\\d+)",
                         "var\\s+semesterId\\s*=\\s*(\\d+)",
                         "[\"']semesterId[\"']\\s*:\\s*[\"']?(\\d+)"
+                    )
+                },
+                studentIdPatterns = monitorJson.optJSONArray("studentIdPatterns")?.let { patterns ->
+                    (0 until patterns.length()).map(patterns::getString)
+                }.orEmpty().ifEmpty {
+                    listOf(
+                        "/for-std/course-table/info/(\\d+)",
+                        "[\"']studentId[\"']\\s*:\\s*[\"']?(\\d+)",
+                        "[\"']dataId[\"']\\s*:\\s*[\"']?(\\d+)"
                     )
                 }
             )
@@ -213,9 +238,6 @@ object SchoolAdapterRepository {
                 val indexText = PalmAcademicGitHub.repositoryFile("$REMOTE_REPOSITORY_ROOT/$INDEX_ASSET")
                 val remoteIndex = parseIndex(indexText)
                 require(remoteIndex.builtIn.isNotEmpty()) { "远程内置学校列表为空" }
-                // 本地导入规则只从 App 私有索引读取。远程 index 中即使出现 imported，
-                // 也不能覆盖用户已经导入的规则。
-                val localImported = currentIndex(appContext).imported
 
                 val downloaded = linkedMapOf<String, String>()
                 remoteIndex.builtIn.map { it.definitionAsset }.distinct().forEach { definitionPath ->
@@ -236,11 +258,11 @@ object SchoolAdapterRepository {
 
                 val cacheRoot = File(appContext.filesDir, REMOTE_CACHE_DIRECTORY)
                 downloaded.forEach { (path, content) -> writeRemoteFile(cacheRoot, path, content) }
-                // Commit the merged index last. Online/App 更新只替换 builtIn，imported 原样保留。
+                // Commit the validated index last so a partial download never becomes active.
                 writeRemoteFile(
                     cacheRoot,
                     INDEX_ASSET,
-                    indexJson(SchoolIndex(remoteIndex.builtIn, localImported, remoteIndex.configVersion))
+                    indexJson(remoteIndex)
                 )
 
                 profiles = readProfiles(appContext)
@@ -254,51 +276,6 @@ object SchoolAdapterRepository {
             }
         }
 
-    suspend fun importLocalRule(context: Context, uri: Uri): Result<SchoolImportResult> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val appContext = context.applicationContext
-                val text = appContext.contentResolver.openInputStream(uri)?.use { input ->
-                    readLimitedText(input)
-                } ?: error("无法读取规则文件")
-                val packageRoot = JSONObject(text)
-                require(packageRoot.optInt("schemaVersion", 0) == 1) { "不支持的本地规则版本" }
-                val profileJson = packageRoot.getJSONObject("profile")
-                val definition = packageRoot.getJSONObject("definition")
-                val adapterScript = packageRoot.getString("adapterScript")
-                require(adapterScript.isNotBlank()) { "适配脚本为空" }
-
-                val schoolId = profileJson.getString("id")
-                require(schoolId.matches(Regex("[a-z0-9-]+"))) { "学校 id 格式无效" }
-                val existing = currentIndex(appContext)
-                require(existing.builtIn.none { it.id == schoolId }) { "不能覆盖内置学校规则" }
-
-                val definitionPath = "schools/imported/$schoolId.json"
-                val adapterPath = "adapters/imported/$schoolId-reader.js"
-                definition.put("readerAdapter", adapterPath)
-                validateDefinition(definition)
-                validateFourQuickEntries(definition)
-
-                val profile = parseProfile(
-                    JSONObject(profileJson.toString()).put("definitionAsset", definitionPath),
-                    imported = true
-                )
-                val imported = (existing.imported.filterNot { it.id == schoolId } + profile)
-                    .sortedBy { it.id }
-                val cacheRoot = File(appContext.filesDir, REMOTE_CACHE_DIRECTORY)
-                writeRemoteFile(cacheRoot, definitionPath, definition.toString(2))
-                writeRemoteFile(cacheRoot, adapterPath, adapterScript)
-                writeRemoteFile(
-                    cacheRoot,
-                    INDEX_ASSET,
-                    indexJson(SchoolIndex(existing.builtIn, imported, existing.configVersion))
-                )
-
-                profiles = readProfiles(appContext)
-                SchoolImportResult(profile.id, profile.name)
-            }
-        }
-
     private fun ensureInitialized(context: Context) {
         if (profiles.isEmpty()) initialize(context.applicationContext)
     }
@@ -309,7 +286,7 @@ object SchoolAdapterRepository {
             ?: error("学校配置为空")
 
     private fun readProfiles(context: Context): List<SchoolProfile> {
-        return currentIndex(context).all
+        return currentIndex(context).builtIn
     }
 
     private fun currentIndex(context: Context): SchoolIndex {
@@ -322,7 +299,7 @@ object SchoolAdapterRepository {
             if (JSONObject(cachedText).optInt("schemaVersion") == 2) {
                 val cachedIndex = parseIndex(cachedText)
                 return if (bundled.configVersion > cachedIndex.configVersion) {
-                    SchoolIndex(bundled.builtIn, cachedIndex.imported, bundled.configVersion)
+                    bundled
                 } else {
                     cachedIndex
                 }
@@ -331,46 +308,30 @@ object SchoolAdapterRepository {
         return bundled
     }
 
-    private fun readLimitedText(input: InputStream): String {
-        val output = ByteArrayOutputStream()
-        val buffer = ByteArray(8 * 1024)
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            require(output.size() + count <= MAX_LOCAL_RULE_BYTES) { "规则文件不能超过 2 MB" }
-            output.write(buffer, 0, count)
-        }
-        return output.toString(Charsets.UTF_8.name())
-    }
-
     private fun parseIndex(text: String): SchoolIndex {
         val root = JSONObject(text)
         val version = root.optInt("schemaVersion", 0)
         val builtInArray: JSONArray
-        val importedArray: JSONArray
         when (version) {
             1 -> {
                 builtInArray = root.optJSONArray("schools") ?: JSONArray()
-                importedArray = JSONArray()
             }
             2 -> {
                 builtInArray = root.optJSONArray("builtIn") ?: JSONArray()
-                importedArray = root.optJSONArray("imported") ?: JSONArray()
             }
             else -> error("不支持的学校配置版本")
         }
-        val builtIn = parseProfileArray(builtInArray, imported = false)
-        val imported = parseProfileArray(importedArray, imported = true)
-        require((builtIn + imported).map { it.id }.distinct().size == builtIn.size + imported.size) {
-            "内置与导入学校 id 重复"
+        val builtIn = parseProfileArray(builtInArray)
+        require(builtIn.map { it.id }.distinct().size == builtIn.size) {
+            "内置学校 id 重复"
         }
-        return SchoolIndex(builtIn, imported, root.optInt("configVersion", 1))
+        return SchoolIndex(builtIn, root.optInt("configVersion", 1))
     }
 
-    private fun parseProfileArray(array: JSONArray, imported: Boolean): List<SchoolProfile> =
-        (0 until array.length()).map { parseProfile(array.getJSONObject(it), imported) }
+    private fun parseProfileArray(array: JSONArray): List<SchoolProfile> =
+        (0 until array.length()).map { parseProfile(array.getJSONObject(it)) }
 
-    private fun parseProfile(item: JSONObject, imported: Boolean): SchoolProfile {
+    private fun parseProfile(item: JSONObject): SchoolProfile {
         val id = item.getString("id")
         val origin = item.getString("origin").trimEnd('/')
         val definitionAsset = item.getString("definitionAsset")
@@ -378,16 +339,12 @@ object SchoolAdapterRepository {
         require(item.getString("name").isNotBlank()) { "学校名称为空" }
         require(origin.startsWith("https://")) { "学校地址必须使用 HTTPS" }
         requireSafeAssetPath(definitionAsset, "schools/", ".json")
-        if (imported) require(definitionAsset.startsWith("schools/imported/")) {
-            "导入学校定义必须位于 schools/imported/"
-        }
         return SchoolProfile(
             id = id,
             name = item.getString("name"),
             origin = origin,
             definitionAsset = definitionAsset,
-            readerConfig = item.optJSONObject("readerConfig") ?: JSONObject(),
-            imported = imported
+            readerConfig = item.optJSONObject("readerConfig") ?: JSONObject()
         )
     }
 
@@ -395,7 +352,7 @@ object SchoolAdapterRepository {
         put("schemaVersion", 2)
         put("configVersion", index.configVersion)
         put("builtIn", JSONArray().apply { index.builtIn.forEach { put(it.toJson()) } })
-        put("imported", JSONArray().apply { index.imported.forEach { put(it.toJson()) } })
+        put("imported", JSONArray())
     }.toString(2)
 
     private fun SchoolProfile.toJson(): JSONObject = JSONObject().apply {
@@ -432,16 +389,23 @@ object SchoolAdapterRepository {
         require(EMAIL_PATTERN.matches(author.optString("email"))) { "学校定义中的作者邮箱无效" }
         requireSafeAssetPath(root.getString("readerAdapter"), "adapters/", ".js")
         val monitor = root.optJSONObject("monitor") ?: error("学校定义缺少 monitor")
-        listOf("coursePagePath", "courseDataPathTemplate", "gradePath", "examPath").forEach { key ->
+        listOf(
+            "coursePagePath",
+            "courseDataPathTemplate",
+            "gradeDataPathTemplate",
+            "examDataPathTemplate"
+        ).forEach { key ->
             val path = monitor.optString(key)
             require(path.startsWith("/") || path.startsWith("https://")) { "monitor.$key 路径无效" }
         }
         require("{semesterId}" in monitor.getString("courseDataPathTemplate")) {
             "monitor.courseDataPathTemplate 缺少 {semesterId}"
         }
-        monitor.optJSONArray("semesterIdPatterns")?.let { patterns ->
-            require(patterns.length() > 0) { "semesterIdPatterns 不能为空" }
-            for (index in 0 until patterns.length()) Regex(patterns.getString(index))
+        listOf("semesterIdPatterns", "studentIdPatterns").forEach { key ->
+            monitor.optJSONArray(key)?.let { patterns ->
+                require(patterns.length() > 0) { "$key 不能为空" }
+                for (index in 0 until patterns.length()) Regex(patterns.getString(index))
+            }
         }
         validateFourQuickEntries(root)
     }
