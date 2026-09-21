@@ -30,19 +30,6 @@ jobs:
           fi
           xcodegen version
 
-      - name: Set up Java for Android build
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Build Android APK
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :app:assembleRelease
-          mkdir -p build
-          cp app/build/outputs/apk/release/app-release.apk build/PalmAcademic-v0.3.6.apk
-
       - name: Generate Xcode project
         working-directory: iosApp
         run: xcodegen generate
@@ -99,7 +86,6 @@ jobs:
         with:
           name: PalmAcademic-v0.3.6-ios-native-unsigned
           path: |
-            build/PalmAcademic-v0.3.6.apk
             build/PalmAcademic-v0.3.6-ios-native-unsigned.ipa
             build/ios-native-ipa/NO-PHYSICAL-DEVICE-TEST.txt
             build/ios-native-xcodebuild.log
@@ -128,7 +114,6 @@ jobs:
           if gh release view "$release_tag" >/dev/null 2>&1; then
             gh release upload "$release_tag" \
               --clobber \
-              build/PalmAcademic-v0.3.6.apk \
               build/PalmAcademic-v0.3.6-ios-native-unsigned.ipa \
               build/ios-native-ipa/NO-PHYSICAL-DEVICE-TEST.txt
             gh release edit "$release_tag" \
@@ -140,7 +125,6 @@ jobs:
               --prerelease \
               --title "PalmAcademic v0.3.6 双端预发布" \
               --notes-file build/PalmAcademic-v0.3.6-release-notes.md \
-              build/PalmAcademic-v0.3.6.apk \
               build/PalmAcademic-v0.3.6-ios-native-unsigned.ipa \
               build/ios-native-ipa/NO-PHYSICAL-DEVICE-TEST.txt
           fi

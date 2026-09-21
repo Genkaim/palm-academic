@@ -1,0 +1,68 @@
+name: Build Android v0.3.6 release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ios-native-rewrite
+    tags:
+      - 'v0.3.6'
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Android release APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          mkdir -p build
+          cp app/build/outputs/apk/release/app-release.apk build/PalmAcademic-v0.3.6.apk
+
+      - name: Verify Android package version
+        run: |
+          test -s build/PalmAcademic-v0.3.6.apk
+          echo "Android APK size: $(stat -c%s build/PalmAcademic-v0.3.6.apk) bytes"
+
+      - name: Upload Android build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PalmAcademic-v0.3.6-android
+          path: build/PalmAcademic-v0.3.6.apk
+
+      - name: Upload Android APK to v0.3.6 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_tag="v0.3.6"
+          for attempt in {1..18}; do
+            if gh release view "$release_tag" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 10
+          done
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            gh release upload "$release_tag" --clobber build/PalmAcademic-v0.3.6.apk
+          else
+            gh release create "$release_tag" \
+              --verify-tag \
+              --prerelease \
+              --title "PalmAcademic v0.3.6 双端预发布" \
+              --notes "Android 0.3.6 APK 已构建；原生 iOS 迁移预览，未经过实体 iPhone/iPad 实机测试。" \
+              build/PalmAcademic-v0.3.6.apk
+          fi
