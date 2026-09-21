@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -16,6 +17,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -67,8 +69,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.pullToRefresh
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -76,15 +78,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import org.json.JSONArray
 import org.json.JSONObject
@@ -92,6 +100,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.launch
 
 private data class ExportDocument(val fileName: String, val content: String)
 private const val FEATURE_HINT_PREFERENCES = "feature_hints"
@@ -256,7 +265,7 @@ private fun MaterialPortalContent(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
+            PortalGradientTopAppBar(
                 title = { Text(page?.title?.ifBlank { requestedTitle } ?: requestedTitle, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
                 actions = {
@@ -274,7 +283,7 @@ private fun MaterialPortalContent(
             )
         }
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
+        Box(Modifier.fillMaxSize()) {
             if (
                 sessionState is PortalSessionState.Checking ||
                 sessionState is PortalSessionState.Ready ||
@@ -379,7 +388,15 @@ private fun MaterialPortalContent(
                         }
                         MaterialContentStage.FETCHING -> LoadingPane("获取数据…", Modifier.align(Alignment.Center))
                         MaterialContentStage.CONTENT -> page?.let {
-                            MaterialPageList(it, onOpenLink, performAction, loading, refreshPage)
+                            MaterialPageList(
+                                page = it,
+                                onOpenLink = onOpenLink,
+                                onAction = performAction,
+                                loading = loading,
+                                onRefresh = refreshPage,
+                                topBarInset = padding.calculateTopPadding(),
+                                bottomInset = padding.calculateBottomPadding()
+                            )
                         }
                         MaterialContentStage.ERROR -> ErrorCard(error.orEmpty(), Modifier.align(Alignment.Center))
                         MaterialContentStage.SESSION_EXPIRED -> LoadingPane("登录状态已失效", Modifier.align(Alignment.Center))
@@ -397,20 +414,103 @@ private fun MaterialPageList(
     onOpenLink: (String, String) -> Unit,
     onAction: (String, String) -> Unit,
     loading: Boolean,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    topBarInset: Dp,
+    bottomInset: Dp
 ) {
     val schedule = page.sections.filterIsInstance<MaterialSection.Schedule>().firstOrNull()
     var selectedScheduleDay by remember(page.sourceUrl, schedule?.title) {
         mutableStateOf<String?>(null)
     }
-    PullToRefreshBox(
-        isRefreshing = loading,
-        onRefresh = onRefresh,
-        modifier = Modifier.fillMaxSize()
+    val pullToRefreshState = rememberPullToRefreshState()
+    val density = LocalDensity.current
+    val pullOffsetPx = with(density) { 64.dp.toPx() }
+    val hapticFeedback = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val returnOffset = remember { Animatable(0f) }
+    val pullFraction = pullToRefreshState.distanceFraction.coerceIn(0f, 1f)
+    var thresholdHapticPlayed by remember { mutableStateOf(false) }
+    var returningFromPull by remember { mutableStateOf(false) }
+    var suppressPullOffsetUntilReset by remember { mutableStateOf(false) }
+    var userPullRefreshActive by remember { mutableStateOf(false) }
+    LaunchedEffect(pullFraction, loading, returningFromPull) {
+        if (
+            !loading && !returningFromPull && !suppressPullOffsetUntilReset &&
+            pullFraction >= 1f && !thresholdHapticPlayed
+        ) {
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+            thresholdHapticPlayed = true
+        } else if (pullFraction < 1f) {
+            thresholdHapticPlayed = false
+        }
+    }
+    LaunchedEffect(loading, pullToRefreshState.distanceFraction) {
+        if (!loading) {
+            // Refresh completion only removes the loading bar. The user-triggered return
+            // animation has already happened at refresh start; an initial load never enters it.
+            returnOffset.snapTo(0f)
+            returningFromPull = false
+            userPullRefreshActive = false
+            if (pullToRefreshState.distanceFraction <= 0.001f) {
+                suppressPullOffsetUntilReset = false
+            }
+        }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pullToRefresh(
+                // Programmatic/initial refreshes must never drive Material's pull state.
+                isRefreshing = loading && userPullRefreshActive,
+                state = pullToRefreshState,
+                enabled = !loading && !returningFromPull && !suppressPullOffsetUntilReset,
+                threshold = 52.dp,
+                onRefresh = {
+                    if (!loading && !returningFromPull) {
+                        val startOffset = pullToRefreshState.distanceFraction
+                            .coerceIn(0f, 1.15f) * pullOffsetPx
+                        scope.launch {
+                            returnOffset.snapTo(startOffset)
+                            returningFromPull = true
+                            suppressPullOffsetUntilReset = true
+                            userPullRefreshActive = true
+                            onRefresh()
+                            try {
+                                returnOffset.animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = tween(
+                                        durationMillis = 180,
+                                        easing = FastOutSlowInEasing
+                                    )
+                                )
+                            } finally {
+                                returningFromPull = false
+                            }
+                        }
+                    }
+                }
+            )
     ) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize().animateContentSize(),
-            contentPadding = PaddingValues(16.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    translationY = if (returningFromPull) {
+                        returnOffset.value
+                    } else if (!loading && !suppressPullOffsetUntilReset) {
+                        pullToRefreshState.distanceFraction.coerceIn(0f, 1.15f) * pullOffsetPx
+                    } else {
+                        // Initial automatic refresh and toolbar refresh stay at rest.
+                        0f
+                    }
+                }
+                .animateContentSize(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = (topBarInset - PortalTopFadeDepth).coerceAtLeast(0.dp) + 16.dp,
+                end = 16.dp,
+                bottom = bottomInset + 16.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             if (page.choices.isNotEmpty() || page.actions.isNotEmpty() || schedule != null) {
@@ -432,17 +532,7 @@ private fun MaterialPageList(
                     }
                 }
             }
-            if (loading && page.sections.isNotEmpty()) {
-                item(key = "page-refreshing") {
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth().animateItem(
-                            fadeInSpec = tween(160, easing = FastOutSlowInEasing),
-                            placementSpec = tween(220, easing = FastOutSlowInEasing),
-                            fadeOutSpec = tween(100)
-                        )
-                    )
-                }
-            } else if (loading) {
+            if (loading && page.sections.isEmpty()) {
                 item(key = "page-loading") {
                     Box(
                         Modifier.fillMaxWidth().padding(vertical = 48.dp).animateItem(
@@ -477,6 +567,34 @@ private fun MaterialPageList(
                         }
                     }
                 }
+            }
+        }
+        AnimatedVisibility(
+            visible = loading,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = (topBarInset - PortalTopFadeDepth).coerceAtLeast(0.dp))
+                .align(Alignment.TopCenter),
+            enter = fadeIn(animationSpec = tween(100)),
+            exit = fadeOut(animationSpec = tween(180))
+        ) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+        if (!loading && pullFraction > 0f && !suppressPullOffsetUntilReset) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = (topBarInset - PortalTopFadeDepth).coerceAtLeast(0.dp))
+                    .height(36.dp)
+                    .align(Alignment.TopCenter),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "下拉刷新",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.alpha(pullFraction)
+                )
             }
         }
     }

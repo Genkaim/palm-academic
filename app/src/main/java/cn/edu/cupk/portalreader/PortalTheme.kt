@@ -8,7 +8,15 @@ import android.webkit.WebSettings
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -17,7 +25,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 
@@ -162,6 +174,54 @@ val PortalInk: Color
     @Composable get() = MaterialTheme.colorScheme.onSurface
 val PortalSuccess: Color
     @Composable get() = MaterialTheme.colorScheme.tertiary
+
+/** Keeps every app-owned top control visually connected to the page behind it. */
+@Composable
+fun portalTopGradient(): Brush {
+    val background = MaterialTheme.colorScheme.background
+    return Brush.verticalGradient(
+        colorStops = arrayOf(
+            0f to background,
+            0.46f to background,
+            0.82f to background.copy(alpha = 0f),
+            1f to background.copy(alpha = 0f)
+        )
+    )
+}
+
+val PortalTopFadeDepth = 64.dp
+
+/** Adds a transparent lower edge; screens deliberately draw their content beneath this area. */
+@Composable
+fun Modifier.portalTopGradientBackground(fadeDepth: Dp = PortalTopFadeDepth): Modifier =
+    this
+        .background(portalTopGradient())
+        .padding(bottom = fadeDepth)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PortalGradientTopAppBar(
+    title: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    navigationIcon: @Composable () -> Unit = {},
+    actions: @Composable RowScope.() -> Unit = {}
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .portalTopGradientBackground()
+    ) {
+        TopAppBar(
+            title = title,
+            navigationIcon = navigationIcon,
+            actions = actions,
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = Color.Transparent,
+                scrolledContainerColor = Color.Transparent
+            )
+        )
+    }
+}
 
 @Composable
 fun PortalTheme(content: @Composable () -> Unit) {

@@ -57,6 +57,18 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         }
         runCatching {
             val school = SchoolAdapterRepository.load(applicationContext)
+            val scheduleEnabled = PortalNotificationPreferences.isEnabled(
+                preferences,
+                PortalNotificationPreferences.KEY_SCHEDULE
+            )
+            val gradeEnabled = PortalNotificationPreferences.isEnabled(
+                preferences,
+                PortalNotificationPreferences.KEY_GRADE
+            )
+            val examEnabled = PortalNotificationPreferences.isEnabled(
+                preferences,
+                PortalNotificationPreferences.KEY_EXAM
+            )
             val coursePage = get(school.monitor.coursePageUrl(school.baseUrl))
             if (coursePage.isAuthenticationFailure()) {
                 val notified = notifyAuthenticationFailure(preferences)
@@ -66,116 +78,170 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             }
             if (!coursePage.isSuccessful()) {
                 details += coursePage.toHistoryDetail("课表", "请求失败")
-                error("课表页面请求失败：HTTP ${coursePage.code}")
+                return@withContext finish("检查完成（入口暂不可用）", Result.success())
             }
 
-            val semesterId = school.monitor.extractSemesterId(coursePage.body) ?: run {
+            val semesterId = school.monitor.extractSemesterId(coursePage.body)
+            val studentId = school.monitor.extractStudentId(
+                coursePage.finalUrl + "\n" + coursePage.body
+            )
+            val semesterRequired = school.monitor.requiresSemesterId(
+                scheduleEnabled,
+                gradeEnabled,
+                examEnabled
+            )
+            val studentRequired = school.monitor.requiresStudentId(
+                scheduleEnabled,
+                gradeEnabled,
+                examEnabled
+            )
+            if (semesterRequired && semesterId == null) {
                 details += coursePage.toHistoryDetail(
                     category = "课表",
                     summary = "未识别当前学期",
-                    technicalDetails = "学校定义中的 semesterIdPatterns 未匹配页面内容。"
+                    technicalDetails = "学校定义中的 semesterIdPatterns 未匹配页面内容。",
+                    parsedContent = PortalSnapshot.diagnosticJson("course", "未识别当前学期")
                 )
-                error("未识别当前学期")
+                return@withContext finish("检查完成（规则未匹配）", Result.success())
             }
-            val studentId = school.monitor.extractStudentId(
-                coursePage.finalUrl + "\n" + coursePage.body
-            ) ?: run {
+            if (studentRequired && studentId == null) {
                 details += coursePage.toHistoryDetail(
                     category = "课表",
                     summary = "未识别学生 ID",
-                    technicalDetails = "学校定义中的 studentIdPatterns 未匹配入口最终地址或页面内容。"
+                    technicalDetails = "学校规则与通用学号规则均未匹配入口最终地址或页面内容。",
+                    parsedContent = PortalSnapshot.diagnosticJson("course", "未识别学生 ID")
                 )
-                error("未识别学生 ID")
+                return@withContext finish("检查完成（规则未匹配）", Result.success())
             }
+            val resolvedSemesterId = semesterId.orEmpty()
+            val resolvedStudentId = studentId.orEmpty()
+            var partiallyUnavailable = false
 
-            run {
+            if (scheduleEnabled) {
                 val courseData = get(
-                    school.monitor.courseDataUrl(school.baseUrl, semesterId, studentId)
+                    school.monitor.courseDataUrl(
+                        school.baseUrl,
+                        resolvedSemesterId,
+                        resolvedStudentId
+                    ),
+                    referer = coursePage.finalUrl,
+                    ajax = true
                 )
                 if (courseData.isAuthenticationFailure()) {
                     val notified = notifyAuthenticationFailure(preferences)
                     details += combinedCourseDetail(
-                        coursePage, courseData, semesterId, "登录状态失效"
+                        coursePage, courseData, resolvedSemesterId, "登录状态失效"
                     )
                     details += authenticationDetail(notified, "课表数据接口返回登录页或未授权状态")
                     return@withContext finish("登录已过期", Result.success())
                 }
                 if (!courseData.isSuccessful()) {
-                    details += combinedCourseDetail(coursePage, courseData, semesterId, "请求失败")
-                    error("课表数据请求失败：HTTP ${courseData.code}")
-                }
-                val coursePayload = courseData.body.trim()
-                if (coursePayload.isBlank()) {
+                    details += combinedCourseDetail(
+                        coursePage, courseData, resolvedSemesterId, "请求失败"
+                    )
+                    partiallyUnavailable = true
+                } else if (courseData.body.isBlank()) {
                     details += combinedCourseDetail(
                         coursePage,
                         courseData,
-                        semesterId,
+                        resolvedSemesterId,
                         summary = "响应格式无法识别",
                         technicalDetails = "课表数据响应为空。"
                     )
-                    error("课表接口返回了无法识别的数据")
+                    partiallyUnavailable = true
+                } else {
+                    details += updateCourseSnapshot(
+                        preferences,
+                        resolvedSemesterId,
+                        coursePage,
+                        courseData
+                    )
                 }
-                details += updateCourseSnapshot(preferences, semesterId, coursePage, courseData)
             }
 
-            val gradeData = get(
-                school.monitor.gradeDataUrl(school.baseUrl, semesterId, studentId)
-            )
-            if (gradeData.isAuthenticationFailure()) {
-                val notified = notifyAuthenticationFailure(preferences)
-                details += gradeData.toHistoryDetail("成绩", "登录状态失效")
-                details += authenticationDetail(notified, "成绩页面返回登录页或未授权状态")
-                return@withContext finish("登录已过期", Result.success())
-            }
-            if (!gradeData.isSuccessful()) {
-                details += gradeData.toHistoryDetail("成绩", "请求失败")
-                error("成绩请求失败：HTTP ${gradeData.code}")
-            }
-            val parsedGrades = PortalSnapshot.parsedDataJson(gradeData.body, type = "grade")
-            details += updateGradeSnapshot(preferences, gradeData, parsedGrades)
-
-            val examData = get(
-                school.monitor.examDataUrl(school.baseUrl, semesterId, studentId)
-            )
-            if (examData.isAuthenticationFailure()) {
-                val notified = notifyAuthenticationFailure(preferences)
-                details += examData.toHistoryDetail("考试", "登录状态失效")
-                details += authenticationDetail(notified, "考试页面返回登录页或未授权状态")
-                return@withContext finish("登录已过期", Result.success())
-            }
-            if (!examData.isSuccessful()) {
-                details += examData.toHistoryDetail("考试", "请求失败")
-                error("考试请求失败：HTTP ${examData.code}")
-            }
-            val parsedExams = PortalSnapshot.parsedDataJson(examData.body, type = "exam")
-            val examRows = PortalSnapshot.tableRows(examData.body)
-            if (examRows.isEmpty() && PortalSnapshot.visibleDocument(examData.body).isBlank()) {
-                details += examData.toHistoryDetail(
-                    category = "考试",
-                    summary = "页面结构无法识别",
-                    technicalDetails = "未解析到表格行或可见文本。",
-                    parsedContent = parsedExams
+            if (gradeEnabled) {
+                val gradeData = get(
+                    school.monitor.gradeDataUrl(
+                        school.baseUrl,
+                        resolvedSemesterId,
+                        resolvedStudentId
+                    ),
+                    referer = coursePage.finalUrl
                 )
-                error("考试安排页面结构无法识别")
+                if (gradeData.isAuthenticationFailure()) {
+                    val notified = notifyAuthenticationFailure(preferences)
+                    details += gradeData.toHistoryDetail("成绩", "登录状态失效")
+                    details += authenticationDetail(notified, "成绩页面返回登录页或未授权状态")
+                    return@withContext finish("登录已过期", Result.success())
+                }
+                if (!gradeData.isSuccessful()) {
+                    details += gradeData.toHistoryDetail("成绩", "请求失败")
+                    partiallyUnavailable = true
+                } else {
+                    val parsedGrades = PortalSnapshot.parsedDataJson(gradeData.body, type = "grade")
+                    details += updateGradeSnapshot(preferences, gradeData, parsedGrades)
+                }
             }
-            details += updateExamSnapshot(
-                preferences,
-                examData,
-                examRows,
-                parsedExams
-            )
+
+            if (examEnabled) {
+                val examData = get(
+                    school.monitor.examDataUrl(
+                        school.baseUrl,
+                        resolvedSemesterId,
+                        resolvedStudentId
+                    ),
+                    referer = coursePage.finalUrl
+                )
+                if (examData.isAuthenticationFailure()) {
+                    val notified = notifyAuthenticationFailure(preferences)
+                    details += examData.toHistoryDetail("考试", "登录状态失效")
+                    details += authenticationDetail(notified, "考试页面返回登录页或未授权状态")
+                    return@withContext finish("登录已过期", Result.success())
+                }
+                if (!examData.isSuccessful()) {
+                    details += examData.toHistoryDetail("考试", "请求失败")
+                    partiallyUnavailable = true
+                } else {
+                    val parsedExams = PortalSnapshot.parsedDataJson(examData.body, type = "exam")
+                    val examRows = PortalSnapshot.tableRows(examData.body)
+                    if (
+                        examRows.isEmpty() &&
+                        PortalSnapshot.visibleDocument(examData.body).isBlank()
+                    ) {
+                        details += examData.toHistoryDetail(
+                            category = "考试",
+                            summary = "未识别到考试内容",
+                            technicalDetails = "响应为空，未更新考试基线。",
+                            parsedContent = parsedExams
+                        )
+                        partiallyUnavailable = true
+                    } else {
+                        details += updateExamSnapshot(
+                            preferences,
+                            examData,
+                            examRows,
+                            parsedExams
+                        )
+                    }
+                }
+            }
             preferences.edit()
                 .putBoolean(KEY_AUTH_FAILURE_NOTIFIED, false)
                 .putLong("last_checked", System.currentTimeMillis())
                 .apply()
-            finish("检查完成", Result.success())
+            finish(
+                if (partiallyUnavailable) "检查完成（部分项目不可用）" else "检查完成",
+                Result.success()
+            )
         }.getOrElse { error ->
             details += PortalPollHistoryDetail(
                 category = "检查错误",
                 summary = error.message ?: "未知错误",
                 technicalDetails = error.stackTraceToString()
             )
-            finish("检查失败", Result.retry())
+            val networkFailure = generateSequence<Throwable>(error) { it.cause }
+                .any { it is java.io.IOException }
+            finish(if (networkFailure) "网络检查失败" else "检查失败", Result.retry())
         }
     }
 
@@ -209,8 +275,8 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         )
     }
 
-    private fun get(url: String): ResponseData {
-        val request = Request.Builder().url(url).header("Accept", "text/html,application/json").get().build()
+    private fun get(url: String, referer: String? = null, ajax: Boolean = false): ResponseData {
+        val request = portalReadRequest(url, referer, ajax)
         return try {
             PortalHttp.client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
@@ -499,6 +565,27 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
 
     }
 }
+
+private const val PORTAL_BROWSER_USER_AGENT =
+    "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
+
+internal fun portalReadRequest(url: String, referer: String? = null, ajax: Boolean = false): Request =
+    Request.Builder()
+        .url(url)
+        .header("User-Agent", PORTAL_BROWSER_USER_AGENT)
+        .header(
+            "Accept",
+            if (ajax) "application/json,text/javascript,*/*;q=0.8"
+            else "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
+        )
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .apply {
+            if (!referer.isNullOrBlank()) header("Referer", referer)
+            if (ajax) header("X-Requested-With", "XMLHttpRequest")
+        }
+        .get()
+        .build()
 
 object PortalMonitor {
     private const val WORK_NAME = "portal_course_exam_poll"

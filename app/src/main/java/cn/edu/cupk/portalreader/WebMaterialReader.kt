@@ -230,6 +230,10 @@ internal object MaterialPageCache {
         parseMaterialPage(file.readText())
     }.getOrNull()
 
+    fun loadRaw(context: android.content.Context, url: String): String? = runCatching {
+        cacheFile(context, url).takeIf(File::isFile)?.readText()
+    }.getOrNull()
+
     fun save(context: android.content.Context, url: String, json: String) {
         runCatching {
             val target = cacheFile(context, url)

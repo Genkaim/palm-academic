@@ -66,6 +66,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
@@ -131,6 +132,7 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
 
     fun completeAuthentication() {
         clearAuthenticationFailureMarker()
+        QuickEntryBaseline.request(getApplication())
         PortalMonitor.schedule(getApplication(), preferredInterval())
         PortalSessionCoordinator.markAuthenticated()
         authenticated = true
@@ -241,7 +243,8 @@ private fun LoginContent(
         animationSpec = tween(durationMillis = 180, easing = LinearOutSlowInEasing),
         label = "login-ime-lift"
     )
-    val contentLiftPx = with(density) { 88.dp.toPx() }
+    val contentLiftPx = with(density) { 48.dp.toPx() }
+    val headerHeight = (154f - 100f * animatedImeProgress).dp
 
     LaunchedEffect(model.selectedSchoolId) {
         username = model.rememberedCredential?.username.orEmpty()
@@ -267,9 +270,10 @@ private fun LoginContent(
                     }
                 ) {
                     Column(
-                        modifier = Modifier.graphicsLayer {
-                            alpha = 1f - animatedImeProgress
-                        }
+                        modifier = Modifier
+                            .height(headerHeight)
+                            .clipToBounds()
+                            .graphicsLayer { alpha = 1f - animatedImeProgress }
                     ) {
                         Surface(Modifier.size(64.dp), RoundedCornerShape(20.dp), color = PortalBlue) {
                             Box(contentAlignment = Alignment.Center) {

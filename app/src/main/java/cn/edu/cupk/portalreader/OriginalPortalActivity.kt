@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -47,13 +48,16 @@ class OriginalPortalActivity : PortalActivity() {
         val toolbarHeight = (64 * density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(colors.pageBackground)
+            setBackgroundColor(colors.webBackground)
         }
         val toolbar = Toolbar(this).apply {
             this.title = title
             setNavigationIcon(R.drawable.ic_arrow_back)
             setNavigationOnClickListener { finish() }
-            setBackgroundColor(colors.pageBackground)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(colors.pageBackground, colors.pageBackground, Color.TRANSPARENT)
+            )
             setTitleTextColor(colors.text)
             navigationIcon?.setTint(colors.text)
             elevation = 0f

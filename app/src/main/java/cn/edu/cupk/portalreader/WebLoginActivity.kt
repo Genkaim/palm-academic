@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -44,14 +45,17 @@ class WebLoginActivity : PortalActivity() {
         val toolbarHeight = (64 * density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(colors.pageBackground)
+            setBackgroundColor(colors.webBackground)
         }
         val toolbar = Toolbar(this).apply {
             title = "网页登录"
             subtitle = Uri.parse(PortalConfig.ORIGIN).authority.orEmpty()
             setNavigationIcon(R.drawable.ic_arrow_back)
             setNavigationOnClickListener { finishPortalActivity() }
-            setBackgroundColor(colors.pageBackground)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(colors.pageBackground, colors.pageBackground, Color.TRANSPARENT)
+            )
             setTitleTextColor(colors.text)
             setSubtitleTextColor(colors.secondaryText)
             navigationIcon?.setTint(colors.text)

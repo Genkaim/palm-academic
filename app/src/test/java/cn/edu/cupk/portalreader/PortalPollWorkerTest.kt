@@ -68,6 +68,87 @@ class PortalPollWorkerTest {
             "https://example.test/student/course-data?semester=483&student=102030",
             monitor.courseDataUrl("https://example.test/student", "483", "102030")
         )
+        assertTrue(monitor.requiresSemesterId(schedule = true, grade = false, exam = false))
+        assertFalse(monitor.requiresSemesterId(schedule = false, grade = false, exam = true))
+        assertTrue(monitor.requiresStudentId(schedule = false, grade = true, exam = false))
+    }
+
+    @Test
+    fun monitorDefinition_extractsStudentIdFromGenericSignedInAccountLabel() {
+        val monitor = PortalMonitorDefinition(
+            coursePagePath = "/course-table",
+            courseDataPathTemplate = "/course-data?student={studentId}",
+            gradeDataPathTemplate = "/grade/{studentId}",
+            examDataPathTemplate = "/exam/{studentId}",
+            semesterIdPatterns = emptyList(),
+            studentIdPatterns = listOf("/course-table/info/(\\d+)")
+        )
+
+        assertEquals(
+            "2025016766",
+            monitor.extractStudentId("课表 教务系统 --> 曹玄恒(2025016766) 课表")
+        )
+    }
+
+    @Test
+    fun diagnosticJson_doesNotExposeUnrelatedPortalPageText() {
+        val json = PortalSnapshot.diagnosticJson("course", "未识别学生 ID")
+
+        assertTrue(json.contains("\"dataStatus\": \"未识别学生 ID\""))
+        assertFalse(json.contains("初始化数据"))
+    }
+
+    @Test
+    fun quickBaseline_ordersAllFourNativeEntries() {
+        val baseUrl = "https://example.test/student"
+        val items = listOf(
+            PortalItem("培养方案", "/program", baseUrl, quick = true, nativeType = "program"),
+            PortalItem("成绩", "/grade", baseUrl, quick = true, nativeType = "grade"),
+            PortalItem("普通入口", "/other", baseUrl),
+            PortalItem("课表", "/schedule", baseUrl, quick = true, nativeType = "schedule"),
+            PortalItem("考试", "/exam", baseUrl, quick = true, nativeType = "exam")
+        )
+
+        assertEquals(
+            listOf("schedule", "grade", "exam", "program"),
+            orderedQuickBaselineItems(items).map { it.nativeType }
+        )
+    }
+
+    @Test
+    fun quickBaseline_usesReadableLogCategories() {
+        assertEquals("课表", quickBaselineCategory("schedule"))
+        assertEquals("成绩", quickBaselineCategory("grade"))
+        assertEquals("考试", quickBaselineCategory("exam"))
+        assertEquals("培养方案", quickBaselineCategory("program"))
+    }
+
+    @Test
+    fun quickBaseline_rejectsInitialSkeletonAndAcceptsPopulatedPage() {
+        val emptySchedule = MaterialPage(
+            title = "我的课表",
+            sourceUrl = "https://example.test/schedule",
+            choices = emptyList(),
+            actions = emptyList(),
+            sections = listOf(MaterialSection.Schedule("本学期", "", emptyList()))
+        )
+        val populatedSchedule = emptySchedule.copy(
+            sections = listOf(
+                MaterialSection.Schedule(
+                    title = "本学期",
+                    semesterStartDate = "",
+                    days = listOf(
+                        ScheduleDay(
+                            "星期一",
+                            listOf(MaterialCardItem("高等数学", "", "", emptyList()))
+                        )
+                    )
+                )
+            )
+        )
+
+        assertFalse(quickBaselineHasData(emptySchedule, "schedule"))
+        assertTrue(quickBaselineHasData(populatedSchedule, "schedule"))
     }
 
     @Test
@@ -110,6 +191,23 @@ class PortalPollWorkerTest {
     fun courseEntries_acceptsNonEmptyLessonIdList() {
         assertTrue(PortalSnapshot.hasCourseEntries("{\"lessonIds\":[12345],\"lessons\":[]}"))
         assertFalse(PortalSnapshot.hasCourseEntries("{\"lessonIds\":[],\"lessons\":[]}"))
+    }
+
+    @Test
+    fun portalReadRequest_matchesBrowserHeadersForAjaxData() {
+        val request = portalReadRequest(
+            url = "https://example.test/course-data",
+            referer = "https://example.test/course-table/info/102030",
+            ajax = true
+        )
+
+        assertTrue(request.header("User-Agent").orEmpty().startsWith("Mozilla/5.0"))
+        assertEquals("zh-CN,zh;q=0.9", request.header("Accept-Language"))
+        assertEquals(
+            "https://example.test/course-table/info/102030",
+            request.header("Referer")
+        )
+        assertEquals("XMLHttpRequest", request.header("X-Requested-With"))
     }
 
     @Test

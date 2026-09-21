@@ -158,6 +158,13 @@ object PortalSnapshot {
         }
     }
 
+    fun diagnosticJson(type: String, status: String): String = buildString {
+        appendLine("{")
+        appendLine("  \"type\": ${jsonString(type)},")
+        appendLine("  \"dataStatus\": ${jsonString(status)}")
+        append('}')
+    }
+
     fun historyDisplayContent(value: String): String {
         val trimmed = value.trim()
         return if (trimmed.startsWith('<') || trimmed.contains("<html", ignoreCase = true)) {

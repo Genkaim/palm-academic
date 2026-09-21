@@ -84,9 +84,42 @@ data class PortalMonitorDefinition(
             ?.find(page)?.groupValues?.getOrNull(1)
     }
 
-    fun extractStudentId(pageAndUrl: String): String? = studentIdPatterns.firstNotNullOfOrNull { pattern ->
-        runCatching { Regex(pattern, RegexOption.DOT_MATCHES_ALL) }.getOrNull()
-            ?.find(pageAndUrl)?.groupValues?.getOrNull(1)
+    fun extractStudentId(pageAndUrl: String): String? =
+        (studentIdPatterns + GENERIC_STUDENT_ID_PATTERNS).firstNotNullOfOrNull { pattern ->
+            runCatching { Regex(pattern, setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)) }
+                .getOrNull()
+                ?.find(pageAndUrl)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.takeIf(String::isNotBlank)
+        }
+
+    fun requiresSemesterId(schedule: Boolean, grade: Boolean, exam: Boolean): Boolean =
+        requiresPlaceholder("{semesterId}", schedule, grade, exam)
+
+    fun requiresStudentId(schedule: Boolean, grade: Boolean, exam: Boolean): Boolean =
+        requiresPlaceholder("{studentId}", schedule, grade, exam)
+
+    private fun requiresPlaceholder(
+        placeholder: String,
+        schedule: Boolean,
+        grade: Boolean,
+        exam: Boolean
+    ): Boolean =
+        (schedule && placeholder in courseDataPathTemplate) ||
+            (grade && placeholder in gradeDataPathTemplate) ||
+            (exam && placeholder in examDataPathTemplate)
+
+    private companion object {
+        /**
+         * EAMS variants do not consistently redirect to /info/{studentId}. Some render the
+         * signed-in account only as “姓名(学号)” in the page header, so keep these neutral
+         * fallbacks in the monitor rather than requiring every school adapter to duplicate them.
+         */
+        val GENERIC_STUDENT_ID_PATTERNS = listOf(
+            "(?:学号|学生号|student(?:Id|No)?)\\s*[：:=]?\\s*(\\d{6,20})",
+            "[（(]\\s*(\\d{6,20})\\s*[）)]"
+        )
     }
 }
 

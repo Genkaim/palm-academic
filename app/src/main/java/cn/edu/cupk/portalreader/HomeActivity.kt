@@ -3,6 +3,7 @@ package cn.edu.cupk.portalreader
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,17 +49,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 
 class HomeActivity : PortalActivity() {
     private var notificationVersion by mutableIntStateOf(0)
@@ -161,14 +164,7 @@ private fun HomeContent(
             topBar = {
                 Box(
                     Modifier.fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    MaterialTheme.colorScheme.background,
-                                    MaterialTheme.colorScheme.background.copy(alpha = 0f)
-                                )
-                            )
-                        )
+                        .portalTopGradientBackground()
                         .statusBarsPadding()
                         .padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 14.dp)
                 ) {
@@ -203,8 +199,13 @@ private fun HomeContent(
             }
         }) { padding ->
         LazyColumn(
-            modifier = Modifier.padding(padding).fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = (padding.calculateTopPadding() - PortalTopFadeDepth).coerceAtLeast(0.dp) + 16.dp,
+                end = 16.dp,
+                bottom = padding.calculateBottomPadding() + 16.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
@@ -253,6 +254,11 @@ private fun HomeContent(
             item { Spacer(Modifier.height(20.dp)) }
         }
         }
+        QuickEntryBaselinePrefetch(
+            school = school,
+            active = sessionState is PortalSessionState.Ready,
+            onSessionExpired = onSessionExpired
+        )
     }
     if (sessionState is PortalSessionState.Expired) {
         AlertDialog(
@@ -286,6 +292,96 @@ private fun HomeContent(
                 }
             )
         }
+    }
+}
+
+@Composable
+private fun QuickEntryBaselinePrefetch(
+    school: SchoolDefinition,
+    active: Boolean,
+    onSessionExpired: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val items = remember(school) { orderedQuickBaselineItems(school.quickItems) }
+    val adapterScript = remember(school.adapterAsset) {
+        SchoolAdapterRepository.readAdapterScript(context, school.adapterAsset)
+    }
+    var pending by remember(school.id) {
+        mutableStateOf(QuickEntryBaseline.isPending(context, school.id))
+    }
+    var itemIndex by remember(school.id) { mutableIntStateOf(0) }
+    var previousFailure by remember(school.id) { mutableStateOf(false) }
+    var snapshots by remember(school.id) {
+        mutableStateOf(emptyList<QuickEntryBaselineSnapshot>())
+    }
+
+    if (!active || !pending || items.isEmpty() || itemIndex !in items.indices) return
+    val item = items[itemIndex]
+    key(item.url) {
+        var itemFinished by remember { mutableStateOf(false) }
+        var latestSnapshot by remember { mutableStateOf<QuickEntryBaselineSnapshot?>(null) }
+        var publicationVersion by remember { mutableIntStateOf(0) }
+        val startedAt = remember { SystemClock.elapsedRealtime() }
+        val finishItem: (QuickEntryBaselineSnapshot?) -> Unit = finish@{ snapshot ->
+            if (itemFinished) return@finish
+            itemFinished = true
+            val updatedSnapshots = snapshot?.let { snapshots + it } ?: snapshots
+            val anyFailure = previousFailure || snapshot == null
+            if (itemIndex == items.lastIndex) {
+                if (!anyFailure && items.size == 4) {
+                    QuickEntryBaseline.recordAndComplete(
+                        context = context,
+                        schoolId = school.id,
+                        snapshots = updatedSnapshots
+                    )
+                }
+                pending = false
+            } else {
+                snapshots = updatedSnapshots
+                previousFailure = anyFailure
+                itemIndex++
+            }
+        }
+        LaunchedEffect(item.url) {
+            delay(30_000)
+            finishItem(null)
+        }
+        LaunchedEffect(item.url, publicationVersion) {
+            val candidate = latestSnapshot ?: return@LaunchedEffect
+            // Adapters commonly publish an empty DOM skeleton first and fill it after AJAX.
+            // Keep the latest publication and wait for both a minimum load window and a quiet
+            // period. Truly empty schedules/exams are accepted after the longer stable window.
+            val minimumLoadMillis = if (
+                quickBaselineHasData(candidate.page, item.nativeType)
+            ) 4_000L else 10_000L
+            val remainingMinimum = (
+                minimumLoadMillis - (SystemClock.elapsedRealtime() - startedAt)
+            ).coerceAtLeast(0L)
+            delay(maxOf(2_000L, remainingMinimum))
+            finishItem(candidate)
+        }
+        WebMaterialReader(
+            url = item.url,
+            adapterScript = adapterScript,
+            schoolConfigJson = school.readerConfigJson,
+            refreshToken = 0,
+            action = null,
+            modifier = Modifier.size(1.dp).alpha(0.01f),
+            onLoading = {},
+            onContent = { page ->
+                val rawJson = MaterialPageCache.loadRaw(context, item.url)
+                rawJson?.let {
+                    latestSnapshot = QuickEntryBaselineSnapshot(
+                        item = item,
+                        page = page,
+                        rawJson = it
+                    )
+                    publicationVersion++
+                }
+            },
+            onError = { finishItem(null) },
+            onSessionExpired = onSessionExpired
+        )
     }
 }
 
