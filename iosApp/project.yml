@@ -11,8 +11,7 @@ targets:
     platform: iOS
     sources:
       - Sources
-    resources:
-      - path: Resources/Assets.xcassets
+      - Resources/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cn.edu.cupk.portalreader.ios
