@@ -230,11 +230,11 @@ private fun SettingsContent(
                                             Toast.makeText(context, "当前已是最新版本", Toast.LENGTH_SHORT).show()
                                         }
                                     }
-                                    .onFailure { error ->
+                                    .onFailure {
                                         Toast.makeText(
                                             context,
-                                            "${error.message ?: "检查更新失败"}。服务托管于Github，请注意网络环境",
-                                            Toast.LENGTH_LONG
+                                            "检查失败，请注意网络环境",
+                                            Toast.LENGTH_SHORT
                                         ).show()
                                     }
                                 checkingUpdate = false

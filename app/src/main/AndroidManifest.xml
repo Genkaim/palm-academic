@@ -30,6 +30,7 @@
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".BackgroundSupportActivity" android:exported="false" />
         <activity android:name=".NotificationSettingsActivity" android:exported="false" />
+        <activity android:name=".NotificationHistoryActivity" android:exported="false" />
         <activity android:name=".SchoolSelectionActivity" android:exported="false" />
         <activity android:name=".HomeActivity" android:exported="false" />
         <activity

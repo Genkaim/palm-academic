@@ -4,17 +4,13 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.compose.setContent
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,14 +27,11 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -84,12 +77,10 @@ class SchoolSelectionActivity : PortalActivity() {
         useContinuousSystemBars()
         val selectedSchoolId = intent.getStringExtra(EXTRA_SELECTED_SCHOOL_ID)
             ?: SchoolAdapterRepository.activeSchoolId()
-        val switchingRequiresLogin = intent.getBooleanExtra(EXTRA_REQUIRES_LOGIN, false)
         setContent {
             PortalTheme {
                 SchoolSelectionContent(
                     selectedSchoolId = selectedSchoolId,
-                    switchingRequiresLogin = switchingRequiresLogin,
                     onBack = { finish() },
                     onSelected = { schoolId ->
                         setResult(
@@ -114,13 +105,11 @@ class SchoolSelectionActivity : PortalActivity() {
 @Composable
 private fun SchoolSelectionContent(
     selectedSchoolId: String,
-    switchingRequiresLogin: Boolean,
     onBack: () -> Unit,
     onSelected: (String) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
     var schools by remember { mutableStateOf(SchoolAdapterRepository.options(context)) }
     var refreshing by remember { mutableStateOf(false) }
     val groupedSchools = remember(schools) {
@@ -134,7 +123,6 @@ private fun SchoolSelectionContent(
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("选择学校") },
@@ -144,7 +132,7 @@ private fun SchoolSelectionContent(
                     }
                 },
                 actions = {
-                    FilledTonalButton(
+                    IconButton(
                         modifier = Modifier.padding(end = 8.dp),
                         enabled = !refreshing,
                         onClick = {
@@ -154,37 +142,20 @@ private fun SchoolSelectionContent(
                                     .fold(
                                         onSuccess = { result ->
                                             schools = SchoolAdapterRepository.options(context)
-                                            "已更新 ${result.schoolCount} 所学校的适配配置"
+                                            "已更新 ${result.schoolCount} 所学校"
                                         },
-                                        onFailure = { error ->
-                                            "${error.message ?: "学校适配更新失败"}。服务托管于Github，请注意网络环境"
-                                        }
+                                        onFailure = { "更新失败，请检查网络" }
                                     )
                                 refreshing = false
-                                snackbarHostState.currentSnackbarData?.dismiss()
-                                snackbarHostState.showSnackbar(message)
+                                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                             }
                         }
                     ) {
-                        AnimatedContent(
-                            targetState = refreshing,
-                            transitionSpec = {
-                                fadeIn(tween(180, easing = FastOutSlowInEasing)) togetherWith
-                                    fadeOut(tween(100))
-                            },
-                            label = "school-adapter-refresh"
-                        ) { isRefreshing ->
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                if (isRefreshing) {
-                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                                    Text("更新中")
-                                } else {
-                                    Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
-                                    Text("刷新适配")
-                                }
+                        Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                            if (refreshing) {
+                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Outlined.Refresh, "刷新学校适配")
                             }
                         }
                     }
@@ -197,16 +168,6 @@ private fun SchoolSelectionContent(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (switchingRequiresLogin) {
-                item {
-                    Text(
-                        "切换学校后需要重新登录。",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(horizontal = 4.dp)
-                    )
-                }
-            }
             groupedSchools.forEach { (initial, group) ->
                 item(key = "school-initial-$initial") {
                     Text(

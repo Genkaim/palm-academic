@@ -39,7 +39,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.OpenInBrowser
 import androidx.compose.material.icons.outlined.School
@@ -315,7 +315,7 @@ private fun LoginContent(
                                 model.schoolOptions.firstOrNull { it.id == model.selectedSchoolId }?.name.orEmpty(),
                                 modifier = Modifier.weight(1f)
                             )
-                            Icon(Icons.Outlined.KeyboardArrowDown, null)
+                            Icon(Icons.Outlined.ChevronRight, null)
                         }
                         OutlinedTextField(
                             value = username,

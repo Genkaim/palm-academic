@@ -1,6 +1,7 @@
 package cn.edu.cupk.portalreader
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -8,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -21,6 +23,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -59,14 +63,21 @@ class NotificationSettingsActivity : PortalActivity() {
         useContinuousSystemBars()
         PortalPollWorker.ensureChannel(this)
         setContent {
-            PortalTheme { NotificationSettingsContent(onBack = { finish() }) }
+            PortalTheme {
+                NotificationSettingsContent(
+                    onBack = { finish() },
+                    onOpenHistory = {
+                        startActivity(Intent(this, NotificationHistoryActivity::class.java))
+                    }
+                )
+            }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NotificationSettingsContent(onBack: () -> Unit) {
+private fun NotificationSettingsContent(onBack: () -> Unit, onOpenHistory: () -> Unit) {
     val context = LocalContext.current
     val preferences = remember { PortalNotificationPreferences.preferences(context) }
     val settings = remember {
@@ -223,6 +234,34 @@ private fun NotificationSettingsContent(onBack: () -> Unit) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
+                }
+            }
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenHistory),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(18.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Outlined.History, null, tint = PortalBlue)
+                        Spacer(Modifier.size(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("检查日志", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "查看通知检测历史与变动详情",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Icon(
+                            Icons.Outlined.ChevronRight,
+                            null,
+                            tint = MaterialTheme.colorScheme.outline
+                        )
+                    }
                 }
             }
         }

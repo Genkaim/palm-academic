@@ -30,15 +30,35 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         val preferences = PortalNotificationPreferences.preferences(applicationContext)
         if (!preferences.getBoolean(KEY_MONITOR_ENABLED, false)) return@withContext Result.success()
         if (!PortalNotificationPreferences.anyEnabled(preferences)) return@withContext Result.success()
+        val checkedAt = System.currentTimeMillis()
+        val details = mutableListOf<PortalPollHistoryDetail>()
+        fun finish(status: String, result: Result): Result {
+            PortalPollHistory.append(
+                applicationContext,
+                PortalPollHistoryEntry(
+                    timestamp = checkedAt,
+                    status = status,
+                    notificationTriggered = details.any { it.notificationTriggered },
+                    details = details.toList()
+                )
+            )
+            return result
+        }
         if (!PortalHttp.hasSessionCookie()) {
-            notifyAuthenticationFailure(preferences)
-            return@withContext Result.success()
+            val notified = notifyAuthenticationFailure(preferences)
+            details += PortalPollHistoryDetail(
+                category = "登录状态",
+                summary = "登录已过期",
+                notificationTriggered = notified
+            )
+            return@withContext finish("登录已过期", Result.success())
         }
         runCatching {
             val coursePage = get(PortalConfig.COURSE_TABLE)
             if (coursePage.isAuthenticationFailure()) {
-                notifyAuthenticationFailure(preferences)
-                return@withContext Result.success()
+                val notified = notifyAuthenticationFailure(preferences)
+                details += PortalPollHistoryDetail("登录状态", "登录已过期", notificationTriggered = notified)
+                return@withContext finish("登录已过期", Result.success())
             }
 
             val semesterId = Regex(
@@ -53,27 +73,34 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                         "?bizTypeId=2&semesterId=$semesterId&searchTeachingSyllabus=true"
                 )
                 if (courseData.isAuthenticationFailure()) {
-                    notifyAuthenticationFailure(preferences)
-                    return@withContext Result.success()
+                    val notified = notifyAuthenticationFailure(preferences)
+                    details += PortalPollHistoryDetail("登录状态", "登录已过期", notificationTriggered = notified)
+                    return@withContext finish("登录已过期", Result.success())
                 }
                 val coursePayload = courseData.body.trim()
                 if (!coursePayload.startsWith('[') && !coursePayload.startsWith('{')) {
                     error("课表接口返回了无法识别的数据")
                 }
-                updateCourseSnapshot(preferences, semesterId, courseData.body)
+                details += updateCourseSnapshot(preferences, semesterId, courseData.body)
+            } else {
+                details += PortalPollHistoryDetail("课表", "未识别当前学期")
             }
 
             val gradeData = get(PortalConfig.GRADE)
             if (gradeData.isAuthenticationFailure()) {
-                notifyAuthenticationFailure(preferences)
-                return@withContext Result.success()
+                val notified = notifyAuthenticationFailure(preferences)
+                details += PortalPollHistoryDetail("登录状态", "登录已过期", notificationTriggered = notified)
+                return@withContext finish("登录已过期", Result.success())
             }
             val visibleGrades = PortalSnapshot.visibleDocument(gradeData.body)
             if (visibleGrades.isNotBlank()) {
-                compareAndNotify(
+                details += compareAndNotify(
                     preferences = preferences,
                     key = "grade_hash",
+                    previewKey = "grade_preview_v1",
                     newHash = PortalSnapshot.stableHash(visibleGrades),
+                    newPreview = PortalPollHistory.preview(visibleGrades),
+                    category = "成绩",
                     enabled = PortalNotificationPreferences.isEnabled(
                         preferences,
                         PortalNotificationPreferences.KEY_GRADE
@@ -82,23 +109,32 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                     title = "成绩变动",
                     text = "检测到课程成绩新增或已有成绩发生变化，请及时查看。"
                 )
+            } else {
+                details += PortalPollHistoryDetail("成绩", "未识别到成绩内容")
             }
 
             val examData = get(PortalConfig.EXAM)
             if (examData.isAuthenticationFailure()) {
-                notifyAuthenticationFailure(preferences)
-                return@withContext Result.success()
+                val notified = notifyAuthenticationFailure(preferences)
+                details += PortalPollHistoryDetail("登录状态", "登录已过期", notificationTriggered = notified)
+                return@withContext finish("登录已过期", Result.success())
             }
             if (!PortalSnapshot.hasTable(examData.body, "exam-table")) {
                 error("考试安排页面结构无法识别")
             }
-            updateExamSnapshot(preferences, PortalSnapshot.tableRows(examData.body, "exam-table"))
+            details += updateExamSnapshot(preferences, PortalSnapshot.tableRows(examData.body, "exam-table"))
             preferences.edit()
                 .putBoolean(KEY_AUTH_FAILURE_NOTIFIED, false)
                 .putLong("last_checked", System.currentTimeMillis())
                 .apply()
-            Result.success()
-        }.getOrElse { Result.retry() }
+            finish("检查完成", Result.success())
+        }.getOrElse { error ->
+            details += PortalPollHistoryDetail(
+                category = "检查错误",
+                summary = error.message ?: "未知错误"
+            )
+            finish("检查失败", Result.retry())
+        }
     }
 
     private data class ResponseData(val code: Int, val finalUrl: String, val body: String) {
@@ -121,64 +157,104 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         preferences: android.content.SharedPreferences,
         semesterId: String,
         courseBody: String
-    ) {
+    ): PortalPollHistoryDetail {
         val newHash = PortalSnapshot.stableHash(courseBody)
         val hasEntries = PortalSnapshot.hasCourseEntries(courseBody)
         val oldHash = preferences.getString("course_hash", null)
         val oldSemester = preferences.getString("course_semester_id", null)
+        val oldPreview = preferences.getString("course_preview_v1", null)
+        val newPreview = PortalPollHistory.preview(courseBody)
+        val changed = PortalPollLogic.courseChanged(oldHash, oldSemester, newHash, semesterId, hasEntries)
         preferences.edit()
             .putString("course_hash", newHash)
             .putString("course_semester_id", semesterId)
             .putBoolean("course_has_entries", hasEntries)
+            .putString("course_preview_v1", newPreview)
             .apply()
-        if (
-            PortalPollLogic.courseChanged(oldHash, oldSemester, newHash, semesterId, hasEntries) &&
-            PortalNotificationPreferences.isEnabled(
+        val notified = changed && PortalNotificationPreferences.isEnabled(
                 preferences,
                 PortalNotificationPreferences.KEY_SCHEDULE
-            )
-        ) {
-            notify(3000, "课表变动", "检测到课表新增或课程安排发生变化，请及时查看。")
-        }
+            ) && notify(3000, "课表变动", "检测到课表新增或课程安排发生变化，请及时查看。")
+        return PortalPollHistoryDetail(
+            category = "课表",
+            summary = when {
+                oldHash == null -> "已建立初始数据"
+                changed -> "检测到变动"
+                else -> "无变化"
+            },
+            changed = changed,
+            notificationTriggered = notified,
+            difference = if (changed) PortalPollHistory.difference(oldPreview, newPreview) else ""
+        )
     }
 
     private fun updateExamSnapshot(
         preferences: android.content.SharedPreferences,
         rows: Set<String>
-    ) {
+    ): PortalPollHistoryDetail {
         val snapshot = rows.sorted().joinToString("\u001E")
         // v2 保存完整行而非前三列；使用新基线键避免升级后因快照格式变化误报。
         val previous = preferences.getString("exam_rows_v2", null)
         preferences.edit().putString("exam_rows_v2", snapshot).apply()
-        if (PortalPollLogic.contentChanged(previous, snapshot) && PortalNotificationPreferences.isEnabled(
+        val changed = PortalPollLogic.contentChanged(previous, snapshot)
+        val notified = changed && PortalNotificationPreferences.isEnabled(
                 preferences,
                 PortalNotificationPreferences.KEY_EXAM
-            )
-        ) {
-            notify(3002, "考试变动", "检测到考试新增或已有考试安排发生变化，请及时查看。")
-        }
+            ) && notify(3002, "考试变动", "检测到考试新增或已有考试安排发生变化，请及时查看。")
+        return PortalPollHistoryDetail(
+            category = "考试",
+            summary = when {
+                previous == null -> "已建立初始数据"
+                changed -> "检测到变动"
+                else -> "无变化"
+            },
+            changed = changed,
+            notificationTriggered = notified,
+            difference = if (changed) PortalPollHistory.difference(
+                previous?.let(PortalPollHistory::preview),
+                PortalPollHistory.preview(snapshot)
+            ) else ""
+        )
     }
 
     private fun compareAndNotify(
         preferences: android.content.SharedPreferences,
         key: String,
+        previewKey: String,
         newHash: String,
+        newPreview: String,
+        category: String,
         enabled: Boolean,
         id: Int,
         title: String,
         text: String
-    ) {
+    ): PortalPollHistoryDetail {
         val oldHash = preferences.getString(key, null)
-        if (newHash.isBlank()) return
-        preferences.edit().putString(key, newHash).apply()
-        if (enabled && PortalPollLogic.contentChanged(oldHash, newHash)) notify(id, title, text)
+        val oldPreview = preferences.getString(previewKey, null)
+        if (newHash.isBlank()) return PortalPollHistoryDetail(category, "未识别到有效数据")
+        preferences.edit().putString(key, newHash).putString(previewKey, newPreview).apply()
+        val changed = PortalPollLogic.contentChanged(oldHash, newHash)
+        val notified = enabled && changed && notify(id, title, text)
+        return PortalPollHistoryDetail(
+            category = category,
+            summary = when {
+                oldHash == null -> "已建立初始数据"
+                changed -> "检测到变动"
+                else -> "无变化"
+            },
+            changed = changed,
+            notificationTriggered = notified,
+            difference = if (changed) PortalPollHistory.difference(oldPreview, newPreview) else ""
+        )
     }
 
-    private fun notifyAuthenticationFailure(preferences: android.content.SharedPreferences) {
-        if (preferences.getBoolean(KEY_AUTH_FAILURE_NOTIFIED, false)) return
+    private fun notifyAuthenticationFailure(preferences: android.content.SharedPreferences): Boolean {
+        if (preferences.getBoolean(KEY_AUTH_FAILURE_NOTIFIED, false)) return false
         if (notify(3003, "教务登录已过期", "请打开掌上教务重新登录，以继续后台通知检测。")) {
             preferences.edit().putBoolean(KEY_AUTH_FAILURE_NOTIFIED, true).apply()
+            return true
         }
+        return false
     }
 
     private fun notify(id: Int, title: String, text: String): Boolean {

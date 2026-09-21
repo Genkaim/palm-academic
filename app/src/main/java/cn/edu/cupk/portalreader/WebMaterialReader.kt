@@ -18,6 +18,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.io.File
+import java.security.MessageDigest
 
 data class MaterialPage(
     val title: String,
@@ -122,6 +124,8 @@ sealed interface MaterialSection {
 }
 
 private class MaterialReaderBridge(
+    private val context: android.content.Context,
+    private val url: String,
     private val onContent: (MaterialPage) -> Unit
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -129,11 +133,14 @@ private class MaterialReaderBridge(
     @JavascriptInterface
     fun onContent(json: String) {
         runCatching { parseMaterialPage(json) }
-            .onSuccess { page -> mainHandler.post { onContent(page) } }
+            .onSuccess { page ->
+                MaterialPageCache.save(context, url, json)
+                mainHandler.post { onContent(page) }
+            }
     }
 }
 
-private fun parseMaterialPage(json: String): MaterialPage {
+internal fun parseMaterialPage(json: String): MaterialPage {
     val root = JSONObject(json)
     val choices = parseChoices(root.optJSONArray("choices"))
     val actions = parseActions(root.optJSONArray("actions"))
@@ -212,6 +219,36 @@ private fun parseMaterialPage(json: String): MaterialPage {
         actions = actions,
         sections = sections
     )
+}
+
+internal object MaterialPageCache {
+    private const val DIRECTORY = "material_page_cache"
+
+    fun load(context: android.content.Context, url: String): MaterialPage? = runCatching {
+        val file = cacheFile(context, url)
+        if (!file.isFile) return@runCatching null
+        parseMaterialPage(file.readText())
+    }.getOrNull()
+
+    fun save(context: android.content.Context, url: String, json: String) {
+        runCatching {
+            val target = cacheFile(context, url)
+            target.parentFile?.mkdirs()
+            val temporary = File(target.parentFile, "${target.name}.tmp")
+            temporary.writeText(json)
+            if (!temporary.renameTo(target)) {
+                target.writeText(json)
+                temporary.delete()
+            }
+        }
+    }
+
+    private fun cacheFile(context: android.content.Context, url: String): File {
+        val key = MessageDigest.getInstance("SHA-256")
+            .digest(url.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        return File(File(context.filesDir, DIRECTORY), "$key.json")
+    }
 }
 
 private fun parseChoices(array: JSONArray?): List<MaterialChoice> {
@@ -340,13 +377,18 @@ fun WebMaterialReader(
                 setBackgroundColor(portalViewColors(context).webBackground)
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
-                settings.cacheMode = WebSettings.LOAD_DEFAULT
+                // The native UI renders its last snapshot immediately; always fetch fresh data
+                // behind it so opening a secondary page also performs a real refresh.
+                settings.cacheMode = WebSettings.LOAD_NO_CACHE
                 settings.blockNetworkImage = true
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 configurePortalWebDarkening(settings, PortalThemePreferences.isDark(context))
-                addJavascriptInterface(MaterialReaderBridge(onContent), "PalmAcademicBridge")
+                addJavascriptInterface(
+                    MaterialReaderBridge(context.applicationContext, url, onContent),
+                    "PalmAcademicBridge"
+                )
                 webViewClient = object : WebViewClient() {
                     private fun isLoginPage(pageUrl: String?): Boolean =
                         pageUrl != null && Uri.parse(pageUrl).path?.trimEnd('/')?.endsWith("/login") == true

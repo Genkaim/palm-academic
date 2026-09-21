@@ -214,7 +214,7 @@ private fun MaterialPortalContent(
     val featureHintPreferences = remember {
         context.getSharedPreferences(FEATURE_HINT_PREFERENCES, android.content.Context.MODE_PRIVATE)
     }
-    var page by remember { mutableStateOf<MaterialPage?>(null) }
+    var page by remember(url) { mutableStateOf(MaterialPageCache.load(context, url)) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var refreshToken by remember { mutableIntStateOf(0) }
@@ -298,11 +298,12 @@ private fun MaterialPortalContent(
             }
 
             val contentStage = when {
+                // A cached snapshot is useful even while session validation or refresh is running.
+                page != null -> MaterialContentStage.CONTENT
                 sessionState is PortalSessionState.Checking -> MaterialContentStage.AUTHENTICATING
                 sessionState is PortalSessionState.Unavailable -> MaterialContentStage.AUTH_UNAVAILABLE
                 sessionState is PortalSessionState.Expired || sessionState is PortalSessionState.NoSession ->
                     MaterialContentStage.SESSION_EXPIRED
-                page != null -> MaterialContentStage.CONTENT
                 error != null -> MaterialContentStage.ERROR
                 else -> MaterialContentStage.FETCHING
             }
@@ -422,7 +423,17 @@ private fun MaterialPageList(
                 }
             }
         }
-        if (loading) {
+        if (loading && page.sections.isNotEmpty()) {
+            item(key = "page-refreshing") {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().animateItem(
+                        fadeInSpec = tween(160, easing = FastOutSlowInEasing),
+                        placementSpec = tween(220, easing = FastOutSlowInEasing),
+                        fadeOutSpec = tween(100)
+                    )
+                )
+            }
+        } else if (loading) {
             item(key = "page-loading") {
                 Box(
                     Modifier.fillMaxWidth().padding(vertical = 48.dp).animateItem(
@@ -436,8 +447,7 @@ private fun MaterialPageList(
         } else if (page.sections.isEmpty()) {
             item { ErrorCard("页面已加载，但当前适配器没有识别出可展示的内容。") }
         }
-        if (!loading) {
-            page.sections.forEach { section ->
+        page.sections.forEach { section ->
                 item(key = section.hashCode()) {
                     Box(
                         Modifier.animateItem(
@@ -459,7 +469,6 @@ private fun MaterialPageList(
                     }
                 }
             }
-        }
     }
 }
 
