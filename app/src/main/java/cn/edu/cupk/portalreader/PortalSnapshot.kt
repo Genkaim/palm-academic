@@ -3,6 +3,11 @@ package cn.edu.cupk.portalreader
 import java.security.MessageDigest
 
 object PortalSnapshot {
+    data class ParsedTable(
+        val headers: List<String>,
+        val rows: List<List<String>>
+    )
+
     fun stableHash(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.replace(Regex("\\s+"), " ").trim().toByteArray())
         .joinToString("") { "%02x".format(it) }
@@ -24,21 +29,9 @@ object PortalSnapshot {
     }
 
     fun tableRows(html: String, className: String): Set<String> {
-        val table = Regex(
-            """<table\b[^>]*class\s*=\s*[\"'][^\"']*\b${Regex.escape(className)}\b[^\"']*[\"'][^>]*>([\s\S]*?)</table>""",
-            RegexOption.IGNORE_CASE
-        ).find(html)?.groupValues?.getOrNull(1) ?: return emptySet()
-        return Regex("""<tr\b[^>]*>([\s\S]*?)</tr>""", RegexOption.IGNORE_CASE)
-            .findAll(table)
-            .map { row ->
-                val cells = Regex("""<t[dh]\b[^>]*>([\s\S]*?)</t[dh]>""", RegexOption.IGNORE_CASE)
-                    .findAll(row.groupValues[1])
-                    .map { visibleDocument(it.groupValues[1]) }
-                    .filter(String::isNotBlank)
-                    .toList()
-                if (cells.isNotEmpty()) cells.joinToString(" | ")
-                else visibleDocument(row.groupValues[1])
-            }
+        return parseTables(html, className)
+            .flatMap { it.rows }
+            .map { cells -> cells.joinToString(" | ") }
             .filter { row ->
                 row.isNotBlank() &&
                     !row.contains("课程名称") &&
@@ -46,6 +39,87 @@ object PortalSnapshot {
                     !row.contains("没有")
             }
             .toSet()
+    }
+
+    fun parseTables(html: String, className: String): List<ParsedTable> = Regex(
+        """<table\b[^>]*class\s*=\s*[\"'][^\"']*\b${Regex.escape(className)}\b[^\"']*[\"'][^>]*>([\s\S]*?)</table>""",
+        RegexOption.IGNORE_CASE
+    ).findAll(html).mapNotNull { tableMatch ->
+        val rows = Regex("""<tr\b[^>]*>([\s\S]*?)</tr>""", RegexOption.IGNORE_CASE)
+            .findAll(tableMatch.groupValues[1])
+            .map { row ->
+                Regex("""<t[dh]\b[^>]*>([\s\S]*?)</t[dh]>""", RegexOption.IGNORE_CASE)
+                    .findAll(row.groupValues[1])
+                    .map { visibleDocument(it.groupValues[1]) }
+                    .toList()
+            }
+            .filter { cells -> cells.any(String::isNotBlank) }
+            .toList()
+        if (rows.isEmpty()) null else ParsedTable(
+            headers = rows.first(),
+            rows = rows.drop(1)
+        )
+    }.toList()
+
+    fun parsedDataJson(html: String, type: String, tableClass: String? = null): String {
+        val normalized = html.trim()
+        if (normalized.startsWith('{') || normalized.startsWith('[')) return normalized
+        val tables = tableClass?.let { parseTables(html, it) }.orEmpty()
+        return buildString {
+            appendLine("{")
+            appendLine("  \"type\": ${jsonString(type)},")
+            appendLine("  \"tables\": [")
+            tables.forEachIndexed { tableIndex, table ->
+                appendLine("    {")
+                appendLine("      \"headers\": ${jsonArray(table.headers)},")
+                appendLine("      \"rows\": [")
+                table.rows.forEachIndexed { rowIndex, row ->
+                    append("        ${jsonArray(row)}")
+                    if (rowIndex != table.rows.lastIndex) append(',')
+                    appendLine()
+                }
+                appendLine("      ]")
+                append("    }")
+                if (tableIndex != tables.lastIndex) append(',')
+                appendLine()
+            }
+            appendLine("  ],")
+            appendLine("  \"text\": ${jsonString(if (tables.isEmpty()) visibleDocument(html) else "")}")
+            append('}')
+        }
+    }
+
+    fun historyDisplayContent(value: String): String {
+        val trimmed = value.trim()
+        return if (trimmed.startsWith('<') || trimmed.contains("<html", ignoreCase = true)) {
+            parsedDataJson(value, "legacy-html")
+        } else {
+            value
+        }
+    }
+
+    private fun jsonArray(values: List<String>): String =
+        values.joinToString(prefix = "[", postfix = "]") { jsonString(it) }
+
+    private fun jsonString(value: String): String = buildString {
+        append('"')
+        value.forEach { character ->
+            when (character) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\b' -> append("\\b")
+                '\u000C' -> append("\\f")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> if (character.code < 0x20) {
+                    append("\\u%04x".format(character.code))
+                } else {
+                    append(character)
+                }
+            }
+        }
+        append('"')
     }
 
     fun hasTable(html: String, className: String): Boolean = Regex(

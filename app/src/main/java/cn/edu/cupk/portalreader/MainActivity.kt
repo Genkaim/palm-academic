@@ -12,7 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -60,9 +60,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -238,19 +236,12 @@ private fun LoginContent(
     var revealPassword by remember { mutableStateOf(false) }
     val density = LocalDensity.current
     val imeBottom = WindowInsets.ime.getBottom(density)
-    var observedImeHeight by remember { mutableIntStateOf(1) }
-    SideEffect {
-        if (imeBottom > observedImeHeight) observedImeHeight = imeBottom
-    }
-    val imeProgress = if (imeBottom == 0) 0f
-    else (imeBottom.toFloat() / observedImeHeight.coerceAtLeast(1)).coerceIn(0f, 1f)
     val animatedImeProgress by animateFloatAsState(
-        targetValue = imeProgress,
-        animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing),
+        targetValue = if (imeBottom > 0) 1f else 0f,
+        animationSpec = tween(durationMillis = 180, easing = LinearOutSlowInEasing),
         label = "login-ime-lift"
     )
-    val loginLiftPx = with(density) { 140.dp.toPx() }
-    val headerLiftPx = with(density) { 18.dp.toPx() }
+    val contentLiftPx = with(density) { 88.dp.toPx() }
 
     LaunchedEffect(model.selectedSchoolId) {
         username = model.rememberedCredential?.username.orEmpty()
@@ -267,13 +258,12 @@ private fun LoginContent(
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 24.dp, vertical = 40.dp),
-            verticalArrangement = Arrangement.Center
+            verticalArrangement = Arrangement.Top
         ) {
             item {
                 Column(
                     modifier = Modifier.graphicsLayer {
-                        alpha = 1f - animatedImeProgress
-                        translationY = -headerLiftPx * animatedImeProgress
+                        translationY = -contentLiftPx * animatedImeProgress
                     }
                 ) {
                     Surface(Modifier.size(64.dp), RoundedCornerShape(20.dp), color = PortalBlue) {
@@ -294,15 +284,11 @@ private fun LoginContent(
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(Modifier.height(28.dp))
-                }
-                androidx.compose.material3.Card(
-                    modifier = Modifier.graphicsLayer {
-                        translationY = -loginLiftPx * animatedImeProgress
-                    },
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
-                ) {
-                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    androidx.compose.material3.Card(
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
+                    ) {
+                        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         Text("账号密码登录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                         OutlinedButton(
                             onClick = openSchoolSelection,
@@ -371,6 +357,7 @@ private fun LoginContent(
                             Icon(Icons.Outlined.OpenInBrowser, null)
                             Spacer(Modifier.size(8.dp))
                             Text("通过教务网页登录")
+                        }
                         }
                     }
                 }

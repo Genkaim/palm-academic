@@ -190,13 +190,15 @@ private fun HistoryEntryCard(
                             if (detail.technicalDetails.isNotBlank()) {
                                 DetailBlock("技术详情", detail.technicalDetails)
                             }
-                            if (detail.previousContent.isNotBlank()) {
-                                DetailBlock("上次记录内容", detail.previousContent, monospace = true)
+                            val previousContent = PortalSnapshot.historyDisplayContent(detail.previousContent)
+                            val currentContent = PortalSnapshot.historyDisplayContent(detail.currentContent)
+                            if (previousContent.isNotBlank()) {
+                                DetailBlock("上次解析数据", previousContent, monospace = true)
                             }
-                            if (detail.requestUrl.isNotBlank() || detail.currentContent.isNotBlank()) {
+                            if (detail.requestUrl.isNotBlank() || currentContent.isNotBlank()) {
                                 DetailBlock(
-                                    "本次完整响应",
-                                    detail.currentContent.ifBlank { "（空响应）" },
+                                    "本次解析数据",
+                                    currentContent.ifBlank { "（空响应）" },
                                     monospace = true
                                 )
                             }

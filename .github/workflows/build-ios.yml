@@ -1,0 +1,44 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      - name: Build unsigned device app
+        run: >-
+          xcodebuild
+          -project iosApp/PalmAcademicIOS.xcodeproj
+          -scheme PalmAcademic
+          -configuration Release
+          -sdk iphoneos
+          -derivedDataPath build/ios
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGN_IDENTITY=""
+          build
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          mkdir -p build/package/Payload artifacts
+          cp -R build/ios/Build/Products/Release-iphoneos/PalmAcademic.app build/package/Payload/
+          ditto -c -k --sequesterRsrc --keepParent build/package/Payload artifacts/PalmAcademic-v0.3.4-ios-unsigned.ipa
+          unzip -t artifacts/PalmAcademic-v0.3.4-ios-unsigned.ipa
+          shasum -a 256 artifacts/PalmAcademic-v0.3.4-ios-unsigned.ipa > artifacts/PalmAcademic-v0.3.4-ios-unsigned.ipa.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PalmAcademic-v0.3.4-ios-unsigned
+          path: artifacts/*

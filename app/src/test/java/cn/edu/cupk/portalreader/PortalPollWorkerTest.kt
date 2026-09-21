@@ -50,4 +50,30 @@ class PortalPollWorkerTest {
     fun loginRedirectWithQuery_isAuthenticationFailure() {
         assertTrue(AuthRepository.isLoginPage("", "https://example.test/student/login?expired=1"))
     }
+
+    @Test
+    fun parsedDataJson_exposesTableDataWithoutHtml() {
+        val html = """
+            <html><body><table class="student-grade-table">
+              <tr><th>课程</th><th>成绩</th></tr>
+              <tr><td>高等数学</td><td>95</td></tr>
+            </table></body></html>
+        """.trimIndent()
+        val json = PortalSnapshot.parsedDataJson(html, "grade", "student-grade-table")
+
+        assertTrue(json.contains("\"type\": \"grade\""))
+        assertTrue(json.contains("高等数学"))
+        assertTrue(json.contains("95"))
+        assertFalse(json.contains("<table"))
+        assertFalse(json.contains("<html"))
+    }
+
+    @Test
+    fun historyDisplayContent_convertsLegacyHtmlToJson() {
+        val displayed = PortalSnapshot.historyDisplayContent("<html><body>旧成绩 88</body></html>")
+
+        assertTrue(displayed.contains("\"type\": \"legacy-html\""))
+        assertTrue(displayed.contains("旧成绩 88"))
+        assertFalse(displayed.contains("<html"))
+    }
 }

@@ -120,13 +120,19 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 error("成绩请求失败：HTTP ${gradeData.code}")
             }
             val visibleGrades = PortalSnapshot.visibleDocument(gradeData.body)
+            val parsedGrades = PortalSnapshot.parsedDataJson(
+                gradeData.body,
+                type = "grade",
+                tableClass = "student-grade-table"
+            )
             if (visibleGrades.isNotBlank()) {
-                details += updateGradeSnapshot(preferences, gradeData, visibleGrades)
+                details += updateGradeSnapshot(preferences, gradeData, visibleGrades, parsedGrades)
             } else {
                 details += gradeData.toHistoryDetail(
                     category = "成绩",
                     summary = "未识别到成绩内容",
-                    technicalDetails = "PortalSnapshot.visibleDocument() 的结果为空。"
+                    technicalDetails = "PortalSnapshot.visibleDocument() 的结果为空。",
+                    parsedContent = parsedGrades
                 )
             }
 
@@ -141,18 +147,25 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 details += examData.toHistoryDetail("考试", "请求失败")
                 error("考试请求失败：HTTP ${examData.code}")
             }
+            val parsedExams = PortalSnapshot.parsedDataJson(
+                examData.body,
+                type = "exam",
+                tableClass = "exam-table"
+            )
             if (!PortalSnapshot.hasTable(examData.body, "exam-table")) {
                 details += examData.toHistoryDetail(
                     category = "考试",
                     summary = "页面结构无法识别",
-                    technicalDetails = "未找到 class 包含 exam-table 的表格。"
+                    technicalDetails = "未找到 class 包含 exam-table 的表格。",
+                    parsedContent = parsedExams
                 )
                 error("考试安排页面结构无法识别")
             }
             details += updateExamSnapshot(
                 preferences,
                 examData,
-                PortalSnapshot.tableRows(examData.body, "exam-table")
+                PortalSnapshot.tableRows(examData.body, "exam-table"),
+                parsedExams
             )
             preferences.edit()
                 .putBoolean(KEY_AUTH_FAILURE_NOTIFIED, false)
@@ -184,7 +197,8 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         fun toHistoryDetail(
             category: String,
             summary: String,
-            technicalDetails: String = ""
+            technicalDetails: String = "",
+            parsedContent: String = PortalSnapshot.parsedDataJson(body, category)
         ) = PortalPollHistoryDetail(
             category = category,
             summary = summary,
@@ -194,7 +208,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             technicalDetails = listOf(transportDetails, technicalDetails)
                 .filter { it.isNotBlank() }
                 .joinToString("\n\n"),
-            currentContent = body
+            currentContent = parsedContent
         )
     }
 
@@ -255,18 +269,22 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         response: ResponseData
     ): PortalPollHistoryDetail {
         val courseBody = response.body
+        val parsedCourse = PortalSnapshot.parsedDataJson(courseBody, "course")
         val newHash = PortalSnapshot.stableHash(courseBody)
         val hasEntries = PortalSnapshot.hasCourseEntries(courseBody)
         val oldHash = preferences.getString("course_hash", null)
         val oldSemester = preferences.getString("course_semester_id", null)
-        val oldContent = preferences.getString("course_raw_v1", null)
-            ?: preferences.getString("course_preview_v1", null)
+        val oldContent = preferences.getString("course_parsed_json_v2", null)
+            ?: preferences.getString("course_raw_v1", null)?.takeIf { value ->
+                value.trim().startsWith('{') || value.trim().startsWith('[')
+            }
         val changed = PortalPollLogic.courseChanged(oldHash, oldSemester, newHash, semesterId, hasEntries)
         preferences.edit()
             .putString("course_hash", newHash)
             .putString("course_semester_id", semesterId)
             .putBoolean("course_has_entries", hasEntries)
-            .putString("course_raw_v1", courseBody)
+            .putString("course_parsed_json_v2", parsedCourse)
+            .remove("course_raw_v1")
             .apply()
         val enabled = PortalNotificationPreferences.isEnabled(
             preferences,
@@ -297,22 +315,24 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 append("本次 SHA-256：$newHash")
             },
             previousContent = oldContent.orEmpty(),
-            currentContent = courseBody
+            currentContent = parsedCourse
         )
     }
 
     private fun updateExamSnapshot(
         preferences: android.content.SharedPreferences,
         response: ResponseData,
-        rows: Set<String>
+        rows: Set<String>,
+        parsedContent: String
     ): PortalPollHistoryDetail {
         val snapshot = rows.sorted().joinToString("\u001E")
         // v2 保存完整行而非前三列；使用新基线键避免升级后因快照格式变化误报。
         val previous = preferences.getString("exam_rows_v2", null)
-        val previousRaw = preferences.getString("exam_raw_v1", null)
+        val previousContent = preferences.getString("exam_parsed_json_v2", null)
         preferences.edit()
             .putString("exam_rows_v2", snapshot)
-            .putString("exam_raw_v1", response.body)
+            .putString("exam_parsed_json_v2", parsedContent)
+            .remove("exam_raw_v1")
             .apply()
         val changed = PortalPollLogic.contentChanged(previous, snapshot)
         val enabled = PortalNotificationPreferences.isEnabled(
@@ -338,28 +358,27 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 appendLine(response.transportDetails)
                 appendLine()
                 appendLine("解析行数：${rows.size}")
-                appendLine("比较前行快照：")
-                appendLine(previous?.replace("\u001E", "\n") ?: "（无）")
-                appendLine("比较后行快照：")
-                append(snapshot.replace("\u001E", "\n"))
+                appendLine("上次 SHA-256：${previous?.let(PortalSnapshot::stableHash) ?: "（无）"}")
+                append("本次 SHA-256：${PortalSnapshot.stableHash(snapshot)}")
             },
-            previousContent = previousRaw ?: previous.orEmpty().replace("\u001E", "\n"),
-            currentContent = response.body
+            previousContent = previousContent.orEmpty(),
+            currentContent = parsedContent
         )
     }
 
     private fun updateGradeSnapshot(
         preferences: android.content.SharedPreferences,
         response: ResponseData,
-        visibleContent: String
+        visibleContent: String,
+        parsedContent: String
     ): PortalPollHistoryDetail {
         val newHash = PortalSnapshot.stableHash(visibleContent)
         val oldHash = preferences.getString("grade_hash", null)
-        val oldContent = preferences.getString("grade_raw_v1", null)
-            ?: preferences.getString("grade_preview_v1", null)
+        val oldContent = preferences.getString("grade_parsed_json_v2", null)
         preferences.edit()
             .putString("grade_hash", newHash)
-            .putString("grade_raw_v1", response.body)
+            .putString("grade_parsed_json_v2", parsedContent)
+            .remove("grade_raw_v1")
             .apply()
         val changed = PortalPollLogic.contentChanged(oldHash, newHash)
         val enabled = PortalNotificationPreferences.isEnabled(
@@ -385,12 +404,10 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 appendLine(response.transportDetails)
                 appendLine()
                 appendLine("上次 SHA-256：${oldHash ?: "（无）"}")
-                appendLine("本次 SHA-256：$newHash")
-                appendLine("用于比较的完整可见文本：")
-                append(visibleContent)
+                append("本次 SHA-256：$newHash")
             },
             previousContent = oldContent.orEmpty(),
-            currentContent = response.body
+            currentContent = parsedContent
         )
     }
 
