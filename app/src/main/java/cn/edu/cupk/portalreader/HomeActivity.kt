@@ -1,6 +1,7 @@
 package cn.edu.cupk.portalreader
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -38,11 +39,13 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -123,6 +126,22 @@ private fun HomeContent(
         PortalNotificationPreferences.enabledCount(notificationPreferences)
     }
     var query by remember { mutableStateOf("") }
+    var automaticUpdateChecked by remember { mutableStateOf(false) }
+    var availableRelease by remember { mutableStateOf<GitHubRelease?>(null) }
+    LaunchedEffect(sessionState) {
+        if (sessionState is PortalSessionState.Ready && !automaticUpdateChecked) {
+            automaticUpdateChecked = true
+            runCatching { PalmAcademicGitHub.latestRelease() }
+                .onSuccess { release ->
+                    if (
+                        release.isNewerThan(BuildConfig.VERSION_NAME) &&
+                        PortalSessionCoordinator.state.value is PortalSessionState.Ready
+                    ) {
+                        availableRelease = release
+                    }
+                }
+        }
+    }
     val visibleGroups = remember(query, school) {
         if (query.isBlank()) school.groups
         else school.groups.mapNotNull { group ->
@@ -242,6 +261,31 @@ private fun HomeContent(
             text = { Text("上次保存的教务登录状态已过期，请重新登录。") },
             confirmButton = { Button(onClick = onSessionExpired) { Text("重新登录") } }
         )
+    }
+    if (sessionState is PortalSessionState.Ready) {
+        availableRelease?.let { release ->
+            AlertDialog(
+                onDismissRequest = { availableRelease = null },
+                title = { Text("发现新版本 ${release.tagName}") },
+                text = {
+                    Text(
+                        release.notes.ifBlank { "新版本已发布，可前往 GitHub 下载更新。" }
+                            .take(2000)
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        availableRelease = null
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(release.apkUrl ?: release.pageUrl))
+                        )
+                    }) { Text(if (release.apkUrl != null) "下载 APK" else "查看 Release") }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { availableRelease = null }) { Text("稍后") }
+                }
+            )
+        }
     }
 }
 

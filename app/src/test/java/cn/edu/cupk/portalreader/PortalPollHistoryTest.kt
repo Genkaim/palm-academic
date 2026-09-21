@@ -1,24 +1,38 @@
 package cn.edu.cupk.portalreader
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PortalPollHistoryTest {
     @Test
-    fun preview_makesExamRowsReadable() {
-        assertEquals("考试 A\n考试 B", PortalPollHistory.preview("考试 A\u001E考试 B"))
+    fun detail_keepsCompleteResponseWithoutTruncation() {
+        val fullResponse = "原始响应".repeat(2_000)
+        val detail = PortalPollHistoryDetail(
+            category = "成绩",
+            summary = "无变化",
+            currentContent = fullResponse
+        )
+        assertEquals(fullResponse, detail.currentContent)
     }
 
     @Test
-    fun difference_includesBeforeAndAfterContent() {
-        val difference = PortalPollHistory.difference("旧安排", "新安排")
-        assertTrue(difference.contains("更新前：旧安排"))
-        assertTrue(difference.contains("更新后：新安排"))
-    }
-
-    @Test
-    fun difference_withoutStoredPreview_stillShowsCurrentContent() {
-        assertEquals("更新后：新数据", PortalPollHistory.difference(null, "新数据"))
+    fun detail_exposesRequestAndNotificationState() {
+        val detail = PortalPollHistoryDetail(
+            category = "考试",
+            summary = "检测到变动",
+            changed = true,
+            notificationEnabled = true,
+            notificationTriggered = true,
+            requestUrl = "https://example.test/exam",
+            finalUrl = "https://example.test/exam?redirected=1",
+            responseCode = 200,
+            technicalDetails = "完整解析详情",
+            previousContent = "旧数据",
+            currentContent = "新数据"
+        )
+        assertEquals(true, detail.notificationEnabled)
+        assertEquals("https://example.test/exam", detail.requestUrl)
+        assertEquals("旧数据", detail.previousContent)
+        assertEquals("新数据", detail.currentContent)
     }
 }

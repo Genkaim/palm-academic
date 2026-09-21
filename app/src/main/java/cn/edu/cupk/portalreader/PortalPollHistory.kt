@@ -9,7 +9,15 @@ data class PortalPollHistoryDetail(
     val category: String,
     val summary: String,
     val changed: Boolean = false,
+    val notificationEnabled: Boolean? = null,
     val notificationTriggered: Boolean = false,
+    val requestUrl: String = "",
+    val finalUrl: String = "",
+    val responseCode: Int? = null,
+    val technicalDetails: String = "",
+    val previousContent: String = "",
+    val currentContent: String = "",
+    // Kept for records written by v0.3.2 and earlier.
     val difference: String = ""
 )
 
@@ -22,8 +30,6 @@ data class PortalPollHistoryEntry(
 
 object PortalPollHistory {
     private const val FILE_NAME = "portal_poll_history.json"
-    private const val MAX_ENTRIES = 200
-    private const val MAX_PREVIEW_LENGTH = 1200
     private val lock = Any()
 
     fun read(context: Context): List<PortalPollHistoryEntry> = synchronized(lock) {
@@ -31,26 +37,12 @@ object PortalPollHistory {
     }
 
     fun append(context: Context, entry: PortalPollHistoryEntry) = synchronized(lock) {
-        val entries = (listOf(entry) + readUnlocked(context)).take(MAX_ENTRIES)
+        val entries = listOf(entry) + readUnlocked(context)
         writeUnlocked(context, entries)
     }
 
     fun clear(context: Context) = synchronized(lock) {
         historyFile(context).delete()
-    }
-
-    fun preview(value: String): String = value
-        .replace("\u001E", "\n")
-        .replace(Regex("[\\t\\r ]+"), " ")
-        .replace(Regex("\\n+"), "\n")
-        .trim()
-        .let { if (it.length <= MAX_PREVIEW_LENGTH) it else it.take(MAX_PREVIEW_LENGTH) + "…" }
-
-    fun difference(previous: String?, current: String): String {
-        if (previous == null) return "更新后：${current.ifBlank { "（空）" }}"
-        val before = previous.ifBlank { "（空）" }
-        val after = current.ifBlank { "（空）" }
-        return "更新前：$before\n更新后：$after"
     }
 
     private fun readUnlocked(context: Context): List<PortalPollHistoryEntry> = runCatching {
@@ -84,7 +76,14 @@ object PortalPollHistory {
                     put("category", detail.category)
                     put("summary", detail.summary)
                     put("changed", detail.changed)
+                    detail.notificationEnabled?.let { put("notificationEnabled", it) }
                     put("notificationTriggered", detail.notificationTriggered)
+                    put("requestUrl", detail.requestUrl)
+                    put("finalUrl", detail.finalUrl)
+                    detail.responseCode?.let { put("responseCode", it) }
+                    put("technicalDetails", detail.technicalDetails)
+                    put("previousContent", detail.previousContent)
+                    put("currentContent", detail.currentContent)
                     put("difference", detail.difference)
                 })
             }
@@ -103,11 +102,24 @@ object PortalPollHistory {
                         category = detail.optString("category"),
                         summary = detail.optString("summary"),
                         changed = detail.optBoolean("changed"),
+                        notificationEnabled = detail.optBooleanOrNull("notificationEnabled"),
                         notificationTriggered = detail.optBoolean("notificationTriggered"),
+                        requestUrl = detail.optString("requestUrl"),
+                        finalUrl = detail.optString("finalUrl"),
+                        responseCode = detail.optIntOrNull("responseCode"),
+                        technicalDetails = detail.optString("technicalDetails"),
+                        previousContent = detail.optString("previousContent"),
+                        currentContent = detail.optString("currentContent"),
                         difference = detail.optString("difference")
                     )
                 }
             }
         )
     }
+
+    private fun JSONObject.optBooleanOrNull(key: String): Boolean? =
+        if (has(key) && !isNull(key)) getBoolean(key) else null
+
+    private fun JSONObject.optIntOrNull(key: String): Int? =
+        if (has(key) && !isNull(key)) getInt(key) else null
 }

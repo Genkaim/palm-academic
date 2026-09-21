@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteSweep
@@ -39,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import java.time.Instant
 import java.time.ZoneId
@@ -157,33 +159,89 @@ private fun HistoryEntryCard(
                 HorizontalDivider()
                 entry.details.forEachIndexed { index, detail ->
                     if (index > 0) HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(detail.category, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                            if (detail.notificationTriggered) {
+                    SelectionContainer {
+                        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    "已通知",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary
+                                    detail.category,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (detail.notificationTriggered) {
+                                    Text(
+                                        "已通知",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            DetailLine("结果", detail.summary)
+                            DetailLine("检测到变化", if (detail.changed) "是" else "否")
+                            detail.notificationEnabled?.let {
+                                DetailLine("该项提醒", if (it) "已开启" else "未开启")
+                            }
+                            DetailLine(
+                                "通知触发",
+                                if (detail.notificationTriggered) "已成功发出" else "未发出"
+                            )
+                            detail.responseCode?.let { DetailLine("HTTP 状态", it.toString()) }
+                            if (detail.requestUrl.isNotBlank()) DetailBlock("请求地址", detail.requestUrl)
+                            if (detail.finalUrl.isNotBlank()) DetailBlock("最终地址", detail.finalUrl)
+                            if (detail.technicalDetails.isNotBlank()) {
+                                DetailBlock("技术详情", detail.technicalDetails)
+                            }
+                            if (detail.previousContent.isNotBlank()) {
+                                DetailBlock("上次记录内容", detail.previousContent, monospace = true)
+                            }
+                            if (detail.requestUrl.isNotBlank() || detail.currentContent.isNotBlank()) {
+                                DetailBlock(
+                                    "本次完整响应",
+                                    detail.currentContent.ifBlank { "（空响应）" },
+                                    monospace = true
                                 )
                             }
-                        }
-                        Text(
-                            detail.summary,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (detail.changed && detail.difference.isNotBlank()) {
-                            Text(
-                                detail.difference,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
+                            if (
+                                detail.difference.isNotBlank() &&
+                                detail.previousContent.isBlank() &&
+                                detail.currentContent.isBlank()
+                            ) {
+                                DetailBlock("旧版差异记录", detail.difference, monospace = true)
+                            }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "$label：",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(value, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun DetailBlock(label: String, value: String, monospace: Boolean = false) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(
+            "$label：",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default
+            ),
+            color = MaterialTheme.colorScheme.onSurface
+        )
     }
 }
 
