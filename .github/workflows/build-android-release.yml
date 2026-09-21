@@ -28,10 +28,28 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build Android release APK
+        id: androidbuild
+        continue-on-error: true
         run: |
+          set -o pipefail
           chmod +x ./gradlew
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace
           mkdir -p build
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build/android-gradle.log
+
+      - name: Upload Android build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PalmAcademic-v0.3.6-android-diagnostics
+          path: build/android-gradle.log
+          if-no-files-found: ignore
+
+      - name: Stop after failed Android build
+        if: steps.androidbuild.outcome == 'failure'
+        run: exit 1
+
+      - name: Prepare Android APK
+        run: |
           cp app/build/outputs/apk/release/app-release.apk build/PalmAcademic-v0.3.6.apk
 
       - name: Verify Android package version
