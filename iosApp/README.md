@@ -4,7 +4,7 @@
 
 ## 编译
 
-在 GitHub Actions 中手动运行 **Build native iOS migration**，或将代码推送到 `ios-native-rewrite` 分支后自动触发。工作流使用 macOS、XcodeGen 和 Xcode 生成未签名的 iPhoneOS IPA。
+在 GitHub Actions 中手动运行 **Build native iOS migration**，或将代码推送到 `ios-native-rewrite` 分支后自动触发。工作流使用 macOS、XcodeGen 和 Xcode 生成未签名的 iPhoneOS IPA。推送 `v0.3.6` 标签会在编译成功后自动创建预发布 Release。
 
 生成的 IPA 仍需要 Apple 开发者证书签名或侧载工具重签名才能安装。
 

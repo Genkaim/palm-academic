@@ -52,6 +52,8 @@ Release 签名配置不进入仓库。复制 `signing.properties.example` 为 `s
 
 iOS 原生迁移预览位于 `iosApp/` 的 `ios-native-rewrite` 分支，需要 macOS、Xcode 和 XcodeGen。GitHub Actions 的 `Build native iOS migration` 工作流会生成未签名 IPA；该包必须使用 Apple 开发者证书或侧载工具重签名后才能安装。此迁移版本目前仅完成 GitHub macOS 编译验证，**没有经过实体 iPhone 或 iPad 实机测试**，不应直接视为可发布版本。
 
+将 `v0.3.6` 标签推送到该分支后，GitHub Actions 会在编译成功后自动创建原生 iOS 迁移预览 Release。
+
 ## 在线更新
 
 - 学校适配：读取 GitHub 仓库 `main` 分支中上述 assets 目录。
