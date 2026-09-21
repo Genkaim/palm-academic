@@ -30,6 +30,8 @@ jobs:
         run: xcodegen generate
 
       - name: Build unsigned iPhoneOS app
+        id: xcodebuild
+        continue-on-error: true
         run: |
           set -o pipefail
           xcodebuild \
@@ -41,6 +43,18 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build | tee build/ios-native-xcodebuild.log
+
+      - name: Upload Xcode diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PalmAcademic-v0.3.6-ios-native-diagnostics
+          path: build/ios-native-xcodebuild.log
+          if-no-files-found: ignore
+
+      - name: Stop after failed Xcode build
+        if: steps.xcodebuild.outcome == 'failure'
+        run: exit 1
 
       - name: Package unsigned IPA
         run: |
