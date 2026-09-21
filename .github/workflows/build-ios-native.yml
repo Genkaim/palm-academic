@@ -26,7 +26,8 @@ jobs:
           xcodegen version
 
       - name: Generate Xcode project
-        run: xcodegen generate --spec iosApp/project.yml --project iosApp/PalmAcademicIOS.xcodeproj
+        working-directory: iosApp
+        run: xcodegen generate
 
       - name: Build unsigned iPhoneOS app
         run: |
