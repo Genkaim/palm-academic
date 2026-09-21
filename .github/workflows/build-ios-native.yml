@@ -30,6 +30,19 @@ jobs:
           fi
           xcodegen version
 
+      - name: Set up Java for Android build
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build Android APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease
+          mkdir -p build
+          cp app/build/outputs/apk/release/app-release.apk build/PalmAcademic-v0.3.6.apk
+
       - name: Generate Xcode project
         working-directory: iosApp
         run: xcodegen generate
@@ -86,12 +99,13 @@ jobs:
         with:
           name: PalmAcademic-v0.3.6-ios-native-unsigned
           path: |
+            build/PalmAcademic-v0.3.6.apk
             build/PalmAcademic-v0.3.6-ios-native-unsigned.ipa
             build/ios-native-ipa/NO-PHYSICAL-DEVICE-TEST.txt
             build/ios-native-xcodebuild.log
 
       - name: Prepare release notes
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.ref == 'refs/heads/ios-native-rewrite' || github.ref == 'refs/tags/v0.3.6'
         shell: bash
         run: |
           cat > build/PalmAcademic-v0.3.6-release-notes.md <<'EOF'
@@ -99,20 +113,34 @@ jobs:
 
           - 使用原生 SwiftUI + URLSession，替换原 WKWebView 壳。
           - 包含原生登录、学校选择、门户分组和结构化页面展示。
+          - Android APK 版本为 0.3.6（versionCode 18），与 iOS MARKETING_VERSION 0.3.6 一致。
           - IPA 未签名，需要 Apple 开发者证书签名或侧载重签名。
           - **此版本没有经过实体 iPhone 或 iPad 实机测试，不建议作为正式生产版本使用。**
-          - Android 主线功能未合并到此预览分支；后台监测、通知历史、更新检测和课表导出仍待后续移植。
+          - iOS 的后台监测、通知历史、更新检测和课表导出仍待后续原生移植。
           EOF
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.ref == 'refs/heads/ios-native-rewrite' || github.ref == 'refs/tags/v0.3.6'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --verify-tag \
-            --prerelease \
-            --title "PalmAcademic v0.3.6 原生 iOS 迁移预览" \
-            --notes-file build/PalmAcademic-v0.3.6-release-notes.md \
-            build/PalmAcademic-v0.3.6-ios-native-unsigned.ipa \
-            build/ios-native-ipa/NO-PHYSICAL-DEVICE-TEST.txt
+          release_tag="v0.3.6"
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            gh release upload "$release_tag" \
+              --clobber \
+              build/PalmAcademic-v0.3.6.apk \
+              build/PalmAcademic-v0.3.6-ios-native-unsigned.ipa \
+              build/ios-native-ipa/NO-PHYSICAL-DEVICE-TEST.txt
+            gh release edit "$release_tag" \
+              --title "PalmAcademic v0.3.6 双端预发布" \
+              --notes-file build/PalmAcademic-v0.3.6-release-notes.md
+          else
+            gh release create "$release_tag" \
+              --verify-tag \
+              --prerelease \
+              --title "PalmAcademic v0.3.6 双端预发布" \
+              --notes-file build/PalmAcademic-v0.3.6-release-notes.md \
+              build/PalmAcademic-v0.3.6.apk \
+              build/PalmAcademic-v0.3.6-ios-native-unsigned.ipa \
+              build/ios-native-ipa/NO-PHYSICAL-DEVICE-TEST.txt
+          fi

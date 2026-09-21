@@ -19,7 +19,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: cn.edu.cupk.portalreader.ios
         PRODUCT_NAME: PalmAcademic
         MARKETING_VERSION: 0.3.6
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: 18
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
