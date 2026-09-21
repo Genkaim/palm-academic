@@ -12,7 +12,7 @@ targets:
     sources:
       - Sources
     resources:
-      - Resources
+      - path: Resources/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cn.edu.cupk.portalreader.ios
