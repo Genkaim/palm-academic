@@ -266,24 +266,30 @@ private fun LoginContent(
                         translationY = -contentLiftPx * animatedImeProgress
                     }
                 ) {
-                    Surface(Modifier.size(64.dp), RoundedCornerShape(20.dp), color = PortalBlue) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Outlined.School,
-                                null,
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.size(34.dp)
-                            )
+                    Column(
+                        modifier = Modifier.graphicsLayer {
+                            alpha = 1f - animatedImeProgress
                         }
+                    ) {
+                        Surface(Modifier.size(64.dp), RoundedCornerShape(20.dp), color = PortalBlue) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Outlined.School,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(34.dp)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(22.dp))
+                        Text(
+                            "掌上教务",
+                            style = MaterialTheme.typography.headlineLarge,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(28.dp))
                     }
-                    Spacer(Modifier.height(22.dp))
-                    Text(
-                        "掌上教务",
-                        style = MaterialTheme.typography.headlineLarge,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(Modifier.height(28.dp))
                     androidx.compose.material3.Card(
                         shape = RoundedCornerShape(24.dp),
                         colors = CardDefaults.cardColors(containerColor = PortalCardBackground)

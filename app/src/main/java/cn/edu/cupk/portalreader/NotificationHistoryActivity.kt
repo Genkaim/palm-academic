@@ -184,24 +184,29 @@ private fun HistoryEntryCard(
                                 "通知触发",
                                 if (detail.notificationTriggered) "已成功发出" else "未发出"
                             )
-                            detail.responseCode?.let { DetailLine("HTTP 状态", it.toString()) }
-                            if (detail.requestUrl.isNotBlank()) DetailBlock("请求地址", detail.requestUrl)
-                            if (detail.finalUrl.isNotBlank()) DetailBlock("最终地址", detail.finalUrl)
-                            if (detail.technicalDetails.isNotBlank()) {
-                                DetailBlock("技术详情", detail.technicalDetails)
-                            }
                             val previousContent = PortalSnapshot.historyDisplayContent(detail.previousContent)
                             val currentContent = PortalSnapshot.historyDisplayContent(detail.currentContent)
-                            if (previousContent.isNotBlank()) {
-                                DetailBlock("上次解析数据", previousContent, monospace = true)
-                            }
-                            if (detail.requestUrl.isNotBlank() || currentContent.isNotBlank()) {
+                            if (previousContent.isNotBlank() || currentContent.isNotBlank()) {
+                                Text(
+                                    "前后数据 JSON 对比",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
                                 DetailBlock(
-                                    "本次解析数据",
+                                    "之前 JSON",
+                                    previousContent.ifBlank { "（无历史基线）" },
+                                    monospace = true
+                                )
+                                DetailBlock(
+                                    "现在 JSON",
                                     currentContent.ifBlank { "（空响应）" },
                                     monospace = true
                                 )
                             }
+                            detail.responseCode?.let { DetailLine("HTTP 状态", it.toString()) }
+                            if (detail.requestUrl.isNotBlank()) DetailBlock("请求地址", detail.requestUrl)
+                            if (detail.finalUrl.isNotBlank()) DetailBlock("最终地址", detail.finalUrl)
+                            if (detail.technicalDetails.isNotBlank()) DetailBlock("技术详情", detail.technicalDetails)
                             if (
                                 detail.difference.isNotBlank() &&
                                 detail.previousContent.isBlank() &&

@@ -63,7 +63,7 @@ object PortalSnapshot {
 
     fun parsedDataJson(html: String, type: String, tableClass: String? = null): String {
         val normalized = html.trim()
-        if (normalized.startsWith('{') || normalized.startsWith('[')) return normalized
+        if (normalized.startsWith('{') || normalized.startsWith('[')) return prettyJson(normalized)
         val tables = tableClass?.let { parseTables(html, it) }.orEmpty()
         return buildString {
             appendLine("{")
@@ -93,10 +93,68 @@ object PortalSnapshot {
         val trimmed = value.trim()
         return if (trimmed.startsWith('<') || trimmed.contains("<html", ignoreCase = true)) {
             parsedDataJson(value, "legacy-html")
+        } else if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+            prettyJson(trimmed)
         } else {
             value
         }
     }
+
+    private fun prettyJson(value: String): String = buildString {
+        var indent = 0
+        var inString = false
+        var escaped = false
+        var pendingSpace = false
+        fun newline() {
+            append('\n')
+            repeat(indent * 2) { append(' ') }
+        }
+        value.forEach { character ->
+            if (inString) {
+                append(character)
+                if (escaped) escaped = false
+                else if (character == '\\') escaped = true
+                else if (character == '"') inString = false
+                return@forEach
+            }
+            when (character) {
+                '"' -> {
+                    if (pendingSpace) {
+                        append(' ')
+                        pendingSpace = false
+                    }
+                    append(character)
+                    inString = true
+                }
+                '{', '[' -> {
+                    append(character)
+                    indent++
+                    newline()
+                }
+                '}', ']' -> {
+                    indent = (indent - 1).coerceAtLeast(0)
+                    newline()
+                    append(character)
+                }
+                ',' -> {
+                    append(character)
+                    newline()
+                }
+                ':' -> {
+                    append(": ")
+                    pendingSpace = false
+                }
+                '\n', '\r', '\t', ' ' -> pendingSpace = true
+                else -> {
+                    if (pendingSpace) {
+                        append(' ')
+                        pendingSpace = false
+                    }
+                    append(character)
+                }
+            }
+        }
+    }.trim()
 
     private fun jsonArray(values: List<String>): String =
         values.joinToString(prefix = "[", postfix = "]") { jsonString(it) }
