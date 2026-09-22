@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imeAnimationSource
+import androidx.compose.foundation.layout.imeAnimationTarget
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -69,6 +71,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -78,6 +81,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class LoginViewModel(application: Application) : AndroidViewModel(application) {
@@ -154,21 +158,23 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
 
 class MainActivity : PortalActivity() {
     private val model: LoginViewModel by viewModels()
+    private var homeOpening = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         useContinuousSystemBars()
         PortalPollWorker.ensureChannel(this)
-        if (PortalHttp.hasSessionCookie()) {
+        val resumeExistingSession = PortalHttp.hasSessionCookie()
+        if (resumeExistingSession) {
             PortalSessionCoordinator.validate(application)
-            openHome()
+            openHome(animateLoginExit = false)
             return
         }
         setContent {
             PortalTheme {
                 LoginRoute(
                     model = model,
-                    openHome = ::openHome,
+                    openHome = { openHome(animateLoginExit = true) },
                     openWebLogin = { webLoginLauncher.launch(Intent(this, WebLoginActivity::class.java)) },
                     openSchoolSelection = {
                         schoolSelectionLauncher.launch(
@@ -201,10 +207,17 @@ class MainActivity : PortalActivity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun openHome() {
-        startActivity(Intent(this, HomeActivity::class.java))
-        overridePendingTransition(R.anim.fade_in, R.anim.activity_stay)
+    private fun openHome(animateLoginExit: Boolean) {
+        if (homeOpening) return
+        homeOpening = true
+        startActivity(
+            Intent(this, HomeActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                .putExtra(HomeActivity.EXTRA_LOGIN_ENTRY_ANIMATION, animateLoginExit)
+        )
+        overridePendingTransition(0, 0)
         finish()
+        overridePendingTransition(0, 0)
     }
 }
 
@@ -215,12 +228,24 @@ private fun LoginRoute(
     openWebLogin: () -> Unit,
     openSchoolSelection: () -> Unit
 ) {
+    var loginExiting by remember { mutableStateOf(false) }
+    val loginAlpha by animateFloatAsState(
+        targetValue = if (loginExiting) 0f else 1f,
+        animationSpec = tween(durationMillis = 110, easing = LinearOutSlowInEasing),
+        label = "login-page-exit"
+    )
     LaunchedEffect(model.authenticated) {
-        if (model.authenticated) openHome()
+        if (model.authenticated && !loginExiting) {
+            loginExiting = true
+            delay(110)
+            openHome()
+        }
     }
-    if (model.authenticated) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-    } else {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer { alpha = loginAlpha }
+    ) {
         LoginContent(model, openWebLogin, openSchoolSelection)
     }
 }
@@ -236,15 +261,39 @@ private fun LoginContent(
     var password by remember { mutableStateOf(model.rememberedCredential?.password.orEmpty()) }
     var rememberPassword by remember { mutableStateOf(model.rememberedCredential != null) }
     var revealPassword by remember { mutableStateOf(false) }
+    var usernameFocused by remember { mutableStateOf(false) }
+    var passwordFocused by remember { mutableStateOf(false) }
     val density = LocalDensity.current
-    val imeBottom = WindowInsets.ime.getBottom(density)
-    val animatedImeProgress by animateFloatAsState(
-        targetValue = if (imeBottom > 0) 1f else 0f,
-        animationSpec = tween(durationMillis = 180, easing = LinearOutSlowInEasing),
-        label = "login-ime-lift"
+    val credentialInputFocused = usernameFocused || passwordFocused
+    val animatedFocusProgress by animateFloatAsState(
+        targetValue = if (credentialInputFocused) 1f else 0f,
+        animationSpec = tween(durationMillis = 110, easing = LinearOutSlowInEasing),
+        label = "login-focus-lift"
     )
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    val imeAnimationSourceBottom = WindowInsets.imeAnimationSource.getBottom(density)
+    val imeAnimationTargetBottom = WindowInsets.imeAnimationTarget.getBottom(density)
+    val imeAnimationRange = maxOf(
+        imeBottom,
+        imeAnimationSourceBottom,
+        imeAnimationTargetBottom
+    )
+    // Insets expose every frame of the system keyboard animation. Using its actual fraction
+    // avoids waiting for isImeVisible to flip only after the closing animation has finished.
+    val rawImeAnimationProgress = if (imeAnimationRange > 0) {
+        (imeBottom.toFloat() / imeAnimationRange).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val imeAnimationProgress = if (imeAnimationSourceBottom > imeAnimationTargetBottom) {
+        // Move ahead of the comparatively slow system keyboard closing animation.
+        rawImeAnimationProgress * rawImeAnimationProgress
+    } else {
+        rawImeAnimationProgress
+    }
+    val loginLiftProgress = minOf(animatedFocusProgress, imeAnimationProgress)
     val contentLiftPx = with(density) { 48.dp.toPx() }
-    val headerHeight = (154f - 100f * animatedImeProgress).dp
+    val headerHeight = (154f - 100f * loginLiftProgress).dp
 
     LaunchedEffect(model.selectedSchoolId) {
         username = model.rememberedCredential?.username.orEmpty()
@@ -266,14 +315,14 @@ private fun LoginContent(
             item {
                 Column(
                     modifier = Modifier.graphicsLayer {
-                        translationY = -contentLiftPx * animatedImeProgress
+                        translationY = -contentLiftPx * loginLiftProgress
                     }
                 ) {
                     Column(
                         modifier = Modifier
                             .height(headerHeight)
                             .clipToBounds()
-                            .graphicsLayer { alpha = 1f - animatedImeProgress }
+                            .graphicsLayer { alpha = 1f - loginLiftProgress }
                     ) {
                         Surface(Modifier.size(64.dp), RoundedCornerShape(20.dp), color = PortalBlue) {
                             Box(contentAlignment = Alignment.Center) {
@@ -320,7 +369,9 @@ private fun LoginContent(
                             leadingIcon = { Icon(Icons.Outlined.AccountCircle, null) },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onFocusChanged { usernameFocused = it.isFocused }
                         )
                         OutlinedTextField(
                             value = password,
@@ -338,7 +389,9 @@ private fun LoginContent(
                             keyboardActions = KeyboardActions(onDone = {
                                 model.login(username, password, rememberPassword)
                             }),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onFocusChanged { passwordFocused = it.isFocused }
                         )
                         Row(
                             modifier = Modifier.fillMaxWidth(),

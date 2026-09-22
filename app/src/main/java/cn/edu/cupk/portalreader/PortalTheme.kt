@@ -189,7 +189,7 @@ fun portalTopGradient(): Brush {
     )
 }
 
-val PortalTopFadeDepth = 64.dp
+val PortalTopFadeDepth = 12.dp
 
 /** Adds a transparent lower edge; screens deliberately draw their content beneath this area. */
 @Composable

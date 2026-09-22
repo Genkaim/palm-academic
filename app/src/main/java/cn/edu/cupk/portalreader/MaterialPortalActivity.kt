@@ -578,7 +578,11 @@ private fun MaterialPageList(
             enter = fadeIn(animationSpec = tween(100)),
             exit = fadeOut(animationSpec = tween(180))
         ) {
-            LinearProgressIndicator(Modifier.fillMaxWidth())
+            LinearProgressIndicator(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            )
         }
         if (!loading && pullFraction > 0f && !suppressPullOffsetUntilReset) {
             Box(

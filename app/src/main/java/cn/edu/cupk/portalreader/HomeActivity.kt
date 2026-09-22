@@ -7,6 +7,9 @@ import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -58,7 +61,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -72,6 +77,7 @@ class HomeActivity : PortalActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         useContinuousSystemBars()
+        val playLoginEntryAnimation = intent.getBooleanExtra(EXTRA_LOGIN_ENTRY_ANIMATION, false)
         if (PortalNotificationPreferences.preferences(this)
                 .getBoolean(PortalNotificationPreferences.KEY_PERSISTENT_NOTIFICATION, false)
         ) {
@@ -81,16 +87,47 @@ class HomeActivity : PortalActivity() {
             PortalTheme {
                 val school = remember { SchoolAdapterRepository.load(this) }
                 val currentNotificationVersion = notificationVersion
-                HomeContent(
-                    school = school,
-                    onOpenItem = ::openItem,
-                    onOpenNotifications = {
-                        notificationSettingsLauncher.launch(Intent(this, NotificationSettingsActivity::class.java))
-                    },
-                    onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
-                    onSessionExpired = ::returnToLogin,
-                    notificationVersion = currentNotificationVersion
-                )
+                val entryProgress = remember {
+                    Animatable(if (playLoginEntryAnimation) 0f else 1f)
+                }
+                val entryOffsetPx = with(LocalDensity.current) { 32.dp.toPx() }
+                LaunchedEffect(playLoginEntryAnimation) {
+                    if (playLoginEntryAnimation) {
+                        entryProgress.animateTo(
+                            targetValue = 1f,
+                            animationSpec = tween(
+                                durationMillis = 260,
+                                easing = FastOutSlowInEasing
+                            )
+                        )
+                    }
+                }
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            alpha = entryProgress.value
+                            val scale = 0.97f + 0.03f * entryProgress.value
+                            scaleX = scale
+                            scaleY = scale
+                            translationY = entryOffsetPx * (1f - entryProgress.value)
+                        }
+                ) {
+                    HomeContent(
+                        school = school,
+                        onOpenItem = ::openItem,
+                        onOpenNotifications = {
+                            notificationSettingsLauncher.launch(
+                                Intent(this@HomeActivity, NotificationSettingsActivity::class.java)
+                            )
+                        },
+                        onOpenSettings = {
+                            startActivity(Intent(this@HomeActivity, SettingsActivity::class.java))
+                        },
+                        onSessionExpired = ::returnToLogin,
+                        notificationVersion = currentNotificationVersion
+                    )
+                }
             }
         }
     }
@@ -105,11 +142,17 @@ class HomeActivity : PortalActivity() {
     }
 
     private fun returnToLogin() {
+        PortalHttp.clearSession()
+        PortalSessionCoordinator.clear()
         startActivity(
             Intent(this, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         )
         finish()
+    }
+
+    companion object {
+        const val EXTRA_LOGIN_ENTRY_ANIMATION = "login_entry_animation"
     }
 }
 
@@ -257,7 +300,14 @@ private fun HomeContent(
         QuickEntryBaselinePrefetch(
             school = school,
             active = sessionState is PortalSessionState.Ready,
-            onSessionExpired = onSessionExpired
+            onSessionExpired = {
+                // A hidden adapter can briefly misclassify a loading/redirect page. Confirm the
+                // session centrally before exposing any login UI or leaving Home.
+                PortalSessionCoordinator.validate(
+                    context.applicationContext as android.app.Application,
+                    force = true
+                )
+            }
         )
     }
     if (sessionState is PortalSessionState.Expired) {
