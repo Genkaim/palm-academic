@@ -50,7 +50,6 @@ import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.AlertDialog
@@ -276,9 +275,10 @@ private fun MaterialPortalContent(
                             onExport = { format -> onExport(current, format) }
                         )
                     }
-                    IconButton(onClick = refreshPage) {
-                        Icon(Icons.Outlined.Refresh, "刷新")
-                    }
+                    PortalTopBarRefreshButton(
+                        refreshing = loading,
+                        onClick = refreshPage
+                    )
                 }
             )
         }
