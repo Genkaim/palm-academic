@@ -162,12 +162,20 @@ class MainActivity : PortalActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val openedFromNotification = intent.getBooleanExtra(EXTRA_NOTIFICATION_ENTRY, false)
+        if (openedFromNotification) {
+            @Suppress("DEPRECATION")
+            overridePendingTransition(R.anim.fade_in, R.anim.activity_stay)
+        }
         useContinuousSystemBars()
         PortalPollWorker.ensureChannel(this)
         val resumeExistingSession = PortalHttp.hasSessionCookie()
         if (resumeExistingSession) {
             PortalSessionCoordinator.validate(application)
-            openHome(animateLoginExit = false)
+            openHome(
+                animateLoginExit = false,
+                animateNotificationEntry = openedFromNotification
+            )
             return
         }
         setContent {
@@ -207,17 +215,28 @@ class MainActivity : PortalActivity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun openHome(animateLoginExit: Boolean) {
+    private fun openHome(
+        animateLoginExit: Boolean,
+        animateNotificationEntry: Boolean = false
+    ) {
         if (homeOpening) return
         homeOpening = true
         startActivity(
             Intent(this, HomeActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 .putExtra(HomeActivity.EXTRA_LOGIN_ENTRY_ANIMATION, animateLoginExit)
+                .putExtra(
+                    HomeActivity.EXTRA_NOTIFICATION_ENTRY_ANIMATION,
+                    animateNotificationEntry
+                )
         )
         overridePendingTransition(0, 0)
         finish()
         overridePendingTransition(0, 0)
+    }
+
+    companion object {
+        const val EXTRA_NOTIFICATION_ENTRY = "notification_entry"
     }
 }
 

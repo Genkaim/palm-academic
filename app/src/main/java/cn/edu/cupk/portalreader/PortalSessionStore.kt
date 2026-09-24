@@ -5,7 +5,10 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
@@ -127,13 +130,22 @@ object PortalSessionStore {
 }
 
 class PalmAcademicApplication : Application() {
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     override fun onCreate() {
         super.onCreate()
         PortalThemePreferences.initialize(this)
         SchoolAdapterRepository.initialize(this)
         PortalSessionStore.initialize(this)
-        PortalSessionStore.restoreToWebView()
         PortalSessionCoordinator.initialize(this)
-        PortalMonitor.restore(this)
+        // Parse the selected school definition away from the launch activity. HomeActivity can
+        // then obtain the already cached definition during its first composition instead of
+        // doing asset JSON work on the UI thread.
+        backgroundScope.launch(Dispatchers.IO) {
+            runCatching { SchoolAdapterRepository.load(this@PalmAcademicApplication) }
+        }
+        backgroundScope.launch {
+            PortalMonitor.restore(this@PalmAcademicApplication)
+        }
     }
 }

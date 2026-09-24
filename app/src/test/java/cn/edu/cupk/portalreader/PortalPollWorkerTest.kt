@@ -191,6 +191,7 @@ class PortalPollWorkerTest {
     fun courseEntries_acceptsNonEmptyLessonIdList() {
         assertTrue(PortalSnapshot.hasCourseEntries("{\"lessonIds\":[12345],\"lessons\":[]}"))
         assertFalse(PortalSnapshot.hasCourseEntries("{\"lessonIds\":[],\"lessons\":[]}"))
+        assertTrue(PortalSnapshot.hasCourseEntries("{\"data\":[{\"name\":\"高等数学\"}]}"))
     }
 
     @Test

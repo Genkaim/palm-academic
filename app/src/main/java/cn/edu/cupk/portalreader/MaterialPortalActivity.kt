@@ -27,6 +27,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -57,7 +58,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -79,9 +79,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -99,13 +101,28 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private data class ExportDocument(val fileName: String, val content: String)
+private data class MaterialReaderResources(
+    val adapterScript: String,
+    val schoolConfigJson: String,
+    val fallbackUnitTimes: Map<String, Pair<String, String>>
+)
 private const val FEATURE_HINT_PREFERENCES = "feature_hints"
 private const val KEY_SCHEDULE_EXPORT_HINT_SHOWN = "schedule_export_hint_shown_v1"
 
-private enum class MaterialContentStage { AUTHENTICATING, AUTH_UNAVAILABLE, FETCHING, CONTENT, ERROR, SESSION_EXPIRED }
+private enum class MaterialContentStage {
+    AUTHENTICATING,
+    AUTH_UNAVAILABLE,
+    FETCHING,
+    CONTENT,
+    ERROR,
+    SESSION_EXPIRED
+}
+private enum class MaterialGroupPosition { ONLY, FIRST, MIDDLE, LAST }
 
 class MaterialPortalActivity : PortalActivity() {
     private var pendingExport: ExportDocument? = null
@@ -134,17 +151,38 @@ class MaterialPortalActivity : PortalActivity() {
             finish()
             return
         }
-        val school = SchoolAdapterRepository.load(this)
-        fallbackUnitTimes = school.fallbackUnitTimes
-        val script = SchoolAdapterRepository.readAdapterScript(this, school.adapterAsset)
+        val initialCachedPage = MaterialPageCache.load(this, requestedUrl)
         setContent {
             PortalTheme {
                 var sessionExpired by remember { mutableStateOf(false) }
+                var readerResources by remember { mutableStateOf<MaterialReaderResources?>(null) }
+                var resourceError by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(Unit) {
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            val school = SchoolAdapterRepository.load(this@MaterialPortalActivity)
+                            MaterialReaderResources(
+                                adapterScript = SchoolAdapterRepository.readAdapterScript(
+                                    this@MaterialPortalActivity,
+                                    school.adapterAsset
+                                ),
+                                schoolConfigJson = school.readerConfigJson,
+                                fallbackUnitTimes = school.fallbackUnitTimes
+                            )
+                        }
+                    }.onSuccess { resources ->
+                        fallbackUnitTimes = resources.fallbackUnitTimes
+                        readerResources = resources
+                    }.onFailure { throwable ->
+                        resourceError = throwable.message ?: "页面配置加载失败"
+                    }
+                }
                 MaterialPortalContent(
                     requestedTitle = requestedTitle,
                     url = requestedUrl,
-                    adapterScript = script,
-                    schoolConfigJson = school.readerConfigJson,
+                    initialPage = initialCachedPage,
+                    readerResources = readerResources,
+                    resourceError = resourceError,
                     onBack = { finish() },
                     onOpenLink = { title, url -> openLink(title, url) },
                     onExport = ::exportSchedule,
@@ -211,8 +249,9 @@ class MaterialPortalActivity : PortalActivity() {
 private fun MaterialPortalContent(
     requestedTitle: String,
     url: String,
-    adapterScript: String,
-    schoolConfigJson: String,
+    initialPage: MaterialPage?,
+    readerResources: MaterialReaderResources?,
+    resourceError: String?,
     onBack: () -> Unit,
     onOpenLink: (String, String) -> Unit,
     onExport: (MaterialPage, String) -> Unit,
@@ -223,7 +262,8 @@ private fun MaterialPortalContent(
     val featureHintPreferences = remember {
         context.getSharedPreferences(FEATURE_HINT_PREFERENCES, android.content.Context.MODE_PRIVATE)
     }
-    var page by remember(url) { mutableStateOf(MaterialPageCache.load(context, url)) }
+    var page by remember(url) { mutableStateOf(initialPage) }
+    var firstFrameReady by remember(url) { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var refreshToken by remember { mutableIntStateOf(0) }
@@ -232,6 +272,16 @@ private fun MaterialPortalContent(
     var showExportHint by remember { mutableStateOf(false) }
     var exportHintTriggered by remember { mutableStateOf(false) }
     val scheduleAvailable = page?.sections?.any { it is MaterialSection.Schedule } == true
+    LaunchedEffect(url) {
+        withFrameNanos { }
+        firstFrameReady = true
+    }
+    LaunchedEffect(resourceError) {
+        if (resourceError != null) {
+            error = resourceError
+            loading = false
+        }
+    }
     LaunchedEffect(sessionState) {
         if (sessionState is PortalSessionState.Expired || sessionState is PortalSessionState.NoSession) {
             onSessionExpired()
@@ -260,6 +310,9 @@ private fun MaterialPortalContent(
         readerAction = null
         refreshToken++
     }
+    val showForegroundLoading = loading && (
+        initialPage == null || refreshToken > 0 || readerAction != null
+        )
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -276,7 +329,7 @@ private fun MaterialPortalContent(
                         )
                     }
                     PortalTopBarRefreshButton(
-                        refreshing = loading,
+                        refreshing = showForegroundLoading,
                         onClick = refreshPage
                     )
                 }
@@ -285,27 +338,31 @@ private fun MaterialPortalContent(
     ) { padding ->
         Box(Modifier.fillMaxSize()) {
             if (
-                sessionState is PortalSessionState.Checking ||
-                sessionState is PortalSessionState.Ready ||
-                sessionState is PortalSessionState.Unavailable
+                firstFrameReady &&
+                readerResources != null &&
+                (
+                    sessionState is PortalSessionState.Checking ||
+                        sessionState is PortalSessionState.Ready ||
+                        sessionState is PortalSessionState.Unavailable
+                    )
             ) {
                 WebMaterialReader(
                     url = url,
-                    adapterScript = adapterScript,
-                    schoolConfigJson = schoolConfigJson,
-                refreshToken = refreshToken,
-                action = readerAction,
-                modifier = Modifier.fillMaxSize().alpha(0.01f),
-                onLoading = { loading = it },
-                onContent = {
-                    page = it
-                    loading = false
-                    error = null
-                    PortalSessionCoordinator.markAuthenticated()
-                },
-                onError = { error = it },
-                onSessionExpired = onSessionExpired
-            )
+                    adapterScript = readerResources.adapterScript,
+                    schoolConfigJson = readerResources.schoolConfigJson,
+                    refreshToken = refreshToken,
+                    action = readerAction,
+                    modifier = Modifier.fillMaxSize().alpha(0.01f),
+                    onLoading = { loading = it },
+                    onContent = {
+                        page = it
+                        loading = false
+                        error = null
+                        PortalSessionCoordinator.markAuthenticated()
+                    },
+                    onError = { error = it },
+                    onSessionExpired = onSessionExpired
+                )
             }
 
             val contentStage = when {
@@ -392,7 +449,8 @@ private fun MaterialPortalContent(
                                 page = it,
                                 onOpenLink = onOpenLink,
                                 onAction = performAction,
-                                loading = loading,
+                                loading = showForegroundLoading,
+                                animateItems = initialPage == null,
                                 onRefresh = refreshPage,
                                 topBarInset = padding.calculateTopPadding(),
                                 bottomInset = padding.calculateBottomPadding()
@@ -414,6 +472,7 @@ private fun MaterialPageList(
     onOpenLink: (String, String) -> Unit,
     onAction: (String, String) -> Unit,
     loading: Boolean,
+    animateItems: Boolean,
     onRefresh: () -> Unit,
     topBarInset: Dp,
     bottomInset: Dp
@@ -511,15 +570,19 @@ private fun MaterialPageList(
                 end = 16.dp,
                 bottom = bottomInset + 16.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
             if (page.choices.isNotEmpty() || page.actions.isNotEmpty() || schedule != null) {
                 item(key = "page-controls") {
                     Box(
-                        Modifier.animateItem(
-                            fadeInSpec = tween(220, easing = FastOutSlowInEasing),
-                            placementSpec = tween(300, easing = FastOutSlowInEasing),
-                            fadeOutSpec = tween(120)
+                        Modifier.then(
+                            if (animateItems) {
+                                Modifier.animateItem(
+                                    fadeInSpec = tween(220, easing = FastOutSlowInEasing),
+                                    placementSpec = tween(300, easing = FastOutSlowInEasing),
+                                    fadeOutSpec = tween(120)
+                                )
+                            } else Modifier
                         )
                     ) {
                         PageControls(
@@ -535,10 +598,14 @@ private fun MaterialPageList(
             if (loading && page.sections.isEmpty()) {
                 item(key = "page-loading") {
                     Box(
-                        Modifier.fillMaxWidth().padding(vertical = 48.dp).animateItem(
-                            fadeInSpec = tween(160, easing = FastOutSlowInEasing),
-                            placementSpec = tween(280, easing = FastOutSlowInEasing),
-                            fadeOutSpec = tween(100)
+                        Modifier.fillMaxWidth().padding(vertical = 48.dp).then(
+                            if (animateItems) {
+                                Modifier.animateItem(
+                                    fadeInSpec = tween(160, easing = FastOutSlowInEasing),
+                                    placementSpec = tween(280, easing = FastOutSlowInEasing),
+                                    fadeOutSpec = tween(100)
+                                )
+                            } else Modifier
                         ),
                         contentAlignment = Alignment.Center
                     ) { LoadingPane("获取数据…") }
@@ -549,10 +616,14 @@ private fun MaterialPageList(
             page.sections.forEach { section ->
                 item(key = section.hashCode()) {
                     Box(
-                        Modifier.animateItem(
-                            fadeInSpec = tween(240, easing = FastOutSlowInEasing),
-                            placementSpec = tween(320, easing = FastOutSlowInEasing),
-                            fadeOutSpec = tween(120)
+                        Modifier.then(
+                            if (animateItems) {
+                                Modifier.animateItem(
+                                    fadeInSpec = tween(240, easing = FastOutSlowInEasing),
+                                    placementSpec = tween(320, easing = FastOutSlowInEasing),
+                                    fadeOutSpec = tween(120)
+                                )
+                            } else Modifier
                         )
                     ) {
                         when (section) {
@@ -629,59 +700,94 @@ private fun PageControls(
     onScheduleDaySelected: (String?) -> Unit,
     onAction: (String, String) -> Unit
 ) {
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = PortalControlBackground)
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            page.choices.forEach { choice ->
-                Text(choice.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                ChoiceMenu(choice, onAction)
-            }
-            if (scheduleDays.isNotEmpty()) {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    item(key = "all-schedule-days") {
-                        val selected = selectedScheduleDay == null
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onScheduleDaySelected(null) },
-                            label = { Text("全部显示") },
-                            border = BorderStroke(
-                                1.dp,
-                                if (selected) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
-                            )
+    MaterialSectionBlock("筛选与视图") {
+        MaterialPanel(MaterialGroupPosition.ONLY) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                page.choices.forEach { choice ->
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            choice.label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
                         )
-                    }
-                    items(scheduleDays, key = { it.name }) { day ->
-                        val selected = selectedScheduleDay == day.name
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onScheduleDaySelected(day.name) },
-                            label = { Text(day.name.replace("星期", "周")) },
-                            border = BorderStroke(
-                                1.dp,
-                                if (selected) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
-                            )
-                        )
+                        ChoiceMenu(choice, onAction)
                     }
                 }
-            }
-            if (page.actions.isNotEmpty()) {
-                Text("排名类型", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(page.actions, key = { "${it.id}:${it.value}" }) { action ->
-                        OutlinedButton(onClick = { onAction(action.id, action.value) }) {
-                            Text(action.label)
+                if (scheduleDays.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "显示日期",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            item(key = "all-schedule-days") {
+                                MaterialChoicePill(
+                                    label = "全部",
+                                    selected = selectedScheduleDay == null,
+                                    onClick = { onScheduleDaySelected(null) }
+                                )
+                            }
+                            items(scheduleDays, key = { it.name }) { day ->
+                                MaterialChoicePill(
+                                    label = day.name.replace("星期", "周"),
+                                    selected = selectedScheduleDay == day.name,
+                                    onClick = { onScheduleDaySelected(day.name) }
+                                )
+                            }
+                        }
+                    }
+                }
+                if (page.actions.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "排名类型",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(page.actions, key = { "${it.id}:${it.value}" }) { action ->
+                                OutlinedButton(
+                                    onClick = { onAction(action.id, action.value) },
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text(action.label)
+                                }
+                            }
                         }
                     }
                 }
             }
-            }
         }
     }
+}
+
+@Composable
+private fun MaterialChoicePill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.surface
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
 
 @Composable
 private fun ExportMenu(
@@ -802,22 +908,33 @@ private fun ChoiceMenu(choice: MaterialChoice, onAction: (String, String) -> Uni
 
 @Composable
 private fun StatsSection(section: MaterialSection.Stats) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (section.title.isNotBlank()) {
-            Text(section.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        }
+    MaterialSectionBlock(section.title) {
         Row(
-            Modifier.fillMaxWidth().height(84.dp),
+            Modifier.fillMaxWidth().height(88.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             section.items.forEach { item ->
-                Column(
-                    Modifier.weight(1f).fillMaxHeight()
-                        .background(PortalBlueSoft, RoundedCornerShape(14.dp)).padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                Card(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = PortalCardBackground),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                 ) {
-                    Text(item.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(item.value.ifBlank { "—" }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Column(
+                        Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 13.dp),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            item.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            item.value.ifBlank { "—" },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
             }
         }
@@ -829,38 +946,56 @@ private fun ProgramSection(section: MaterialSection.Program) {
     val completed = section.completedCredits.toFloatOrNull() ?: 0f
     val required = section.requiredCredits.toFloatOrNull() ?: 0f
     val progress = if (required > 0f) (completed / required).coerceIn(0f, 1f) else 0f
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
-        ) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("完成学分", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    "${section.completedCredits.ifBlank { "—" }} / ${section.requiredCredits.ifBlank { "—" }}",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = PortalBlue,
-                    fontWeight = FontWeight.Bold
-                )
-                Text("已完成 / 培养方案要求", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+    Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
+        MaterialSectionBlock("学分进度") {
+            MaterialPanel(MaterialGroupPosition.ONLY) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "${section.completedCredits.ifBlank { "—" }} / ${section.requiredCredits.ifBlank { "—" }}",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "已完成 / 培养方案要求",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp))
+                    )
+                }
             }
         }
-        if (section.title.isNotBlank()) {
-            Text(section.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        MaterialSectionBlock(section.title.ifBlank { "培养方案" }) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                section.modules.forEachIndexed { index, module ->
+                    ProgramModuleCard(
+                        module = module,
+                        position = materialGroupPosition(index, section.modules.size)
+                    )
+                }
+            }
         }
-        section.modules.forEach { module -> ProgramModuleCard(module) }
     }
 }
 
 @Composable
-private fun ProgramModuleCard(module: ProgramModule) {
+private fun ProgramModuleCard(
+    module: ProgramModule,
+    position: MaterialGroupPosition = MaterialGroupPosition.ONLY
+) {
     var expanded by remember(module.id) { mutableStateOf(module.depth == 1) }
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
+    MaterialPanel(
+        position = position,
+        containerColor = PortalCardBackground,
+        border = if (module.depth > 1) {
+            BorderStroke(
+                0.5.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.48f)
+            )
+        } else null
     ) {
         Column {
             Row(
@@ -899,9 +1034,14 @@ private fun ProgramModuleCard(module: ProgramModule) {
                 if (module.children.isNotEmpty()) {
                     Column(
                         Modifier.fillMaxWidth().padding(start = 12.dp, end = 8.dp, bottom = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
-                        module.children.forEach { child -> ProgramModuleCard(child) }
+                        module.children.forEachIndexed { index, child ->
+                            ProgramModuleCard(
+                                module = child,
+                                position = materialGroupPosition(index, module.children.size)
+                            )
+                        }
                     }
                 }
             }
@@ -911,10 +1051,7 @@ private fun ProgramModuleCard(module: ProgramModule) {
 
 @Composable
 private fun ScheduleSection(section: MaterialSection.Schedule, selectedDay: String?) {
-    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-        if (section.title.isNotBlank()) {
-            Text(section.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        }
+    MaterialSectionBlock(section.title) {
         AnimatedContent(
             targetState = selectedDay,
             transitionSpec = {
@@ -935,11 +1072,25 @@ private fun ScheduleSection(section: MaterialSection.Schedule, selectedDay: Stri
             label = "schedule-day-filter"
         ) { dayName ->
             val visibleDays = if (dayName == null) section.days else section.days.filter { it.name == dayName }
-            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 visibleDays.forEach { day ->
                     if (day.lessons.isNotEmpty()) {
-                        Text(day.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        day.lessons.forEach { MaterialInfoCard(it, compact = true) }
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                day.name,
+                                modifier = Modifier.padding(start = 8.dp, bottom = 5.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            day.lessons.forEachIndexed { index, lesson ->
+                                MaterialInfoCard(
+                                    item = lesson,
+                                    compact = true,
+                                    position = materialGroupPosition(index, day.lessons.size)
+                                )
+                            }
+                        }
                     }
                 }
                 if (visibleDays.all { it.lessons.isEmpty() }) {
@@ -957,27 +1108,35 @@ private fun ScheduleSection(section: MaterialSection.Schedule, selectedDay: Stri
 
 @Composable
 private fun CardsSection(section: MaterialSection.Cards) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (section.title.isNotBlank()) {
-            Text(section.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        }
+    MaterialSectionBlock(section.title) {
         if (section.cards.isEmpty()) {
             TextCard(MaterialSection.Text("", listOf("暂无数据")))
         } else {
-            section.cards.forEach { MaterialInfoCard(it, compact = true) }
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                section.cards.forEachIndexed { index, item ->
+                    MaterialInfoCard(
+                        item = item,
+                        compact = true,
+                        position = materialGroupPosition(index, section.cards.size)
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun MaterialInfoCard(item: MaterialCardItem, compact: Boolean = false) {
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
-    ) {
+private fun MaterialInfoCard(
+    item: MaterialCardItem,
+    compact: Boolean = false,
+    position: MaterialGroupPosition = MaterialGroupPosition.ONLY
+) {
+    MaterialPanel(position = position) {
         Column(
-            Modifier.padding(if (compact) 12.dp else 16.dp),
+            Modifier.padding(
+                horizontal = 16.dp,
+                vertical = if (compact) 14.dp else 16.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 9.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -991,8 +1150,10 @@ private fun MaterialInfoCard(item: MaterialCardItem, compact: Boolean = false) {
                     Text(
                         item.accent,
                         style = MaterialTheme.typography.labelLarge,
-                        color = PortalBlue,
-                        modifier = Modifier.background(PortalBlueSoft, RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 4.dp)
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(9.dp))
+                            .padding(horizontal = 9.dp, vertical = 5.dp)
                     )
                 }
             }
@@ -1024,18 +1185,16 @@ private fun MaterialInfoCard(item: MaterialCardItem, compact: Boolean = false) {
 
 @Composable
 private fun MaterialTable(section: MaterialSection.Table) {
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
-    ) {
-        Column(Modifier.padding(vertical = 14.dp)) {
-            if (section.title.isNotBlank()) Text(section.title, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
-            val scroll = rememberScrollState()
-            Column(Modifier.horizontalScroll(scroll)) {
-                TableRow(section.headers, header = true)
-                HorizontalDivider()
-                section.rows.forEachIndexed { index, row ->
-                    TableRow(row, header = false, alternate = index % 2 == 1)
+    MaterialSectionBlock(section.title) {
+        MaterialPanel(MaterialGroupPosition.ONLY) {
+            Column(Modifier.padding(vertical = 8.dp)) {
+                val scroll = rememberScrollState()
+                Column(Modifier.horizontalScroll(scroll)) {
+                    TableRow(section.headers, header = true)
+                    HorizontalDivider()
+                    section.rows.forEachIndexed { index, row ->
+                        TableRow(row, header = false, alternate = index % 2 == 1)
+                    }
                 }
             }
         }
@@ -1058,16 +1217,18 @@ private fun TableRow(values: List<String>, header: Boolean, alternate: Boolean =
 
 @Composable
 private fun FieldCard(section: MaterialSection.Fields) {
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (section.title.isNotBlank()) Text(section.title, fontWeight = FontWeight.Bold)
-            section.fields.forEach { (label, value) ->
-                Column {
-                    Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(value, style = MaterialTheme.typography.bodyLarge)
+    MaterialSectionBlock(section.title) {
+        MaterialPanel(MaterialGroupPosition.ONLY) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                section.fields.forEach { (label, value) ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(value, style = MaterialTheme.typography.bodyLarge)
+                    }
                 }
             }
         }
@@ -1076,37 +1237,101 @@ private fun FieldCard(section: MaterialSection.Fields) {
 
 @Composable
 private fun TextCard(section: MaterialSection.Text) {
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (section.title.isNotBlank()) Text(section.title, fontWeight = FontWeight.Bold)
-            section.paragraphs.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+    MaterialSectionBlock(section.title) {
+        MaterialPanel(MaterialGroupPosition.ONLY) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                section.paragraphs.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            }
         }
     }
 }
 
 @Composable
 private fun LinkCard(section: MaterialSection.Links, onOpenLink: (String, String) -> Unit) {
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
-    ) {
-        Column {
-            if (section.title.isNotBlank()) Text(section.title, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
+    MaterialSectionBlock(section.title) {
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             section.links.forEachIndexed { index, (title, url) ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { onOpenLink(title, url) }.padding(horizontal = 16.dp, vertical = 13.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                MaterialPanel(
+                    position = materialGroupPosition(index, section.links.size),
+                    onClick = { onOpenLink(title, url) }
                 ) {
-                    Text(title, Modifier.weight(1f))
-                    Spacer(Modifier.size(8.dp))
-                    Icon(Icons.Outlined.ChevronRight, null)
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(title, Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.size(8.dp))
+                        Icon(
+                            Icons.Outlined.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.outline
+                        )
+                    }
                 }
-                if (index != section.links.lastIndex) HorizontalDivider(Modifier.padding(horizontal = 16.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun MaterialSectionBlock(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        if (title.isNotBlank()) {
+            Text(
+                title,
+                modifier = Modifier.padding(start = 8.dp, bottom = 5.dp),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        content()
+    }
+}
+
+private fun materialGroupPosition(index: Int, size: Int): MaterialGroupPosition = when {
+    size <= 1 -> MaterialGroupPosition.ONLY
+    index == 0 -> MaterialGroupPosition.FIRST
+    index == size - 1 -> MaterialGroupPosition.LAST
+    else -> MaterialGroupPosition.MIDDLE
+}
+
+@Composable
+private fun MaterialPanel(
+    position: MaterialGroupPosition,
+    onClick: (() -> Unit)? = null,
+    containerColor: Color = PortalCardBackground,
+    border: BorderStroke? = null,
+    content: @Composable () -> Unit
+) {
+    val shape = when (position) {
+        MaterialGroupPosition.ONLY -> RoundedCornerShape(18.dp)
+        MaterialGroupPosition.FIRST -> RoundedCornerShape(
+            topStart = 18.dp,
+            topEnd = 18.dp,
+            bottomStart = 6.dp,
+            bottomEnd = 6.dp
+        )
+        MaterialGroupPosition.MIDDLE -> RoundedCornerShape(6.dp)
+        MaterialGroupPosition.LAST -> RoundedCornerShape(
+            topStart = 6.dp,
+            topEnd = 6.dp,
+            bottomStart = 18.dp,
+            bottomEnd = 18.dp
+        )
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth().clip(shape)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        shape = shape,
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = border,
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        content()
     }
 }
 

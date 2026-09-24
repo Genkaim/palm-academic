@@ -2,7 +2,6 @@ package cn.edu.cupk.portalreader
 
 import org.json.JSONArray
 import org.json.JSONObject
-import org.json.JSONTokener
 import java.security.MessageDigest
 
 object PortalSnapshot {
@@ -26,7 +25,7 @@ object PortalSnapshot {
     fun hasCourseEntries(value: String): Boolean {
         val normalized = value.trim()
         if (normalized.isBlank() || normalized in setOf("[]", "{}", "null")) return false
-        return normalized.contains("courseName", ignoreCase = true) ||
+        if (normalized.contains("courseName", ignoreCase = true) ||
             normalized.contains("lessonName", ignoreCase = true) ||
             normalized.contains("courseId", ignoreCase = true) ||
             Regex("\"lessonIds\"\\s*:\\s*\\[\\s*\\d", RegexOption.IGNORE_CASE)
@@ -34,6 +33,16 @@ object PortalSnapshot {
             Regex("\"lessons\"\\s*:\\s*\\[\\s*\\{", RegexOption.IGNORE_CASE)
                 .containsMatchIn(normalized) ||
             parseTables(value).any { it.rows.isNotEmpty() }
+        ) return true
+
+        // Different EAMS deployments wrap the same schedule in keys such as data,
+        // records, result or list. Treat a non-empty array of objects under these
+        // conventional payload keys as course data instead of reporting a false
+        // "未识别到课程数据" result.
+        return Regex(
+            "\\\"(?:data|records|rows|list|items|result|content)\\\"\\s*:\\s*\\[\\s*\\{",
+            RegexOption.IGNORE_CASE
+        ).containsMatchIn(normalized)
     }
 
     fun tableRows(html: String, className: String? = null): Set<String> {
@@ -100,7 +109,7 @@ object PortalSnapshot {
      */
     fun courseDataJson(payload: String, semesterId: String): String {
         val normalized = payload.trim()
-        val root = runCatching { JSONTokener(normalized).nextValue() }.getOrNull()
+        val root = runCatching { JSONObject(normalized) }.getOrNull()
         if (root !is JSONObject) return parsedDataJson(payload, "course")
 
         val result = JSONObject()
@@ -116,7 +125,12 @@ object PortalSnapshot {
                 result.put(key, value)
             }
         }
-        if (result.length() == 2) result.put("dataStatus", "未识别到课程数据")
+        if (result.length() == 2) {
+            // Keep the complete response when a school uses different field names.
+            // Dropping it here made a valid logged-in response look empty in the
+            // background change log even though the WebView rendered it correctly.
+            result.put("payload", root)
+        }
         return result.toString(2)
     }
 

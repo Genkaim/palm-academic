@@ -125,7 +125,7 @@ fun PortalSessionStatus(
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 }
                 Text(
-                    text = if (target == SessionStatusStage.CHECKING) "尝试登录…" else "验证失败，重试",
+                    text = if (target == SessionStatusStage.CHECKING) "尝试登录…" else "验证失败，点击重试",
                     color = if (target == SessionStatusStage.UNAVAILABLE) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelMedium,

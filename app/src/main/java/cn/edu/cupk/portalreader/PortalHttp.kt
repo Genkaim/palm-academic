@@ -46,9 +46,10 @@ object PortalHttp {
             .build()
     }
 
-    fun hasSessionCookie(): Boolean =
-        CookieManager.getInstance().getCookie(PortalConfig.BASE)
-            ?.contains("SESSION=") == true || PortalSessionStore.hasPersistedSession()
+    // Every login path persists SESSION before it reports success, so the app-private copy is
+    // the authoritative cold-start signal. Querying CookieManager here would initialize the
+    // system WebView even for a signed-out launch and noticeably delay the first frame.
+    fun hasSessionCookie(): Boolean = PortalSessionStore.hasPersistedSession()
 
     fun clearSession(done: () -> Unit = {}) {
         PortalSessionStore.clear()

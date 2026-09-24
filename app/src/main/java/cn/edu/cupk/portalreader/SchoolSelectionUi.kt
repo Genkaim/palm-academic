@@ -38,6 +38,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -172,7 +173,10 @@ private fun SchoolSelectionContent(
                 }
                 items(group, key = { it.id }) { school ->
                     Card(
-                        modifier = Modifier.fillMaxWidth().clickable { onSelected(school.id) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .clickable { onSelected(school.id) },
                         shape = RoundedCornerShape(18.dp),
                         colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
                     ) {

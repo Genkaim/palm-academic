@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -47,16 +48,21 @@ enum class PortalThemeMode(val storedValue: String, val displayName: String) {
 object PortalThemePreferences {
     private const val PREFS = "appearance"
     private const val KEY_THEME_MODE = "theme_mode"
+    private const val KEY_GLASS_ENABLED = "glass_enabled"
     private var initialized = false
 
     var mode by mutableStateOf(PortalThemeMode.SYSTEM)
         private set
 
+    var glassEnabled by mutableStateOf(true)
+        private set
+
     fun initialize(context: Context) {
         if (initialized) return
         mode = read(context)
+        glassEnabled = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_GLASS_ENABLED, true)
         initialized = true
-        apply(mode)
     }
 
     fun set(context: Context, value: PortalThemeMode) {
@@ -67,7 +73,15 @@ object PortalThemePreferences {
             .putString(KEY_THEME_MODE, value.storedValue)
             .apply()
         mode = value
-        apply(value)
+    }
+
+    fun setGlassEnabled(context: Context, enabled: Boolean) {
+        initialize(context.applicationContext)
+        glassEnabled = enabled
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_GLASS_ENABLED, enabled)
+            .apply()
     }
 
     fun isDark(context: Context): Boolean = when (mode) {
@@ -82,20 +96,16 @@ object PortalThemePreferences {
             .getString(KEY_THEME_MODE, PortalThemeMode.SYSTEM.storedValue)
     )
 
-    private fun apply(value: PortalThemeMode) {
-        AppCompatDelegate.setDefaultNightMode(
-            when (value) {
-                PortalThemeMode.SYSTEM -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
-                PortalThemeMode.LIGHT -> AppCompatDelegate.MODE_NIGHT_NO
-                PortalThemeMode.DARK -> AppCompatDelegate.MODE_NIGHT_YES
-            }
-        )
-    }
 }
 
 open class PortalActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         PortalThemePreferences.initialize(applicationContext)
+        delegate.localNightMode = when (PortalThemePreferences.mode) {
+            PortalThemeMode.SYSTEM -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+            PortalThemeMode.LIGHT -> AppCompatDelegate.MODE_NIGHT_NO
+            PortalThemeMode.DARK -> AppCompatDelegate.MODE_NIGHT_YES
+        }
         super.onCreate(savedInstanceState)
     }
 
@@ -113,57 +123,58 @@ open class PortalActivity : AppCompatActivity() {
 }
 
 private val LightPortalColors = lightColorScheme(
-    primary = Color(0xFF315DA8),
+    primary = Color(0xFF3A3A3C),
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFF0F4FA),
-    onPrimaryContainer = Color(0xFF153C78),
-    secondary = Color(0xFF52627A),
+    primaryContainer = Color(0xFFE5E5EA),
+    onPrimaryContainer = Color(0xFF1C1C1E),
+    secondary = Color(0xFF3A3A3C),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFE9EFF8),
-    onSecondaryContainer = Color(0xFF1B2B3F),
-    tertiary = Color(0xFF187A62),
+    secondaryContainer = Color(0xFFE5E5EA),
+    onSecondaryContainer = Color(0xFF1C1C1E),
+    tertiary = Color(0xFF3A3A3C),
     onTertiary = Color.White,
-    background = Color(0xFFF8F9FF),
-    onBackground = Color(0xFF18212F),
-    surface = Color(0xFFFCFCFE),
-    onSurface = Color(0xFF18212F),
-    surfaceVariant = Color(0xFFF1F3F8),
-    onSurfaceVariant = Color(0xFF515866),
-    outline = Color(0xFF737987),
-    errorContainer = Color(0xFFFFEDEA),
-    onErrorContainer = Color(0xFF410002)
+    background = Color(0xFFF2F2F7),
+    onBackground = Color(0xFF1C1C1E),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF1C1C1E),
+    surfaceVariant = Color(0xFFE5E5EA),
+    onSurfaceVariant = Color(0xFF636366),
+    outline = Color(0xFF8E8E93),
+    error = Color(0xFFFF3B30),
+    errorContainer = Color(0xFFFFE5E3),
+    onErrorContainer = Color(0xFF8A120B)
 )
 
 private val DarkPortalColors = darkColorScheme(
-    primary = Color(0xFFA9C7FF),
-    onPrimary = Color(0xFF0B305D),
-    primaryContainer = Color(0xFF294970),
-    onPrimaryContainer = Color(0xFFD6E4FF),
-    secondary = Color(0xFFB8C7DD),
-    onSecondary = Color(0xFF243247),
-    secondaryContainer = Color(0xFF36475B),
-    onSecondaryContainer = Color(0xFFD7E3F8),
-    tertiary = Color(0xFF63D3B2),
-    onTertiary = Color(0xFF00382C),
-    background = Color(0xFF1B212A),
-    onBackground = Color(0xFFE3E7EF),
-    surface = Color(0xFF242B35),
-    onSurface = Color(0xFFE3E7EF),
-    surfaceVariant = Color(0xFF303945),
-    onSurfaceVariant = Color(0xFFC2C6CF),
-    outline = Color(0xFF8D929C),
-    error = Color(0xFFFFB4AB),
+    primary = Color(0xFF48484A),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFF2C2C2E),
+    onPrimaryContainer = Color(0xFFF2F2F7),
+    secondary = Color(0xFF48484A),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFF2C2C2E),
+    onSecondaryContainer = Color(0xFFF2F2F7),
+    tertiary = Color(0xFF48484A),
+    onTertiary = Color.White,
+    background = Color(0xFF000000),
+    onBackground = Color(0xFFF2F2F7),
+    surface = Color(0xFF1C1C1E),
+    onSurface = Color(0xFFF2F2F7),
+    surfaceVariant = Color(0xFF2C2C2E),
+    onSurfaceVariant = Color(0xFFAEAEB2),
+    outline = Color(0xFF8E8E93),
+    error = Color(0xFFFF453A),
     onError = Color(0xFF690005),
     errorContainer = Color(0xFF93000A),
     onErrorContainer = Color(0xFFFFDAD6)
 )
 
 val PortalBlue: Color
-    @Composable get() = MaterialTheme.colorScheme.primary
+    @Composable get() = MaterialTheme.colorScheme.onSurface
 val PortalBlueDeep: Color
-    @Composable get() = MaterialTheme.colorScheme.onPrimaryContainer
+    @Composable get() = MaterialTheme.colorScheme.onSurface
 val PortalBlueSoft: Color
-    @Composable get() = MaterialTheme.colorScheme.primaryContainer
+    @Composable get() = MaterialTheme.colorScheme.surfaceVariant
 val PortalPageBackground: Color
     @Composable get() = MaterialTheme.colorScheme.background
 val PortalCardBackground: Color
@@ -173,7 +184,7 @@ val PortalControlBackground: Color
 val PortalInk: Color
     @Composable get() = MaterialTheme.colorScheme.onSurface
 val PortalSuccess: Color
-    @Composable get() = MaterialTheme.colorScheme.tertiary
+    @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
 
 /** Keeps every app-owned top control visually connected to the page behind it. */
 @Composable
@@ -182,21 +193,47 @@ fun portalTopGradient(): Brush {
     return Brush.verticalGradient(
         colorStops = arrayOf(
             0f to background,
-            0.46f to background,
-            0.82f to background.copy(alpha = 0f),
+            0.34f to background,
             1f to background.copy(alpha = 0f)
         )
     )
 }
 
-val PortalTopFadeDepth = 12.dp
+val PortalTopFadeDepth = 40.dp
 
 /** Adds a transparent lower edge; screens deliberately draw their content beneath this area. */
 @Composable
-fun Modifier.portalTopGradientBackground(fadeDepth: Dp = PortalTopFadeDepth): Modifier =
-    this
-        .background(portalTopGradient())
+fun Modifier.portalTopGradientBackground(fadeDepth: Dp = PortalTopFadeDepth): Modifier {
+    val background = MaterialTheme.colorScheme.background
+    return this
+        .drawBehind {
+            val fadePixels = (fadeDepth + 28.dp).toPx().coerceAtMost(size.height)
+            val transparentTail = 28.dp.toPx().coerceAtMost(size.height)
+            val fadeEndPixels = (size.height - transparentTail).coerceAtLeast(0f)
+            val fadeStartPixels = (fadeEndPixels - fadePixels).coerceAtLeast(0f)
+            val fadeStart = if (size.height > 0f) {
+                (fadeStartPixels / size.height).coerceIn(0f, 1f)
+            } else {
+                1f
+            }
+            val fadeEnd = if (size.height > 0f) {
+                (fadeEndPixels / size.height).coerceIn(fadeStart, 1f)
+            } else {
+                1f
+            }
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to background,
+                        fadeStart to background,
+                        fadeEnd to background.copy(alpha = 0f),
+                        1f to background.copy(alpha = 0f)
+                    )
+                )
+            )
+        }
         .padding(bottom = fadeDepth)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -253,21 +290,21 @@ data class PortalViewColors(
 
 fun portalViewColors(context: Context): PortalViewColors = if (PortalThemePreferences.isDark(context)) {
     PortalViewColors(
-        pageBackground = android.graphics.Color.rgb(16, 19, 24),
-        webBackground = android.graphics.Color.rgb(25, 28, 34),
-        text = android.graphics.Color.rgb(227, 231, 239),
-        secondaryText = android.graphics.Color.rgb(194, 198, 207),
-        accent = android.graphics.Color.rgb(169, 199, 255),
+        pageBackground = android.graphics.Color.rgb(0, 0, 0),
+        webBackground = android.graphics.Color.rgb(28, 28, 30),
+        text = android.graphics.Color.rgb(242, 242, 247),
+        secondaryText = android.graphics.Color.rgb(174, 174, 178),
+        accent = android.graphics.Color.rgb(72, 72, 74),
         errorText = android.graphics.Color.rgb(255, 218, 214),
         errorBackground = android.graphics.Color.rgb(92, 25, 29)
     )
 } else {
     PortalViewColors(
-        pageBackground = android.graphics.Color.rgb(248, 249, 255),
+        pageBackground = android.graphics.Color.rgb(242, 242, 247),
         webBackground = android.graphics.Color.WHITE,
-        text = android.graphics.Color.rgb(24, 33, 47),
-        secondaryText = android.graphics.Color.rgb(81, 88, 102),
-        accent = android.graphics.Color.rgb(49, 93, 168),
+        text = android.graphics.Color.rgb(28, 28, 30),
+        secondaryText = android.graphics.Color.rgb(99, 99, 102),
+        accent = android.graphics.Color.rgb(58, 58, 60),
         errorText = android.graphics.Color.rgb(150, 30, 30),
         errorBackground = android.graphics.Color.rgb(255, 235, 235)
     )

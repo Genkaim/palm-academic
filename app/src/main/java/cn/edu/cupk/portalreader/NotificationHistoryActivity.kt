@@ -41,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
@@ -133,7 +134,10 @@ private fun HistoryEntryCard(
 ) {
     val context = LocalContext.current
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onToggle),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = PortalCardBackground)
     ) {

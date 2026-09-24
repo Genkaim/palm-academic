@@ -27,7 +27,9 @@ class PortalKeepAliveService : Service() {
         val openApp = PendingIntent.getActivity(
             this,
             NOTIFICATION_ID,
-            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(MainActivity.EXTRA_NOTIFICATION_ENTRY, true),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)

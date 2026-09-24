@@ -54,7 +54,12 @@ class WebLoginActivity : PortalActivity() {
             setNavigationOnClickListener { finishPortalActivity() }
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(colors.pageBackground, colors.pageBackground, Color.TRANSPARENT)
+                intArrayOf(
+                    colors.pageBackground,
+                    colors.pageBackground,
+                    (colors.pageBackground and 0x00FFFFFF) or 0x66000000,
+                    Color.TRANSPARENT
+                )
             )
             setTitleTextColor(colors.text)
             setSubtitleTextColor(colors.secondaryText)

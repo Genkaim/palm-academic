@@ -20,8 +20,8 @@ android {
         applicationId = "cn.edu.cupk.portalreader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 22
-        versionName = "0.3.10"
+        versionCode = 23
+        versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -72,6 +72,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("io.github.kyant0:backdrop:1.0.6")
+    implementation("io.github.kyant0:shapes:1.2.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")

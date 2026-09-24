@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 data class SchoolOption(val id: String, val name: String)
 data class SchoolRefreshResult(val schoolCount: Int, val downloadedFileCount: Int)
@@ -151,12 +152,17 @@ object SchoolAdapterRepository {
     private var selectedSchoolId = DEFAULT_SCHOOL_ID
     @Volatile
     private var profiles: List<SchoolProfile> = emptyList()
+    @Volatile
+    private var cachedDefinition: SchoolDefinition? = null
+    private val adapterScriptCache = ConcurrentHashMap<String, String>()
 
     fun initialize(context: Context) {
         profiles = readProfiles(context)
         val saved = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_ACTIVE_SCHOOL, DEFAULT_SCHOOL_ID)
         selectedSchoolId = saved?.takeIf { id -> profiles.any { it.id == id } } ?: DEFAULT_SCHOOL_ID
+        cachedDefinition = null
+        adapterScriptCache.clear()
     }
 
     fun options(context: Context): List<SchoolOption> {
@@ -178,6 +184,8 @@ object SchoolAdapterRepository {
         ensureInitialized(context)
         if (profiles.none { it.id == schoolId } || selectedSchoolId == schoolId) return false
         selectedSchoolId = schoolId
+        cachedDefinition = null
+        adapterScriptCache.clear()
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_ACTIVE_SCHOOL, schoolId)
@@ -188,6 +196,7 @@ object SchoolAdapterRepository {
 
     fun load(context: Context): SchoolDefinition {
         ensureInitialized(context)
+        cachedDefinition?.takeIf { it.id == selectedSchoolId }?.let { return it }
         val profile = activeProfile()
         val root = readJsonConfig(context, profile.definitionAsset)
         val baseUrl = if (BuildConfig.LOCAL_MOCK_ENABLED) {
@@ -258,11 +267,13 @@ object SchoolAdapterRepository {
                     )
                 }
             )
-        )
+        ).also { cachedDefinition = it }
     }
 
     fun readAdapterScript(context: Context, assetPath: String): String =
-        readConfiguredText(context, assetPath)
+        adapterScriptCache.getOrPut("$selectedSchoolId:$assetPath") {
+            readConfiguredText(context, assetPath)
+        }
 
     suspend fun refreshFromGitHub(context: Context): Result<SchoolRefreshResult> =
         withContext(Dispatchers.IO) {
@@ -299,6 +310,8 @@ object SchoolAdapterRepository {
                 )
 
                 profiles = readProfiles(appContext)
+                cachedDefinition = null
+                adapterScriptCache.clear()
                 if (profiles.none { it.id == selectedSchoolId }) {
                     selectedSchoolId = profiles.firstOrNull { it.id == DEFAULT_SCHOOL_ID }?.id
                         ?: profiles.first().id

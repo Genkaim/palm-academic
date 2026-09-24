@@ -27,12 +27,14 @@
             android:windowSoftInputMode="adjustResize" />
         <activity android:name=".MaterialPortalActivity" android:exported="false" />
         <activity android:name=".OriginalPortalActivity" android:exported="false" />
-        <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".BackgroundSupportActivity" android:exported="false" />
         <activity android:name=".NotificationSettingsActivity" android:exported="false" />
         <activity android:name=".NotificationHistoryActivity" android:exported="false" />
         <activity android:name=".SchoolSelectionActivity" android:exported="false" />
-        <activity android:name=".HomeActivity" android:exported="false" />
+        <activity
+            android:name=".HomeActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustNothing" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
