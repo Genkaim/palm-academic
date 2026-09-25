@@ -4,6 +4,8 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 data class PortalPollHistoryDetail(
     val category: String,
@@ -28,9 +30,18 @@ data class PortalPollHistoryEntry(
     val details: List<PortalPollHistoryDetail>
 )
 
+data class PortalHomeChangeNotice(
+    val timestamp: Long,
+    val category: String,
+    val nativeType: String
+)
+
 object PortalPollHistory {
     private const val FILE_NAME = "portal_poll_history.json"
+    private const val HOME_NOTICE_PREFERENCES = "portal_home_change_notices"
     private val lock = Any()
+    private val _version = MutableStateFlow(0L)
+    val version = _version.asStateFlow()
 
     fun read(context: Context): List<PortalPollHistoryEntry> = synchronized(lock) {
         readUnlocked(context)
@@ -39,10 +50,34 @@ object PortalPollHistory {
     fun append(context: Context, entry: PortalPollHistoryEntry) = synchronized(lock) {
         val entries = listOf(entry) + readUnlocked(context)
         writeUnlocked(context, entries)
+        notifyChanged()
     }
 
     fun clear(context: Context) = synchronized(lock) {
         historyFile(context).delete()
+        notifyChanged()
+    }
+
+    fun latestUnreadChange(context: Context): PortalHomeChangeNotice? {
+        val acknowledged = context.applicationContext.getSharedPreferences(
+            HOME_NOTICE_PREFERENCES,
+            Context.MODE_PRIVATE
+        )
+        return latestUnreadPortalChange(read(context)) { nativeType ->
+            acknowledged.getLong("read_$nativeType", 0L)
+        }
+    }
+
+    fun acknowledgeHomeChange(context: Context, notice: PortalHomeChangeNotice) {
+        context.applicationContext.getSharedPreferences(
+            HOME_NOTICE_PREFERENCES,
+            Context.MODE_PRIVATE
+        ).edit().putLong("read_${notice.nativeType}", notice.timestamp).apply()
+        notifyChanged()
+    }
+
+    private fun notifyChanged() {
+        _version.value = _version.value + 1L
     }
 
     private fun readUnlocked(context: Context): List<PortalPollHistoryEntry> = runCatching {
@@ -122,4 +157,27 @@ object PortalPollHistory {
 
     private fun JSONObject.optIntOrNull(key: String): Int? =
         if (has(key) && !isNull(key)) getInt(key) else null
+}
+
+internal fun latestUnreadPortalChange(
+    entries: List<PortalPollHistoryEntry>,
+    acknowledgedAt: (nativeType: String) -> Long
+): PortalHomeChangeNotice? = entries.firstNotNullOfOrNull { entry ->
+    entry.details.firstNotNullOfOrNull detail@{ detail ->
+        if (!detail.changed) return@detail null
+        val nativeType = detail.category.homeNoticeNativeType() ?: return@detail null
+        if (entry.timestamp <= acknowledgedAt(nativeType)) return@detail null
+        PortalHomeChangeNotice(
+            timestamp = entry.timestamp,
+            category = detail.category,
+            nativeType = nativeType
+        )
+    }
+}
+
+private fun String.homeNoticeNativeType(): String? = when (this) {
+    "课表" -> "schedule"
+    "成绩" -> "grade"
+    "考试" -> "exam"
+    else -> null
 }

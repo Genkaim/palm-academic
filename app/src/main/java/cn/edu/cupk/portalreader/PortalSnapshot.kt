@@ -89,6 +89,12 @@ object PortalSnapshot {
         }
     }.toList()
 
+    fun parsedHtmlHasRows(html: String): Boolean = parseTables(html).any { it.rows.isNotEmpty() }
+
+    fun materialPageHasData(json: String, nativeType: String): Boolean = runCatching {
+        quickBaselineHasData(parseMaterialPage(json), nativeType)
+    }.getOrDefault(false)
+
     private fun looksLikeHeaderRow(cells: List<String>): Boolean {
         if (cells.isEmpty()) return false
         val headerTerms = setOf(

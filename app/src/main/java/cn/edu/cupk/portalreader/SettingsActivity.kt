@@ -37,12 +37,14 @@ import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Update
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -226,7 +228,12 @@ internal fun SettingsContent(
                 Button(onClick = { confirmLogout = false; onLogout() }) { Text("退出") }
             },
             dismissButton = {
-                OutlinedButton(onClick = { confirmLogout = false }) { Text("取消") }
+                TextButton(
+                    onClick = { confirmLogout = false },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                ) { Text("取消") }
             }
         )
     }

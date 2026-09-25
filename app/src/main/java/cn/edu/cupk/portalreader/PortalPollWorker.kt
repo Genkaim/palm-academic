@@ -178,7 +178,11 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                     details += gradeData.toHistoryDetail("成绩", "请求失败")
                     partiallyUnavailable = true
                 } else {
-                    val parsedGrades = PortalSnapshot.parsedDataJson(gradeData.body, type = "grade")
+                    val parsedGrades = renderedSnapshotOrResponse(
+                        school = school,
+                        nativeType = "grade",
+                        responseBody = gradeData.body
+                    )
                     details += updateGradeSnapshot(preferences, gradeData, parsedGrades)
                 }
             }
@@ -202,11 +206,16 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                     details += examData.toHistoryDetail("考试", "请求失败")
                     partiallyUnavailable = true
                 } else {
-                    val parsedExams = PortalSnapshot.parsedDataJson(examData.body, type = "exam")
+                    val parsedExams = renderedSnapshotOrResponse(
+                        school = school,
+                        nativeType = "exam",
+                        responseBody = examData.body
+                    )
                     val examRows = PortalSnapshot.tableRows(examData.body)
                     if (
                         examRows.isEmpty() &&
-                        PortalSnapshot.visibleDocument(examData.body).isBlank()
+                        PortalSnapshot.visibleDocument(examData.body).isBlank() &&
+                        !PortalSnapshot.materialPageHasData(parsedExams, "exam")
                     ) {
                         details += examData.toHistoryDetail(
                             category = "考试",
@@ -316,6 +325,28 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             val hidden = name.lowercase() in SENSITIVE_HEADERS
             "$name: ${if (hidden) "[已遮蔽]" else value(index)}"
         }
+    }
+
+    /**
+     * Grade and exam pages populate their tables after JavaScript runs. A successful HTTP GET
+     * can therefore contain only the empty table shell even though the feature renders normally.
+     * Prefer the adapter's latest populated publication in that case so history and comparisons
+     * contain the actual cards/fields the user saw instead of an empty JSON structure.
+     */
+    private fun renderedSnapshotOrResponse(
+        school: SchoolDefinition,
+        nativeType: String,
+        responseBody: String
+    ): String {
+        val responseSnapshot = PortalSnapshot.parsedDataJson(responseBody, type = nativeType)
+        if (PortalSnapshot.parsedHtmlHasRows(responseBody)) return responseSnapshot
+        val item = school.quickItems.firstOrNull { it.nativeType == nativeType }
+            ?: return responseSnapshot
+        val renderedSnapshot = MaterialPageCache.loadRaw(applicationContext, item.url)
+            ?: return responseSnapshot
+        return renderedSnapshot.takeIf {
+            PortalSnapshot.materialPageHasData(it, nativeType)
+        }?.let(PortalSnapshot::historyDisplayContent) ?: responseSnapshot
     }
 
     private fun authenticationDetail(notified: Boolean, reason: String) = PortalPollHistoryDetail(

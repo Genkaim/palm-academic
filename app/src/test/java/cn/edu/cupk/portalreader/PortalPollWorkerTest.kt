@@ -228,4 +228,47 @@ class PortalPollWorkerTest {
         assertTrue(displayed.contains("旧成绩 88"))
         assertFalse(displayed.contains("<html"))
     }
+
+    @Test
+    fun homeChangeNotice_returnsNewestSupportedUnreadChange() {
+        val entries = listOf(
+            pollHistoryEntry(200L, "成绩"),
+            pollHistoryEntry(100L, "课表")
+        )
+
+        val notice = latestUnreadPortalChange(entries) { 0L }
+
+        assertEquals("成绩", notice?.category)
+        assertEquals("grade", notice?.nativeType)
+        assertEquals(200L, notice?.timestamp)
+    }
+
+    @Test
+    fun homeChangeNotice_advancesAfterCurrentCategoryIsAcknowledged() {
+        val entries = listOf(
+            pollHistoryEntry(200L, "成绩"),
+            pollHistoryEntry(100L, "考试")
+        )
+
+        val notice = latestUnreadPortalChange(entries) { nativeType ->
+            if (nativeType == "grade") 200L else 0L
+        }
+
+        assertEquals("考试", notice?.category)
+        assertEquals("exam", notice?.nativeType)
+    }
+
+    private fun pollHistoryEntry(timestamp: Long, category: String) = PortalPollHistoryEntry(
+        timestamp = timestamp,
+        status = "完成",
+        notificationTriggered = true,
+        details = listOf(
+            PortalPollHistoryDetail(
+                category = category,
+                summary = "$category 发生变化",
+                changed = true,
+                notificationTriggered = true
+            )
+        )
+    )
 }

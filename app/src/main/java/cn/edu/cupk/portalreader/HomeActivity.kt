@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
@@ -67,12 +69,14 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -97,11 +101,13 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -143,16 +149,16 @@ class HomeActivity : PortalActivity() {
             PortalTheme {
                 val school = remember { SchoolAdapterRepository.load(this) }
                 val currentNotificationVersion = notificationVersion
-                val notificationEntry = intent.getBooleanExtra(
+                val animatedEntry = intent.getBooleanExtra(
                     EXTRA_NOTIFICATION_ENTRY_ANIMATION,
                     false
-                )
+                ) || intent.getBooleanExtra(EXTRA_LOGIN_ENTRY_ANIMATION, false)
                 val entryProgress = remember {
-                    Animatable(if (notificationEntry) 0f else 1f)
+                    Animatable(if (animatedEntry) 0f else 1f)
                 }
                 val entryOffsetPx = with(LocalDensity.current) { 12.dp.toPx() }
-                LaunchedEffect(notificationEntry) {
-                    if (notificationEntry) {
+                LaunchedEffect(animatedEntry) {
+                    if (animatedEntry) {
                         entryProgress.animateTo(
                             targetValue = 1f,
                             animationSpec = tween(
@@ -271,6 +277,10 @@ private fun HomeContent(
     val enabledNotificationCount = remember(notificationVersion) {
         PortalNotificationPreferences.enabledCount(notificationPreferences)
     }
+    val pollHistoryVersion by PortalPollHistory.version.collectAsState()
+    val pendingChangeNotice = remember(pollHistoryVersion) {
+        PortalPollHistory.latestUnreadChange(context)
+    }
     val pagerState = rememberPagerState(pageCount = { HomeDestination.entries.size })
     val pagerFlingBehavior = PagerDefaults.flingBehavior(
         state = pagerState,
@@ -303,9 +313,12 @@ private fun HomeContent(
         baselinePrefetchReady = true
     }
     val visibleGroups = remember(query, school) {
-        if (query.isBlank()) school.groups
-        else school.groups.mapNotNull { group ->
-            val items = group.items.filter { it.title.contains(query.trim(), ignoreCase = true) }
+        school.groups.mapNotNull { group ->
+            val items = group.items.filter { item ->
+                !item.quick && (
+                    query.isBlank() || item.title.contains(query.trim(), ignoreCase = true)
+                )
+            }
             if (items.isEmpty()) null else PortalGroup(group.title, items)
         }
     }
@@ -320,7 +333,7 @@ private fun HomeContent(
         navigationScope.launch {
             pagerState.animateScrollToPage(
                 page = target.ordinal,
-                animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing)
+                animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
             )
         }
     }
@@ -338,6 +351,14 @@ private fun HomeContent(
         drawContent()
     }
     val navigationInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val windowWidth = with(LocalDensity.current) {
+        LocalWindowInfo.current.containerSize.width.toDp()
+    }
+    val horizontalContentPadding = if (windowWidth >= 600.dp) {
+        32.dp
+    } else {
+        16.dp
+    }
     Box(
         Modifier.fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
@@ -354,7 +375,7 @@ private fun HomeContent(
                             transitionSpec = {
                                 val movingForward = targetState == HomeDestination.SETTINGS
                                 (
-                                    fadeIn(tween(300), initialAlpha = 0f) + slideInHorizontally(tween(280)) {
+                                    fadeIn(tween(220), initialAlpha = 0f) + slideInHorizontally(tween(240)) {
                                         if (movingForward) titleSlideDistance else -titleSlideDistance
                                     }
                                 )
@@ -404,68 +425,42 @@ private fun HomeContent(
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(
-                            start = 16.dp,
+                            start = horizontalContentPadding,
                             top = (padding.calculateTopPadding() - PortalTopFadeDepth).coerceAtLeast(0.dp) + 16.dp,
-                            end = 16.dp,
+                            end = horizontalContentPadding,
                             bottom = padding.calculateBottomPadding() + navigationInset + 112.dp
                         ),
                         verticalArrangement = Arrangement.spacedBy(24.dp)
                     ) {
                         if (!searchExpanded || query.isBlank()) {
                             item {
-                                HomeSection("提醒") {
-                                    HomePanel(HomeGroupPosition.ONLY, onOpenNotifications) {
-                                        Row(
-                                            Modifier.fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 15.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
-                                                Icon(
-                                                    Icons.Outlined.Notifications,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.onSurface,
-                                                    modifier = Modifier.size(22.dp)
-                                                )
-                                            }
-                                            Spacer(Modifier.size(13.dp))
-                                            Column(Modifier.weight(1f)) {
-                                                Text("变动通知", fontWeight = FontWeight.SemiBold)
-                                                Text(
-                                                    if (enabledNotificationCount == 0) {
-                                                        "课表、成绩与考试提醒均已关闭"
-                                                    } else {
-                                                        "$enabledNotificationCount 项提醒已开启"
-                                                    },
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    style = MaterialTheme.typography.bodySmall
-                                                )
-                                            }
-                                            Icon(
-                                                Icons.Outlined.ChevronRight,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.outline
-                                            )
+                                HomeSection("状态") {
+                                    HomeStatusPanel(
+                                        enabledCount = enabledNotificationCount,
+                                        notice = pendingChangeNotice,
+                                        onNormalClick = onOpenNotifications,
+                                        onNoticeClick = { notice ->
+                                            school.quickItems
+                                                .firstOrNull { it.nativeType == notice.nativeType }
+                                                ?.let { target ->
+                                                    PortalPollHistory.acknowledgeHomeChange(
+                                                        context,
+                                                        notice
+                                                    )
+                                                    onOpenItem(target)
+                                                }
                                         }
-                                    }
+                                    )
                                 }
                             }
                         }
                         if (visibleQuickItems.isNotEmpty()) {
                             item {
-                                HomeSection("快捷入口") {
-                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        visibleQuickItems.chunked(2).forEach { rowItems ->
-                                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                rowItems.forEach { item ->
-                                                    QuickCard(item, Modifier.weight(1f)) {
-                                                        onOpenItem(item)
-                                                    }
-                                                }
-                                                if (rowItems.size == 1) Spacer(Modifier.weight(1f))
-                                            }
-                                        }
-                                    }
+                                HomeSection(if (searchExpanded) "搜索结果" else "常用功能") {
+                                    QuickEntryGrid(
+                                        items = visibleQuickItems,
+                                        onOpenItem = onOpenItem
+                                    )
                                 }
                             }
                         }
@@ -519,13 +514,10 @@ private fun HomeContent(
             },
             onSearch = {
                 if (destination == HomeDestination.SETTINGS) {
-                    navigationScope.launch {
-                        pagerState.animateScrollToPage(
-                            page = HomeDestination.HOME.ordinal,
-                            animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing)
-                        )
-                        searchExpanded = true
-                    }
+                    // Start focus/IME and the expanding search surface in the same frame as
+                    // the pager transition instead of waiting for Home to finish settling.
+                    searchExpanded = true
+                    navigateTo(HomeDestination.HOME)
                 } else {
                     searchExpanded = true
                 }
@@ -599,7 +591,7 @@ private fun FloatingHomeNavigation(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val hostView = LocalView.current
-    val hostActivity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    val hostActivity = LocalActivity.current
     var keyboardReachedOpen by remember { mutableStateOf(false) }
     var hasOpenedSearch by remember { mutableStateOf(false) }
     var imeRequestPending by remember { mutableStateOf(false) }
@@ -816,7 +808,12 @@ private fun FloatingHomeNavigation(
         ) {
             Box(
                 modifier = Modifier
-                    .offset(x = searchHorizontalOffset, y = -searchLiftOffset)
+                    .offset {
+                        IntOffset(
+                            x = searchHorizontalOffset.roundToPx(),
+                            y = -searchLiftOffset.roundToPx()
+                        )
+                    }
                     .width(searchWidth)
                     .height(64.dp)
                     .then(searchSurfaceModifier)
@@ -938,7 +935,7 @@ private fun SearchMessage(icon: ImageVector, title: String, description: String)
             icon,
             contentDescription = null,
             modifier = Modifier.size(40.dp),
-            tint = MaterialTheme.colorScheme.primary
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Text(
@@ -1057,6 +1054,7 @@ private fun HomeSection(text: String, content: @Composable ColumnScope.() -> Uni
 private fun HomePanel(
     position: HomeGroupPosition,
     onClick: (() -> Unit)? = null,
+    containerColor: Color = PortalCardBackground,
     content: @Composable () -> Unit
 ) {
     val shape = when (position) {
@@ -1079,7 +1077,7 @@ private fun HomePanel(
         modifier = Modifier.fillMaxWidth().clip(shape)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         shape = shape,
-        colors = CardDefaults.cardColors(containerColor = PortalCardBackground),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         content()
@@ -1087,27 +1085,184 @@ private fun HomePanel(
 }
 
 @Composable
-private fun QuickCard(item: PortalItem, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun QuickEntryGrid(
+    items: List<PortalItem>,
+    onOpenItem: (PortalItem) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = PortalCardBackground),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column {
+            items.chunked(2).forEachIndexed { rowIndex, rowItems ->
+                if (rowIndex > 0) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 14.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                    )
+                }
+                Row(Modifier.fillMaxWidth().height(104.dp)) {
+                    QuickEntryCell(
+                        item = rowItems.first(),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        onClick = { onOpenItem(rowItems.first()) }
+                    )
+                    VerticalDivider(
+                        modifier = Modifier.fillMaxHeight().padding(vertical = 14.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                    )
+                    val second = rowItems.getOrNull(1)
+                    if (second != null) {
+                        QuickEntryCell(
+                            item = second,
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                            onClick = { onOpenItem(second) }
+                        )
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickEntryCell(
+    item: PortalItem,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
     val icon: ImageVector = when {
         item.title.contains("课表") -> Icons.Outlined.CalendarMonth
         item.title.contains("考试") -> Icons.Outlined.Description
         item.title.contains("成绩") -> Icons.Outlined.School
         else -> Icons.Outlined.Search
     }
-    Card(
+    Column(
         modifier = modifier
-            .clip(RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = PortalCardBackground),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = RoundedCornerShape(18.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Column(
-            Modifier.fillMaxWidth().height(90.dp).padding(16.dp),
-            verticalArrangement = Arrangement.SpaceBetween
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(24.dp)
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                item.title,
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                quickEntrySubtitle(item),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+private fun quickEntrySubtitle(item: PortalItem): String = when (item.nativeType) {
+    "schedule" -> "课程与时间"
+    "grade" -> "成绩与绩点"
+    "exam" -> "时间与考场"
+    "program" -> "学分与进度"
+    else -> "打开功能"
+}
+
+@Composable
+private fun HomeStatusPanel(
+    enabledCount: Int,
+    notice: PortalHomeChangeNotice?,
+    onNormalClick: () -> Unit,
+    onNoticeClick: (PortalHomeChangeNotice) -> Unit
+) {
+    AnimatedContent(
+        targetState = notice,
+        transitionSpec = {
+            fadeIn(tween(180, easing = FastOutSlowInEasing))
+                .togetherWith(fadeOut(tween(120)))
+        },
+        contentKey = { it?.nativeType ?: "monitoring" },
+        label = "home-status"
+    ) { currentNotice ->
+        val highlighted = currentNotice != null
+        val foreground = if (highlighted) {
+            MaterialTheme.colorScheme.onPrimary
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        }
+        val secondaryForeground = if (highlighted) {
+            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.76f)
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        HomePanel(
+            position = HomeGroupPosition.ONLY,
+            onClick = {
+                if (currentNotice == null) onNormalClick() else onNoticeClick(currentNotice)
+            },
+            containerColor = if (highlighted) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                PortalCardBackground
+            }
         ) {
-            Icon(icon, null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(23.dp))
-            Text(item.title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Outlined.Notifications,
+                    contentDescription = null,
+                    tint = foreground,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        if (currentNotice == null) "变动通知" else "${currentNotice.category}有新变化",
+                        color = foreground,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        when {
+                            currentNotice != null -> "点击查看最新${currentNotice.category}信息"
+                            enabledCount == 0 -> "课表、成绩与考试提醒均已关闭"
+                            else -> "后台检测运行中"
+                        },
+                        color = secondaryForeground,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                if (currentNotice == null) {
+                    Text(
+                        if (enabledCount == 0) "未开启" else "$enabledCount 项",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                RoundedCornerShape(9.dp)
+                            )
+                            .padding(horizontal = 9.dp, vertical = 5.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Icon(
+                    Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = secondaryForeground,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }

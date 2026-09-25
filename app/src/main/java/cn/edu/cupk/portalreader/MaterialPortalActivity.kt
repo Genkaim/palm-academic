@@ -16,7 +16,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -35,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -68,6 +68,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.pulltorefresh.pullToRefresh
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
@@ -78,6 +79,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -87,13 +89,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import org.json.JSONArray
 import org.json.JSONObject
@@ -266,7 +272,9 @@ private fun MaterialPortalContent(
     var firstFrameReady by remember(url) { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    var refreshToken by remember { mutableIntStateOf(0) }
+    // Every activity entry is a real refresh. A cached page still renders immediately, while
+    // this non-zero token marks the initial network load as the current refresh cycle.
+    var refreshToken by remember(url) { mutableIntStateOf(1) }
     var actionToken by remember { mutableIntStateOf(0) }
     var readerAction by remember { mutableStateOf<MaterialReaderAction?>(null) }
     var showExportHint by remember { mutableStateOf(false) }
@@ -484,6 +492,12 @@ private fun MaterialPageList(
     val pullToRefreshState = rememberPullToRefreshState()
     val density = LocalDensity.current
     val pullOffsetPx = with(density) { 64.dp.toPx() }
+    val windowWidth = with(density) { LocalWindowInfo.current.containerSize.width.toDp() }
+    val horizontalContentPadding = if (windowWidth >= 600.dp) {
+        32.dp
+    } else {
+        16.dp
+    }
     val hapticFeedback = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val returnOffset = remember { Animatable(0f) }
@@ -492,6 +506,41 @@ private fun MaterialPageList(
     var returningFromPull by remember { mutableStateOf(false) }
     var suppressPullOffsetUntilReset by remember { mutableStateOf(false) }
     var userPullRefreshActive by remember { mutableStateOf(false) }
+    val currentPullFraction by rememberUpdatedState(pullFraction)
+    val currentLoading by rememberUpdatedState(loading)
+    val currentReturningFromPull by rememberUpdatedState(returningFromPull)
+    val pullReleaseConnection = remember {
+        object : NestedScrollConnection {
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (
+                    !currentLoading && !currentReturningFromPull &&
+                    currentPullFraction in 0.001f..<1f
+                ) {
+                    // Preserve the return-to-rest motion, but own it from this point onward.
+                    // Material may continue settling internally; hiding that second motion
+                    // removes only the rebound after the content reaches its resting place.
+                    returnOffset.stop()
+                    returnOffset.snapTo(currentPullFraction * pullOffsetPx)
+                    returningFromPull = true
+                    suppressPullOffsetUntilReset = true
+                    scope.launch {
+                        try {
+                            returnOffset.animateTo(
+                                targetValue = 0f,
+                                animationSpec = tween(
+                                    durationMillis = 180,
+                                    easing = FastOutSlowInEasing
+                                )
+                            )
+                        } finally {
+                            returningFromPull = false
+                        }
+                    }
+                }
+                return Velocity.Zero
+            }
+        }
+    }
     LaunchedEffect(pullFraction, loading, returningFromPull) {
         if (
             !loading && !returningFromPull && !suppressPullOffsetUntilReset &&
@@ -503,21 +552,26 @@ private fun MaterialPageList(
             thresholdHapticPlayed = false
         }
     }
-    LaunchedEffect(loading, pullToRefreshState.distanceFraction) {
-        if (!loading) {
+    LaunchedEffect(loading, returningFromPull) {
+        if (!loading && !returningFromPull && userPullRefreshActive) {
             // Refresh completion only removes the loading bar. The user-triggered return
             // animation has already happened at refresh start; an initial load never enters it.
             returnOffset.snapTo(0f)
-            returningFromPull = false
             userPullRefreshActive = false
-            if (pullToRefreshState.distanceFraction <= 0.001f) {
-                suppressPullOffsetUntilReset = false
-            }
+        }
+    }
+    LaunchedEffect(loading, returningFromPull, pullToRefreshState.distanceFraction) {
+        if (
+            !loading && !returningFromPull &&
+            pullToRefreshState.distanceFraction <= 0.001f
+        ) {
+            suppressPullOffsetUntilReset = false
         }
     }
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .nestedScroll(pullReleaseConnection)
             .pullToRefresh(
                 // Programmatic/initial refreshes must never drive Material's pull state.
                 isRefreshing = loading && userPullRefreshActive,
@@ -562,12 +616,11 @@ private fun MaterialPageList(
                         // Initial automatic refresh and toolbar refresh stay at rest.
                         0f
                     }
-                }
-                .animateContentSize(),
+                },
             contentPadding = PaddingValues(
-                start = 16.dp,
+                start = horizontalContentPadding,
                 top = (topBarInset - PortalTopFadeDepth).coerceAtLeast(0.dp) + 16.dp,
-                end = 16.dp,
+                end = horizontalContentPadding,
                 bottom = bottomInset + 16.dp
             ),
             verticalArrangement = Arrangement.spacedBy(24.dp)
@@ -578,8 +631,8 @@ private fun MaterialPageList(
                         Modifier.then(
                             if (animateItems) {
                                 Modifier.animateItem(
-                                    fadeInSpec = tween(220, easing = FastOutSlowInEasing),
-                                    placementSpec = tween(300, easing = FastOutSlowInEasing),
+                                    fadeInSpec = tween(180, easing = FastOutSlowInEasing),
+                                    placementSpec = tween(240, easing = FastOutSlowInEasing),
                                     fadeOutSpec = tween(120)
                                 )
                             } else Modifier
@@ -602,7 +655,7 @@ private fun MaterialPageList(
                             if (animateItems) {
                                 Modifier.animateItem(
                                     fadeInSpec = tween(160, easing = FastOutSlowInEasing),
-                                    placementSpec = tween(280, easing = FastOutSlowInEasing),
+                                    placementSpec = tween(220, easing = FastOutSlowInEasing),
                                     fadeOutSpec = tween(100)
                                 )
                             } else Modifier
@@ -619,8 +672,8 @@ private fun MaterialPageList(
                         Modifier.then(
                             if (animateItems) {
                                 Modifier.animateItem(
-                                    fadeInSpec = tween(240, easing = FastOutSlowInEasing),
-                                    placementSpec = tween(320, easing = FastOutSlowInEasing),
+                                    fadeInSpec = tween(180, easing = FastOutSlowInEasing),
+                                    placementSpec = tween(240, easing = FastOutSlowInEasing),
                                     fadeOutSpec = tween(120)
                                 )
                             } else Modifier
@@ -652,7 +705,9 @@ private fun MaterialPageList(
             LinearProgressIndicator(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
+                    .padding(horizontal = 16.dp),
+                color = MaterialTheme.colorScheme.onSurface,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant
             )
         }
         if (!loading && pullFraction > 0f && !suppressPullOffsetUntilReset) {
@@ -682,7 +737,7 @@ private fun LoadingPane(message: String, modifier: Modifier = Modifier) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        CircularProgressIndicator()
+        CircularProgressIndicator(color = MaterialTheme.colorScheme.onSurface)
         Text(
             text = message,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -700,15 +755,16 @@ private fun PageControls(
     onScheduleDaySelected: (String?) -> Unit,
     onAction: (String, String) -> Unit
 ) {
-    MaterialSectionBlock("筛选与视图") {
+    MaterialSectionBlock("筛选") {
         MaterialPanel(MaterialGroupPosition.ONLY) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 page.choices.forEach { choice ->
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             choice.label,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Medium
                         )
                         ChoiceMenu(choice, onAction)
                     }
@@ -717,8 +773,9 @@ private fun PageControls(
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             "显示日期",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Medium
                         )
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             item(key = "all-schedule-days") {
@@ -742,13 +799,15 @@ private fun PageControls(
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             "排名类型",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Medium
                         )
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(page.actions, key = { "${it.id}:${it.value}" }) { action ->
                                 OutlinedButton(
                                     onClick = { onAction(action.id, action.value) },
+                                    modifier = Modifier.heightIn(min = 44.dp),
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
                                     Text(action.label)
@@ -776,6 +835,7 @@ private fun MaterialChoicePill(
                 else MaterialTheme.colorScheme.surfaceVariant
             )
             .clickable(onClick = onClick)
+            .heightIn(min = 44.dp)
             .padding(horizontal = 14.dp, vertical = 9.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -852,9 +912,16 @@ private fun ChoiceMenu(choice: MaterialChoice, onAction: (String, String) -> Uni
     Box(Modifier.fillMaxWidth()) {
         OutlinedButton(
             onClick = { expanded = true },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
             shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.outlinedButtonColors(containerColor = PortalPageBackground)
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ),
+            border = BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
+            )
         ) {
             Box(modifier = Modifier.fillMaxWidth()) {
                 AnimatedContent(
@@ -863,12 +930,17 @@ private fun ChoiceMenu(choice: MaterialChoice, onAction: (String, String) -> Uni
                     transitionSpec = { fadeIn() togetherWith fadeOut() },
                     label = "secondary-menu-selection"
                 ) { label ->
-                    Text(text = label, textAlign = TextAlign.Center)
+                    Text(
+                        text = label,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
                 Icon(
                     Icons.Outlined.KeyboardArrowDown,
                     "展开学期菜单",
-                    modifier = Modifier.align(Alignment.CenterEnd)
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -879,20 +951,28 @@ private fun ChoiceMenu(choice: MaterialChoice, onAction: (String, String) -> Uni
                 modifier = Modifier.widthIn(min = 236.dp, max = 320.dp),
                 offset = DpOffset(0.dp, 4.dp),
                 shape = RoundedCornerShape(16.dp),
-                containerColor = MaterialTheme.colorScheme.background,
+                containerColor = MaterialTheme.colorScheme.surface,
                 tonalElevation = 0.dp,
                 shadowElevation = 12.dp
             ) {
                 choice.options.forEach { option ->
+                    val selected = option.value == choice.value
                     DropdownMenuItem(
+                        modifier = Modifier
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(
+                                if (selected) MaterialTheme.colorScheme.surfaceVariant
+                                else Color.Transparent
+                            ),
                         text = {
                             Text(
                                 text = option.label,
                                 modifier = Modifier.fillMaxWidth(),
                                 textAlign = TextAlign.Center,
-                                fontWeight = if (option.value == choice.value) {
-                                    FontWeight.SemiBold
-                                } else FontWeight.Normal
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (selected) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         },
                         onClick = {
@@ -909,20 +989,24 @@ private fun ChoiceMenu(choice: MaterialChoice, onAction: (String, String) -> Uni
 @Composable
 private fun StatsSection(section: MaterialSection.Stats) {
     MaterialSectionBlock(section.title) {
-        Row(
-            Modifier.fillMaxWidth().height(88.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = PortalCardBackground),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
         ) {
-            section.items.forEach { item ->
-                Card(
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = PortalCardBackground),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-                ) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 92.dp)) {
+                section.items.forEachIndexed { index, item ->
+                    if (index > 0) {
+                        VerticalDivider(
+                            modifier = Modifier.height(58.dp).align(Alignment.CenterVertically),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                        )
+                    }
                     Column(
-                        Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 13.dp),
-                        verticalArrangement = Arrangement.SpaceBetween
+                        Modifier.weight(1f).fillMaxHeight()
+                            .padding(horizontal = 13.dp, vertical = 15.dp),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
                     ) {
                         Text(
                             item.label,
@@ -932,7 +1016,9 @@ private fun StatsSection(section: MaterialSection.Stats) {
                         Text(
                             item.value.ifBlank { "—" },
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -949,21 +1035,43 @@ private fun ProgramSection(section: MaterialSection.Program) {
     Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
         MaterialSectionBlock("学分进度") {
             MaterialPanel(MaterialGroupPosition.ONLY) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        "${section.completedCredits.ifBlank { "—" }} / ${section.requiredCredits.ifBlank { "—" }}",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "已完成 / 培养方案要求",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                "已完成学分",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                section.completedCredits.ifBlank { "—" },
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            "要求 ${section.requiredCredits.ifBlank { "—" }}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                    }
                     LinearProgressIndicator(
                         progress = { progress },
-                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp))
+                        modifier = Modifier.fillMaxWidth().height(7.dp)
+                            .clip(RoundedCornerShape(4.dp)),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                    Text(
+                        if (required > 0f) "已完成 ${(progress * 100).toInt()}%" else "正在读取培养方案要求",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -999,13 +1107,22 @@ private fun ProgramModuleCard(
     ) {
         Column {
             Row(
-                Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(14.dp),
+                Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                    .heightIn(min = 58.dp).padding(horizontal = 15.dp, vertical = 13.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(module.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        module.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
                     module.requirements.forEach { requirement ->
-                        Text(requirement, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            requirement,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                     if (module.status.isNotBlank()) {
                         Text(
@@ -1015,11 +1132,22 @@ private fun ProgramModuleCard(
                                 else -> module.status
                             },
                             style = MaterialTheme.typography.labelMedium,
-                            color = if (module.status == "PASSED") PortalSuccess else MaterialTheme.colorScheme.error
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
                 }
-                Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, if (expanded) "折叠" else "展开")
+                Spacer(Modifier.width(12.dp))
+                Icon(
+                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    if (expanded) "折叠" else "展开",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             if (expanded) {
                 if (module.courses.isNotEmpty()) {
@@ -1076,17 +1204,26 @@ private fun ScheduleSection(section: MaterialSection.Schedule, selectedDay: Stri
                 visibleDays.forEach { day ->
                     if (day.lessons.isNotEmpty()) {
                         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(
-                                day.name,
-                                modifier = Modifier.padding(start = 8.dp, bottom = 5.dp),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Row(
+                                Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 5.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    day.name,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    "${day.lessons.size} 项",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             day.lessons.forEachIndexed { index, lesson ->
-                                MaterialInfoCard(
+                                ScheduleLessonCard(
                                     item = lesson,
-                                    compact = true,
                                     position = materialGroupPosition(index, day.lessons.size)
                                 )
                             }
@@ -1107,6 +1244,73 @@ private fun ScheduleSection(section: MaterialSection.Schedule, selectedDay: Stri
 }
 
 @Composable
+private fun ScheduleLessonCard(
+    item: MaterialCardItem,
+    position: MaterialGroupPosition
+) {
+    val schedule = item.schedule
+    MaterialPanel(position = position) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(
+                modifier = Modifier.width(62.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    schedule?.startTime?.takeIf(String::isNotBlank)
+                        ?: schedule?.startSection?.takeIf(String::isNotBlank)?.let { "$it 节" }
+                        ?: "课程",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    schedule?.endTime?.takeIf(String::isNotBlank)
+                        ?: schedule?.endSection?.takeIf(String::isNotBlank)?.let { "至 $it 节" }
+                        .orEmpty(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            VerticalDivider(
+                modifier = Modifier.heightIn(min = 56.dp).padding(horizontal = 12.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.62f)
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    item.title.ifBlank { "未命名课程" },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (item.subtitle.isNotBlank()) {
+                    Text(
+                        item.subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                val details = listOfNotNull(
+                    schedule?.location?.takeIf(String::isNotBlank),
+                    schedule?.teacher?.takeIf(String::isNotBlank),
+                    schedule?.weeks?.takeIf(String::isNotBlank)
+                )
+                if (details.isNotEmpty()) {
+                    Text(
+                        details.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun CardsSection(section: MaterialSection.Cards) {
     MaterialSectionBlock(section.title) {
         if (section.cards.isEmpty()) {
@@ -1116,7 +1320,6 @@ private fun CardsSection(section: MaterialSection.Cards) {
                 section.cards.forEachIndexed { index, item ->
                     MaterialInfoCard(
                         item = item,
-                        compact = true,
                         position = materialGroupPosition(index, section.cards.size)
                     )
                 }
@@ -1128,53 +1331,64 @@ private fun CardsSection(section: MaterialSection.Cards) {
 @Composable
 private fun MaterialInfoCard(
     item: MaterialCardItem,
-    compact: Boolean = false,
     position: MaterialGroupPosition = MaterialGroupPosition.ONLY
 ) {
     MaterialPanel(position = position) {
         Column(
-            Modifier.padding(
-                horizontal = 16.dp,
-                vertical = if (compact) 14.dp else 16.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 9.dp)
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalArrangement = Arrangement.spacedBy(11.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(item.title.ifBlank { "未命名项目" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        item.title.ifBlank { "未命名项目" },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
                     if (item.subtitle.isNotBlank()) {
-                        Text(item.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            item.subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 if (item.accent.isNotBlank()) {
                     Text(
                         item.accent,
-                        style = MaterialTheme.typography.labelLarge,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier
-                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(9.dp))
-                            .padding(horizontal = 9.dp, vertical = 5.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
                     )
                 }
             }
-            if (compact) {
-                item.fields.filter { it.second.isNotBlank() }.chunked(2).forEach { fields ->
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        fields.forEach { (label, value) ->
-                            Column(Modifier.weight(1f)) {
-                                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(value, style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                        if (fields.size == 1) Spacer(Modifier.weight(1f))
-                    }
-                }
-            } else {
-                item.fields.forEach { (label, value) ->
-                    if (value.isNotBlank()) {
-                        Column {
-                            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(value, style = MaterialTheme.typography.bodyMedium)
+            val fields = item.fields.filter { it.second.isNotBlank() }
+            if (fields.isNotEmpty()) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f)
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    fields.forEach { (label, value) ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Text(
+                                label,
+                                modifier = Modifier.width(82.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                value,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyMedium,
+                                textAlign = TextAlign.End
+                            )
                         }
                     }
                 }
@@ -1203,13 +1417,18 @@ private fun MaterialTable(section: MaterialSection.Table) {
 
 @Composable
 private fun TableRow(values: List<String>, header: Boolean, alternate: Boolean = false) {
-    Row(Modifier.background(if (alternate) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f) else Color.Transparent)) {
+    val rowColor = when {
+        header -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
+        alternate -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+        else -> Color.Transparent
+    }
+    Row(Modifier.background(rowColor)) {
         values.forEach { value ->
             Text(
                 value.ifBlank { "—" },
-                modifier = Modifier.width(148.dp).padding(horizontal = 12.dp, vertical = 10.dp),
+                modifier = Modifier.width(148.dp).padding(horizontal = 12.dp, vertical = 11.dp),
                 style = if (header) MaterialTheme.typography.labelLarge else MaterialTheme.typography.bodyMedium,
-                fontWeight = if (header) FontWeight.Bold else FontWeight.Normal
+                fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal
             )
         }
     }
@@ -1219,15 +1438,30 @@ private fun TableRow(values: List<String>, header: Boolean, alternate: Boolean =
 private fun FieldCard(section: MaterialSection.Fields) {
     MaterialSectionBlock(section.title) {
         MaterialPanel(MaterialGroupPosition.ONLY) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                section.fields.forEach { (label, value) ->
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                section.fields.forEachIndexed { index, (label, value) ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.48f)
+                        )
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 13.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
                         Text(
                             label,
+                            modifier = Modifier.weight(0.4f),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Text(value, style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            value,
+                            modifier = Modifier.weight(0.6f),
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.End
+                        )
                     }
                 }
             }
