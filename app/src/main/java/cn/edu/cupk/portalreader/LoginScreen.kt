@@ -71,6 +71,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
@@ -414,12 +415,7 @@ private fun SchoolSelectionPrompt(
             enabled = !loading,
             modifier = Modifier.fillMaxWidth().height(54.dp),
             shape = LoginPillShape,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            colors = loginPrimaryButtonColors()
         ) {
             Box(Modifier.fillMaxWidth()) {
                 Icon(
@@ -463,7 +459,11 @@ private fun LoginSecondaryActions(
                     alpha = secondaryActionAlpha
                     translationY = stationaryOffsetPx
                 },
-            shape = LoginPillShape
+            shape = LoginPillShape,
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         ) {
             Icon(Icons.Outlined.School, null)
             Spacer(Modifier.size(16.dp))
@@ -486,7 +486,11 @@ private fun LoginSecondaryActions(
                     alpha = secondaryActionAlpha
                     translationY = stationaryOffsetPx
                 },
-            shape = LoginPillShape
+            shape = LoginPillShape,
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         ) {
             Icon(Icons.Outlined.OpenInBrowser, null)
             Spacer(Modifier.size(8.dp))
@@ -507,12 +511,7 @@ private fun LoginPrimaryAction(
         enabled = !loading && canSubmit,
         modifier = modifier,
         shape = LoginPillShape,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        colors = loginPrimaryButtonColors()
     ) {
         if (loading) {
             CircularProgressIndicator(
@@ -526,6 +525,25 @@ private fun LoginPrimaryAction(
             Text("登录", fontWeight = FontWeight.SemiBold)
         }
     }
+}
+
+@Composable
+private fun loginPrimaryButtonColors() = if (
+    MaterialTheme.colorScheme.background.luminance() < 0.5f
+) {
+    ButtonDefaults.buttonColors(
+        containerColor = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+} else {
+    ButtonDefaults.buttonColors(
+        containerColor = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+    )
 }
 
 @Composable

@@ -233,6 +233,62 @@ class PortalPollWorkerTest {
     }
 
     @Test
+    fun courseSnapshot_ignoresMetadataCountsAndUnorderedRecruitTypes() {
+        val first = PortalSnapshot.courseDataJson(
+            """{
+                "lessonIds":[321124],
+                "lessons":[{
+                    "id":321124,
+                    "courseName":"大学物理B（Ⅱ）",
+                    "courseStdCount":2684,
+                    "openDepartment":{"recruitTypeSet":["POSTGRADUATE","UNDERGRADUATE","DOCTOR"]},
+                    "scheduleGroups":[{
+                        "weekday":2,"startUnit":4,"endUnit":5,"weeks":[15,1,2],
+                        "room":"C9楼I区206",
+                        "teacher":{"name":"孙志刚","department":{"recruitTypeSet":["UNDERGRADUATE","DOCTOR"]}}
+                    }]
+                }]
+            }""".trimIndent(),
+            "102"
+        )
+        val second = PortalSnapshot.courseDataJson(
+            """{
+                "lessonIds":[321124],
+                "lessons":[{
+                    "id":321124,
+                    "courseName":"大学物理B（Ⅱ）",
+                    "courseStdCount":2687,
+                    "openDepartment":{"recruitTypeSet":["DOCTOR","POSTGRADUATE","UNDERGRADUATE"]},
+                    "scheduleGroups":[{
+                        "weekday":2,"startUnit":4,"endUnit":5,"weeks":[2,1,15],
+                        "room":"C9楼I区206",
+                        "teacher":{"name":"孙志刚","department":{"recruitTypeSet":["DOCTOR","UNDERGRADUATE"]}}
+                    }]
+                }]
+            }""".trimIndent(),
+            "102"
+        )
+
+        assertEquals(PortalSnapshot.stableHash(first), PortalSnapshot.stableHash(second))
+        assertFalse(first.contains("courseStdCount"))
+        assertFalse(first.contains("recruitTypeSet"))
+    }
+
+    @Test
+    fun courseSnapshot_detectsActualScheduleChanges() {
+        val first = PortalSnapshot.courseDataJson(
+            """{"lessonIds":[1],"lessons":[{"id":1,"courseName":"高等数学","scheduleGroups":[{"weekday":1,"startUnit":3,"endUnit":4,"room":"A101","teacher":{"name":"张老师"}}]}]}""",
+            "102"
+        )
+        val second = PortalSnapshot.courseDataJson(
+            """{"lessonIds":[1],"lessons":[{"id":1,"courseName":"高等数学","scheduleGroups":[{"weekday":1,"startUnit":3,"endUnit":4,"room":"B305","teacher":{"name":"张老师"}}]}]}""",
+            "102"
+        )
+
+        assertFalse(PortalSnapshot.stableHash(first) == PortalSnapshot.stableHash(second))
+    }
+
+    @Test
     fun portalReadRequest_matchesBrowserHeadersForAjaxData() {
         val request = portalReadRequest(
             url = "https://example.test/course-data",

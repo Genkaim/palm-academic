@@ -109,10 +109,7 @@ object PortalSnapshot {
         return matches >= minOf(2, cells.size)
     }
 
-    /**
-     * Produces a compact, human-comparable course snapshot. School-specific endpoints remain in
-     * the definition file; this generic filter keeps every non-empty course/lesson/schedule field.
-     */
+    /** Produces a canonical snapshot of timetable semantics instead of the whole EAMS payload. */
     fun courseDataJson(payload: String, semesterId: String): String {
         val normalized = payload.trim()
         val root = runCatching { JSONObject(normalized) }.getOrNull()
@@ -123,8 +120,10 @@ object PortalSnapshot {
             .put("semesterId", semesterId)
         root.keys().asSequence().toList().sorted().forEach { key ->
             val lower = key.lowercase()
+            val normalizedKey = normalizeCourseKey(key)
             val value = sanitizeCourseValue(root.opt(key))
             if (
+                !isIgnoredCourseKey(normalizedKey) &&
                 ("course" in lower || "lesson" in lower || "schedule" in lower) &&
                 hasMeaningfulJsonValue(value)
             ) {
@@ -141,27 +140,44 @@ object PortalSnapshot {
     }
 
     /**
-     * Removes clock-like fields that change as the semester advances but do not represent a
-     * timetable edit. Sorting object keys also keeps hashes stable when a server changes JSON
-     * property order.
+     * Removes fields that do not alter a student's actual timetable. Object keys and array values
+     * are sorted so server-side serialization order cannot create a false notification.
      */
     private fun sanitizeCourseValue(value: Any?): Any = when (value) {
         is JSONObject -> JSONObject().apply {
             value.keys().asSequence().toList().sorted().forEach { key ->
-                val normalizedKey = key.filter(Char::isLetterOrDigit).lowercase()
-                if (normalizedKey !in VOLATILE_COURSE_KEYS) {
+                val normalizedKey = normalizeCourseKey(key)
+                if (!isIgnoredCourseKey(normalizedKey)) {
                     put(key, sanitizeCourseValue(value.opt(key)))
                 }
             }
         }
         is JSONArray -> JSONArray().apply {
-            for (index in 0 until value.length()) {
-                put(sanitizeCourseValue(value.opt(index)))
-            }
+            (0 until value.length())
+                .map { index -> sanitizeCourseValue(value.opt(index)) }
+                .sortedBy(::canonicalCourseSortKey)
+                .forEach { item -> put(item) }
         }
         null -> JSONObject.NULL
         else -> value
     }
+
+    private fun canonicalCourseSortKey(value: Any?): String = when (value) {
+        null, JSONObject.NULL -> "null"
+        is JSONObject, is JSONArray -> value.toString()
+        else -> value.toString()
+    }
+
+    private fun normalizeCourseKey(key: String): String =
+        key.filter(Char::isLetterOrDigit).lowercase()
+
+    private fun isIgnoredCourseKey(key: String): Boolean =
+        key in VOLATILE_COURSE_KEYS ||
+            key in NON_SCHEDULE_COURSE_KEYS ||
+            "recruittype" in key ||
+            key == "department" ||
+            key.endsWith("department") ||
+            key.endsWith("depart")
 
     private fun hasMeaningfulJsonValue(value: Any?): Boolean = when (value) {
         null, JSONObject.NULL -> false
@@ -176,6 +192,22 @@ object PortalSnapshot {
         "currentweekindex",
         "currentteachingweek",
         "weekoftheterm"
+    )
+
+    private val NON_SCHEDULE_COURSE_KEYS = setOf(
+        "coursestdcount",
+        "defaultopendepart",
+        "mngtdepartment",
+        "opendepartment",
+        "scheduleassigndepartment",
+        "lessonid2retake",
+        "lessonid2seatnum",
+        "lessonid2flag",
+        "lesson2cultivatetypemap",
+        "notattendlessonids",
+        "nopublishlessonids",
+        "timetablelayoutid",
+        "totalretakecredits"
     )
 
     fun parsedDataJson(html: String, type: String, tableClass: String? = null): String {

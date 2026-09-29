@@ -1,3 +1,4 @@
 <resources>
     <color name="launcher_background">#E8F0FF</color>
+    <color name="portal_window_background">#F2F2F7</color>
 </resources>

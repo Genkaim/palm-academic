@@ -275,9 +275,15 @@ private fun LoginRoute(
     Box(
         Modifier
             .fillMaxSize()
-            .graphicsLayer { alpha = loginAlpha }
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        RefactoredLoginContent(model, openWebLogin, openSchoolSelection)
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = loginAlpha }
+        ) {
+            RefactoredLoginContent(model, openWebLogin, openSchoolSelection)
+        }
     }
 }
 

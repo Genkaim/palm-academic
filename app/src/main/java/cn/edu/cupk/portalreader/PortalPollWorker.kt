@@ -20,7 +20,6 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.Headers
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
@@ -99,8 +98,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 details += coursePage.toHistoryDetail(
                     category = "课表",
                     summary = "未识别当前学期",
-                    technicalDetails = "学校定义中的 semesterIdPatterns 未匹配页面内容。",
-                    parsedContent = PortalSnapshot.diagnosticJson("course", "未识别当前学期")
+                    technicalDetails = "学校定义中的 semesterIdPatterns 未匹配页面内容。"
                 )
                 return@withContext finish("检查完成（规则未匹配）", Result.success())
             }
@@ -108,8 +106,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 details += coursePage.toHistoryDetail(
                     category = "课表",
                     summary = "未识别学生 ID",
-                    technicalDetails = "学校规则与通用学号规则均未匹配入口最终地址或页面内容。",
-                    parsedContent = PortalSnapshot.diagnosticJson("course", "未识别学生 ID")
+                    technicalDetails = "学校规则与通用学号规则均未匹配入口最终地址或页面内容。"
                 )
                 return@withContext finish("检查完成（规则未匹配）", Result.success())
             }
@@ -130,21 +127,19 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                 if (courseData.isAuthenticationFailure()) {
                     val notified = notifyAuthenticationFailure(preferences)
                     details += combinedCourseDetail(
-                        coursePage, courseData, resolvedSemesterId, "登录状态失效"
+                        courseData, "登录状态失效"
                     )
                     details += authenticationDetail(notified, "课表数据接口返回登录页或未授权状态")
                     return@withContext finish("登录已过期", Result.success())
                 }
                 if (!courseData.isSuccessful()) {
                     details += combinedCourseDetail(
-                        coursePage, courseData, resolvedSemesterId, "请求失败"
+                        courseData, "请求失败"
                     )
                     partiallyUnavailable = true
                 } else if (courseData.body.isBlank()) {
                     details += combinedCourseDetail(
-                        coursePage,
                         courseData,
-                        resolvedSemesterId,
                         summary = "响应格式无法识别",
                         technicalDetails = "课表数据响应为空。"
                     )
@@ -153,7 +148,6 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                     details += updateCourseSnapshot(
                         preferences,
                         resolvedSemesterId,
-                        coursePage,
                         courseData
                     )
                 }
@@ -224,8 +218,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                         details += examData.toHistoryDetail(
                             category = "考试",
                             summary = "未识别到考试内容",
-                            technicalDetails = "响应为空，未更新考试基线。",
-                            parsedContent = parsedExams
+                            technicalDetails = "响应为空，未更新考试基线。"
                         )
                         partiallyUnavailable = true
                     } else {
@@ -249,8 +242,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         }.getOrElse { error ->
             details += PortalPollHistoryDetail(
                 category = "检查错误",
-                summary = error.message ?: "未知错误",
-                technicalDetails = error.stackTraceToString()
+                summary = error.message ?: "未知错误"
             )
             val networkFailure = generateSequence<Throwable>(error) { it.cause }
                 .any { it is java.io.IOException }
@@ -259,11 +251,9 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
     }
 
     private data class ResponseData(
-        val requestedUrl: String,
         val code: Int,
         val finalUrl: String,
-        val body: String,
-        val transportDetails: String
+        val body: String
     ) {
         fun isSuccessful(): Boolean = code in 200..299
 
@@ -273,18 +263,12 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         fun toHistoryDetail(
             category: String,
             summary: String,
-            technicalDetails: String = "",
-            parsedContent: String = PortalSnapshot.parsedDataJson(body, category)
+            technicalDetails: String = ""
         ) = PortalPollHistoryDetail(
             category = category,
             summary = summary,
-            requestUrl = requestedUrl,
-            finalUrl = finalUrl,
             responseCode = code,
-            technicalDetails = listOf(transportDetails, technicalDetails)
-                .filter { it.isNotBlank() }
-                .joinToString("\n\n"),
-            currentContent = parsedContent
+            technicalDetails = technicalDetails
         )
     }
 
@@ -293,28 +277,10 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         return try {
             PortalHttp.client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
-                val redirectChain = generateSequence(response) { it.priorResponse }
-                    .toList()
-                    .asReversed()
-                    .joinToString("\n") { item ->
-                        "${item.code} ${item.request.method} ${item.request.url}"
-                    }
                 ResponseData(
-                    requestedUrl = url,
                     code = response.code,
                     finalUrl = response.request.url.toString(),
-                    body = body,
-                    transportDetails = buildString {
-                        appendLine("请求方法：${response.request.method}")
-                        appendLine("协议：${response.protocol}")
-                        appendLine("状态信息：${response.message.ifBlank { "（无）" }}")
-                        appendLine("重定向链：")
-                        appendLine(redirectChain.ifBlank { "（无）" })
-                        appendLine("请求头（凭据已遮蔽）：")
-                        appendLine(response.request.headers.forHistoryLog())
-                        appendLine("响应头（凭据已遮蔽）：")
-                        append(response.headers.forHistoryLog())
-                    }
+                    body = body
                 )
             }
         } catch (error: java.io.IOException) {
@@ -342,28 +308,10 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         if (canonicalUrl(entryResponse.finalUrl) == canonicalUrl(dataUrl)) {
             return entryResponse
         }
-        val dataResponse = get(dataUrl, referer = entryResponse.finalUrl)
-        return dataResponse.copy(
-            transportDetails = buildString {
-                appendLine("功能入口请求：${entryResponse.requestedUrl}")
-                appendLine(entryResponse.transportDetails)
-                appendLine()
-                appendLine("数据页面请求：${dataResponse.requestedUrl}")
-                append(dataResponse.transportDetails)
-            }
-        )
+        return get(dataUrl, referer = entryResponse.finalUrl)
     }
 
     private fun canonicalUrl(value: String): String = value.substringBefore('#').trimEnd('/')
-
-    private fun Headers.forHistoryLog(): String {
-        if (size == 0) return "（无）"
-        return (0 until size).joinToString("\n") { index ->
-            val name = name(index)
-            val hidden = name.lowercase() in SENSITIVE_HEADERS
-            "$name: ${if (hidden) "[已遮蔽]" else value(index)}"
-        }
-    }
 
     /**
      * Grade and exam pages populate their tables after JavaScript runs. A successful HTTP GET
@@ -398,25 +346,22 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
     private fun updateCourseSnapshot(
         preferences: android.content.SharedPreferences,
         semesterId: String,
-        entryResponse: ResponseData,
         response: ResponseData
     ): PortalPollHistoryDetail {
         val courseBody = response.body
         val parsedCourse = PortalSnapshot.courseDataJson(courseBody, semesterId)
         val newHash = PortalSnapshot.stableHash(parsedCourse)
         val hasEntries = PortalSnapshot.hasCourseEntries(courseBody)
-        val oldHash = preferences.getString("course_hash", null)
-        val oldSemester = preferences.getString("course_semester_id", null)
-        val oldContent = preferences.getString("course_parsed_json_v2", null)
-            ?: preferences.getString("course_raw_v1", null)?.takeIf { value ->
-                value.trim().startsWith('{') || value.trim().startsWith('[')
-            }
+        val oldHash = preferences.getString("course_semantic_hash_v3", null)
+        val oldSemester = preferences.getString("course_semantic_semester_id_v3", null)
         val changed = PortalPollLogic.courseChanged(oldHash, oldSemester, newHash, semesterId, hasEntries)
         preferences.edit()
-            .putString("course_hash", newHash)
-            .putString("course_semester_id", semesterId)
+            .putString("course_semantic_hash_v3", newHash)
+            .putString("course_semantic_semester_id_v3", semesterId)
             .putBoolean("course_has_entries", hasEntries)
-            .putString("course_parsed_json_v2", parsedCourse)
+            .remove("course_hash")
+            .remove("course_semester_id")
+            .remove("course_parsed_json_v2")
             .remove("course_raw_v1")
             .apply()
         val enabled = PortalNotificationPreferences.isEnabled(
@@ -435,51 +380,19 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             changed = changed,
             notificationEnabled = enabled,
             notificationTriggered = notified,
-            requestUrl = response.requestedUrl,
-            finalUrl = response.finalUrl,
-            responseCode = response.code,
-            technicalDetails = buildString {
-                appendLine("课表入口请求：${entryResponse.requestedUrl}")
-                appendLine(entryResponse.transportDetails)
-                appendLine()
-                appendLine("课表数据请求：${response.requestedUrl}")
-                appendLine(response.transportDetails)
-                appendLine()
-                appendLine("学期 ID：$semesterId")
-                appendLine("上次学期 ID：${oldSemester ?: "（无）"}")
-                appendLine("包含课程条目：$hasEntries")
-                appendLine("上次 SHA-256：${oldHash ?: "（无）"}")
-                append("本次 SHA-256：$newHash")
-            },
-            previousContent = oldContent.orEmpty(),
-            currentContent = parsedCourse
+            responseCode = response.code
         )
     }
 
     private fun combinedCourseDetail(
-        entryResponse: ResponseData,
         dataResponse: ResponseData,
-        semesterId: String,
         summary: String,
         technicalDetails: String = ""
     ) = PortalPollHistoryDetail(
         category = "课表",
         summary = summary,
-        requestUrl = entryResponse.requestedUrl,
-        finalUrl = dataResponse.finalUrl,
         responseCode = dataResponse.code,
-        technicalDetails = buildString {
-            appendLine("课表入口请求：${entryResponse.requestedUrl}")
-            appendLine(entryResponse.transportDetails)
-            appendLine()
-            appendLine("课表数据请求：${dataResponse.requestedUrl}")
-            appendLine(dataResponse.transportDetails)
-            if (technicalDetails.isNotBlank()) {
-                appendLine()
-                append(technicalDetails)
-            }
-        },
-        currentContent = PortalSnapshot.courseDataJson(dataResponse.body, semesterId)
+        technicalDetails = technicalDetails
     )
 
     private fun updateExamSnapshot(
@@ -491,10 +404,9 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         val snapshot = rows.sorted().joinToString("\u001E").ifBlank { parsedContent }
         // v2 保存完整行而非前三列；使用新基线键避免升级后因快照格式变化误报。
         val previous = preferences.getString("exam_rows_v2", null)
-        val previousContent = preferences.getString("exam_parsed_json_v2", null)
         preferences.edit()
             .putString("exam_rows_v2", snapshot)
-            .putString("exam_parsed_json_v2", parsedContent)
+            .remove("exam_parsed_json_v2")
             .remove("exam_raw_v1")
             .apply()
         val changed = PortalPollLogic.contentChanged(previous, snapshot)
@@ -514,18 +426,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             changed = changed,
             notificationEnabled = enabled,
             notificationTriggered = notified,
-            requestUrl = response.requestedUrl,
-            finalUrl = response.finalUrl,
-            responseCode = response.code,
-            technicalDetails = buildString {
-                appendLine(response.transportDetails)
-                appendLine()
-                appendLine("解析行数：${rows.size}")
-                appendLine("上次 SHA-256：${previous?.let(PortalSnapshot::stableHash) ?: "（无）"}")
-                append("本次 SHA-256：${PortalSnapshot.stableHash(snapshot)}")
-            },
-            previousContent = previousContent.orEmpty(),
-            currentContent = parsedContent
+            responseCode = response.code
         )
     }
 
@@ -536,10 +437,9 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
     ): PortalPollHistoryDetail {
         val newHash = PortalSnapshot.stableHash(parsedContent)
         val oldHash = preferences.getString("grade_hash", null)
-        val oldContent = preferences.getString("grade_parsed_json_v2", null)
         preferences.edit()
             .putString("grade_hash", newHash)
-            .putString("grade_parsed_json_v2", parsedContent)
+            .remove("grade_parsed_json_v2")
             .remove("grade_raw_v1")
             .apply()
         val changed = PortalPollLogic.contentChanged(oldHash, newHash)
@@ -559,17 +459,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             changed = changed,
             notificationEnabled = enabled,
             notificationTriggered = notified,
-            requestUrl = response.requestedUrl,
-            finalUrl = response.finalUrl,
-            responseCode = response.code,
-            technicalDetails = buildString {
-                appendLine(response.transportDetails)
-                appendLine()
-                appendLine("上次 SHA-256：${oldHash ?: "（无）"}")
-                append("本次 SHA-256：$newHash")
-            },
-            previousContent = oldContent.orEmpty(),
-            currentContent = parsedContent
+            responseCode = response.code
         )
     }
 
@@ -613,12 +503,6 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
     }
 
     companion object {
-        private val SENSITIVE_HEADERS = setOf(
-            "authorization",
-            "cookie",
-            "proxy-authorization",
-            "set-cookie"
-        )
         const val PREFS = "portal_monitor"
         const val CHANNEL_ID = "academic_changes"
         internal const val KEY_MONITOR_ENABLED = "enabled"

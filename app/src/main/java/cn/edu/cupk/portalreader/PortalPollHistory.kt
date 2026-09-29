@@ -113,13 +113,12 @@ object PortalPollHistory {
                     put("changed", detail.changed)
                     detail.notificationEnabled?.let { put("notificationEnabled", it) }
                     put("notificationTriggered", detail.notificationTriggered)
-                    put("requestUrl", detail.requestUrl)
-                    put("finalUrl", detail.finalUrl)
-                    detail.responseCode?.let { put("responseCode", it) }
-                    put("technicalDetails", detail.technicalDetails)
-                    put("previousContent", detail.previousContent)
-                    put("currentContent", detail.currentContent)
-                    put("difference", detail.difference)
+                    detail.responseCode?.takeIf { it !in 200..299 }?.let {
+                        put("responseCode", it)
+                    }
+                    detail.difference.takeIf(String::isNotBlank)?.let {
+                        put("difference", it)
+                    }
                 })
             }
         })

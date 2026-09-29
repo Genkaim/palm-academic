@@ -3,6 +3,7 @@ package cn.edu.cupk.portalreader
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.webkit.WebSettings
 import androidx.appcompat.app.AppCompatActivity
@@ -26,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.platform.LocalContext
@@ -146,16 +148,16 @@ private val LightPortalColors = lightColorScheme(
 )
 
 private val DarkPortalColors = darkColorScheme(
-    primary = Color(0xFF48484A),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFF2C2C2E),
+    primary = Color(0xFFD1D1D6),
+    onPrimary = Color(0xFF1C1C1E),
+    primaryContainer = Color(0xFF48484A),
     onPrimaryContainer = Color(0xFFF2F2F7),
-    secondary = Color(0xFF48484A),
-    onSecondary = Color.White,
+    secondary = Color(0xFFC7C7CC),
+    onSecondary = Color(0xFF1C1C1E),
     secondaryContainer = Color(0xFF2C2C2E),
     onSecondaryContainer = Color(0xFFF2F2F7),
-    tertiary = Color(0xFF48484A),
-    onTertiary = Color.White,
+    tertiary = Color(0xFFD1D1D6),
+    onTertiary = Color(0xFF1C1C1E),
     background = Color(0xFF000000),
     onBackground = Color(0xFFF2F2F7),
     surface = Color(0xFF1C1C1E),
@@ -269,11 +271,15 @@ fun PortalTheme(content: @Composable () -> Unit) {
         PortalThemeMode.LIGHT -> false
         PortalThemeMode.DARK -> true
     }
+    val colorScheme = if (darkTheme) DarkPortalColors else LightPortalColors
     SideEffect {
-        (context as? PortalActivity)?.useContinuousSystemBars(lightStatusIcons = !darkTheme)
+        (context as? PortalActivity)?.let { activity ->
+            activity.useContinuousSystemBars(lightStatusIcons = !darkTheme)
+            activity.window.setBackgroundDrawable(ColorDrawable(colorScheme.background.toArgb()))
+        }
     }
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkPortalColors else LightPortalColors,
+        colorScheme = colorScheme,
         content = content
     )
 }

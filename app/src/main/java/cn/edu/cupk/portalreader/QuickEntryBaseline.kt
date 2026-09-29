@@ -39,11 +39,7 @@ internal object QuickEntryBaseline {
                         category = quickBaselineCategory(snapshot.item.nativeType),
                         summary = "已建立初始数据",
                         changed = false,
-                        notificationTriggered = false,
-                        requestUrl = snapshot.item.url,
-                        finalUrl = snapshot.page.sourceUrl.ifBlank { snapshot.item.url },
-                        technicalDetails = "首次登录后由学校 adapter 后台获取并写入快捷入口缓存。",
-                        currentContent = PortalSnapshot.historyDisplayContent(snapshot.rawJson)
+                        notificationTriggered = false
                     )
                 }
             )

@@ -171,39 +171,45 @@ class HomeActivity : PortalActivity() {
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .graphicsLayer {
-                            alpha = entryProgress.value
-                            val scale = 0.985f + 0.015f * entryProgress.value
-                            scaleX = scale
-                            scaleY = scale
-                            translationY = entryOffsetPx * (1f - entryProgress.value)
-                        }
+                        .background(MaterialTheme.colorScheme.background)
                 ) {
-                    HomeContent(
-                        school = school,
-                        onOpenItem = ::openItem,
-                        onOpenNotifications = {
-                            notificationSettingsLauncher.launch(
-                                Intent(this@HomeActivity, NotificationSettingsActivity::class.java)
-                            )
-                        },
-                        onOpenBackgroundSupport = {
-                            startActivity(Intent(this@HomeActivity, BackgroundSupportActivity::class.java))
-                        },
-                        onOpenSchoolSelection = {
-                            schoolSelectionLauncher.launch(
-                                Intent(this@HomeActivity, SchoolSelectionActivity::class.java)
-                                    .putExtra(
-                                        SchoolSelectionActivity.EXTRA_SELECTED_SCHOOL_ID,
-                                        SchoolAdapterRepository.activeSchoolId()
-                                    )
-                                    .putExtra(SchoolSelectionActivity.EXTRA_REQUIRES_LOGIN, true)
-                            )
-                        },
-                        onLogout = ::logout,
-                        onSessionExpired = ::returnToLogin,
-                        notificationVersion = currentNotificationVersion
-                    )
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                alpha = entryProgress.value
+                                val scale = 0.985f + 0.015f * entryProgress.value
+                                scaleX = scale
+                                scaleY = scale
+                                translationY = entryOffsetPx * (1f - entryProgress.value)
+                            }
+                    ) {
+                        HomeContent(
+                            school = school,
+                            onOpenItem = ::openItem,
+                            onOpenNotifications = {
+                                notificationSettingsLauncher.launch(
+                                    Intent(this@HomeActivity, NotificationSettingsActivity::class.java)
+                                )
+                            },
+                            onOpenBackgroundSupport = {
+                                startActivity(Intent(this@HomeActivity, BackgroundSupportActivity::class.java))
+                            },
+                            onOpenSchoolSelection = {
+                                schoolSelectionLauncher.launch(
+                                    Intent(this@HomeActivity, SchoolSelectionActivity::class.java)
+                                        .putExtra(
+                                            SchoolSelectionActivity.EXTRA_SELECTED_SCHOOL_ID,
+                                            SchoolAdapterRepository.activeSchoolId()
+                                        )
+                                        .putExtra(SchoolSelectionActivity.EXTRA_REQUIRES_LOGIN, true)
+                                )
+                            },
+                            onLogout = ::logout,
+                            onSessionExpired = ::returnToLogin,
+                            notificationVersion = currentNotificationVersion
+                        )
+                    }
                 }
             }
         }

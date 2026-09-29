@@ -5,14 +5,13 @@ import org.junit.Test
 
 class PortalPollHistoryTest {
     @Test
-    fun detail_keepsCompleteResponseWithoutTruncation() {
-        val fullResponse = "原始响应".repeat(2_000)
-        val detail = PortalPollHistoryDetail(
-            category = "成绩",
-            summary = "无变化",
-            currentContent = fullResponse
-        )
-        assertEquals(fullResponse, detail.currentContent)
+    fun detail_defaultsToConciseLogFields() {
+        val detail = PortalPollHistoryDetail(category = "成绩", summary = "无变化")
+
+        assertEquals("", detail.requestUrl)
+        assertEquals("", detail.technicalDetails)
+        assertEquals("", detail.previousContent)
+        assertEquals("", detail.currentContent)
     }
 
     @Test
@@ -37,7 +36,7 @@ class PortalPollHistoryTest {
     }
 
     @Test
-    fun copiedDetail_containsAllVisibleAndDiagnosticContent() {
+    fun exportedHistory_containsSummaryButOmitsRawDiagnostics() {
         val detail = PortalPollHistoryDetail(
             category = "课表",
             summary = "检测到变动",
@@ -53,13 +52,27 @@ class PortalPollHistoryTest {
             difference = "课程发生变化"
         )
 
-        val copied = historyDetailCopyText(detail)
+        val exported = historyExportText(
+            listOf(
+                PortalPollHistoryEntry(
+                    timestamp = 1_700_000_000_000,
+                    status = "检查完成",
+                    notificationTriggered = true,
+                    details = listOf(detail)
+                )
+            )
+        )
 
         listOf(
-            "课表", "检测到变动", "旧课程", "新课程", "200",
-            "https://example.test/request", "https://example.test/final", "解析详情", "课程发生变化"
+            "课表", "检测到变动", "检查完成", "课程发生变化"
         ).forEach { expected ->
-            assert(copied.contains(expected)) { "复制内容缺少：$expected" }
+            assert(exported.contains(expected)) { "导出内容缺少：$expected" }
+        }
+        listOf(
+            "旧课程", "新课程", "https://example.test/request",
+            "https://example.test/final", "解析详情", "HTTP 状态：200"
+        ).forEach { omitted ->
+            assert(!exported.contains(omitted)) { "导出内容不应包含：$omitted" }
         }
     }
 }

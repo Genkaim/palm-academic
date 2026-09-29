@@ -41,6 +41,8 @@ object PortalNotificationPreferences {
         preferences(context).edit()
             .remove("course_hash")
             .remove("course_semester_id")
+            .remove("course_semantic_hash_v3")
+            .remove("course_semantic_semester_id_v3")
             .remove("course_has_entries")
             .remove("grade_hash")
             .remove("exam_rows")
