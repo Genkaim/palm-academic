@@ -5,7 +5,6 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,12 +16,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -81,7 +81,7 @@ class AboutActivity : PortalActivity() {
         useContinuousSystemBars()
         setContent {
             PortalTheme {
-                AboutContent(onBack = { finishPortalActivity() })
+                AboutContent(onBack = { finish() })
             }
         }
     }
@@ -128,19 +128,13 @@ private fun AboutContent(onBack: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Box(
+                    Image(
+                        painter = painterResource(R.drawable.ic_about_logo),
+                        contentDescription = "掌上教务图标",
                         modifier = Modifier
                             .size(120.dp)
-                            .clip(RoundedCornerShape(30.dp))
-                            .background(MaterialTheme.colorScheme.surface),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            painter = painterResource(R.drawable.ic_launcher_foreground),
-                            contentDescription = "掌上教务图标",
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
+                            .clip(CircleShape)
+                    )
                     Text(
                         text = "掌上教务",
                         style = MaterialTheme.typography.displaySmall,
@@ -158,14 +152,29 @@ private fun AboutContent(onBack: () -> Unit) {
             item {
                 AboutSection(title = "项目") {
                     AboutLinkCard(
-                        icon = Icons.Outlined.Person,
+                        leading = {
+                            Image(
+                                painter = painterResource(R.drawable.author_avatar),
+                                contentDescription = "作者头像",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                            )
+                        },
                         title = "作者",
                         description = PalmAcademicGitHub.OWNER,
                         onClick = { openUrl("https://github.com/${PalmAcademicGitHub.OWNER}") }
                     )
                     Spacer(Modifier.size(4.dp))
                     AboutLinkCard(
-                        icon = Icons.Outlined.Code,
+                        leading = {
+                            Icon(
+                                Icons.Outlined.Code,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        },
                         title = "项目地址",
                         description = PalmAcademicGitHub.WEB_URL,
                         onClick = { openUrl(PalmAcademicGitHub.WEB_URL) }
@@ -201,7 +210,7 @@ private fun AboutSection(title: String, content: @Composable () -> Unit) {
 
 @Composable
 private fun AboutLinkCard(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    leading: @Composable () -> Unit,
     title: String,
     description: String,
     onClick: () -> Unit
@@ -217,7 +226,12 @@ private fun AboutLinkCard(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(24.dp))
+            Box(
+                modifier = Modifier.size(40.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                leading()
+            }
             Spacer(Modifier.size(14.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(title, fontWeight = FontWeight.SemiBold)

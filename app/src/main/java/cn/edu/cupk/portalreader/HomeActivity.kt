@@ -196,7 +196,7 @@ class HomeActivity : PortalActivity() {
                                 startActivity(Intent(this@HomeActivity, BackgroundSupportActivity::class.java))
                             },
                             onAbout = {
-                                startPortalActivity(Intent(this@HomeActivity, AboutActivity::class.java))
+                                startActivity(Intent(this@HomeActivity, AboutActivity::class.java))
                             },
                             onOpenSchoolSelection = {
                                 schoolSelectionLauncher.launch(
