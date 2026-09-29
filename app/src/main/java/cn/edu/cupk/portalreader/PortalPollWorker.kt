@@ -145,10 +145,16 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
                     )
                     partiallyUnavailable = true
                 } else {
+                    val renderedCourse = renderedSnapshotOrResponse(
+                        school = school,
+                        nativeType = "schedule",
+                        responseBody = courseData.body
+                    )
                     details += updateCourseSnapshot(
                         preferences,
                         resolvedSemesterId,
-                        courseData
+                        courseData,
+                        renderedCourse
                     )
                 }
             }
@@ -346,21 +352,35 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
     private fun updateCourseSnapshot(
         preferences: android.content.SharedPreferences,
         semesterId: String,
-        response: ResponseData
+        response: ResponseData,
+        renderedContent: String
     ): PortalPollHistoryDetail {
         val courseBody = response.body
         val parsedCourse = PortalSnapshot.courseDataJson(courseBody, semesterId)
-        val newHash = PortalSnapshot.stableHash(parsedCourse)
+        val currentRows = PortalLogDetails.courseRows(courseBody).ifEmpty {
+            PortalLogDetails.materialRows(renderedContent, "schedule")
+        }
+        val newSnapshot = currentRows.takeIf(List<String>::isNotEmpty)
+            ?.let(PortalLogDetails::encode)
+            ?: "fallback:${PortalSnapshot.stableHash(parsedCourse)}"
         val hasEntries = PortalSnapshot.hasCourseEntries(courseBody)
-        val oldHash = preferences.getString("course_semantic_hash_v3", null)
-        val oldSemester = preferences.getString("course_semantic_semester_id_v3", null)
-        val changed = PortalPollLogic.courseChanged(oldHash, oldSemester, newHash, semesterId, hasEntries)
+        val previousSnapshot = preferences.getString("course_business_snapshot_v1", null)
+        val oldSemester = preferences.getString("course_business_semester_id_v1", null)
+        val changed = PortalPollLogic.courseChanged(
+            previousSnapshot,
+            oldSemester,
+            newSnapshot,
+            semesterId,
+            hasEntries
+        )
         preferences.edit()
-            .putString("course_semantic_hash_v3", newHash)
-            .putString("course_semantic_semester_id_v3", semesterId)
+            .putString("course_business_snapshot_v1", newSnapshot)
+            .putString("course_business_semester_id_v1", semesterId)
             .putBoolean("course_has_entries", hasEntries)
             .remove("course_hash")
             .remove("course_semester_id")
+            .remove("course_semantic_hash_v3")
+            .remove("course_semantic_semester_id_v3")
             .remove("course_parsed_json_v2")
             .remove("course_raw_v1")
             .apply()
@@ -373,14 +393,19 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         return PortalPollHistoryDetail(
             category = "课表",
             summary = when {
-                oldHash == null -> "已建立初始数据"
+                previousSnapshot == null -> "已建立初始数据"
                 changed -> "检测到变动"
                 else -> "无变化"
             },
             changed = changed,
             notificationEnabled = enabled,
             notificationTriggered = notified,
-            responseCode = response.code
+            responseCode = response.code,
+            difference = PortalLogDetails.describe(
+                previousSnapshot = previousSnapshot?.takeIf { it.startsWith('[') },
+                currentRows = currentRows,
+                changed = changed
+            )
         )
     }
 
@@ -401,11 +426,15 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         rows: Set<String>,
         parsedContent: String
     ): PortalPollHistoryDetail {
-        val snapshot = rows.sorted().joinToString("\u001E").ifBlank { parsedContent }
-        // v2 保存完整行而非前三列；使用新基线键避免升级后因快照格式变化误报。
-        val previous = preferences.getString("exam_rows_v2", null)
+        val currentRows = PortalLogDetails.materialRows(parsedContent, "exam")
+            .ifEmpty { rows.sorted() }
+        val snapshot = currentRows.takeIf(List<String>::isNotEmpty)
+            ?.let(PortalLogDetails::encode)
+            ?: "fallback:${PortalSnapshot.stableHash(parsedContent)}"
+        val previous = preferences.getString("exam_business_snapshot_v1", null)
         preferences.edit()
-            .putString("exam_rows_v2", snapshot)
+            .putString("exam_business_snapshot_v1", snapshot)
+            .remove("exam_rows_v2")
             .remove("exam_parsed_json_v2")
             .remove("exam_raw_v1")
             .apply()
@@ -426,7 +455,12 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             changed = changed,
             notificationEnabled = enabled,
             notificationTriggered = notified,
-            responseCode = response.code
+            responseCode = response.code,
+            difference = PortalLogDetails.describe(
+                previousSnapshot = previous?.takeIf { it.startsWith('[') },
+                currentRows = currentRows,
+                changed = changed
+            )
         )
     }
 
@@ -435,14 +469,18 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         response: ResponseData,
         parsedContent: String
     ): PortalPollHistoryDetail {
-        val newHash = PortalSnapshot.stableHash(parsedContent)
-        val oldHash = preferences.getString("grade_hash", null)
+        val currentRows = PortalLogDetails.materialRows(parsedContent, "grade")
+        val newSnapshot = currentRows.takeIf(List<String>::isNotEmpty)
+            ?.let(PortalLogDetails::encode)
+            ?: "fallback:${PortalSnapshot.stableHash(parsedContent)}"
+        val previousSnapshot = preferences.getString("grade_business_snapshot_v1", null)
         preferences.edit()
-            .putString("grade_hash", newHash)
+            .putString("grade_business_snapshot_v1", newSnapshot)
+            .remove("grade_hash")
             .remove("grade_parsed_json_v2")
             .remove("grade_raw_v1")
             .apply()
-        val changed = PortalPollLogic.contentChanged(oldHash, newHash)
+        val changed = PortalPollLogic.contentChanged(previousSnapshot, newSnapshot)
         val enabled = PortalNotificationPreferences.isEnabled(
             preferences,
             PortalNotificationPreferences.KEY_GRADE
@@ -452,14 +490,19 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         return PortalPollHistoryDetail(
             category = "成绩",
             summary = when {
-                oldHash == null -> "已建立初始数据"
+                previousSnapshot == null -> "已建立初始数据"
                 changed -> "检测到变动"
                 else -> "无变化"
             },
             changed = changed,
             notificationEnabled = enabled,
             notificationTriggered = notified,
-            responseCode = response.code
+            responseCode = response.code,
+            difference = PortalLogDetails.describe(
+                previousSnapshot = previousSnapshot?.takeIf { it.startsWith('[') },
+                currentRows = currentRows,
+                changed = changed
+            )
         )
     }
 

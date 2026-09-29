@@ -35,6 +35,7 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Update
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -67,6 +68,7 @@ private enum class GroupPosition { ONLY, FIRST, MIDDLE, LAST }
 internal fun SettingsContent(
     onNotifications: () -> Unit,
     onBackgroundSupport: () -> Unit,
+    onAbout: () -> Unit,
     onOpenSchoolSelection: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
@@ -175,7 +177,7 @@ internal fun SettingsContent(
                         onClick = onBackgroundSupport
                     )
                     SettingsNavigationPanel(
-                        position = GroupPosition.LAST,
+                        position = GroupPosition.MIDDLE,
                         title = "软件更新",
                         description = if (checkingUpdate) "正在检查更新…" else "当前版本 ${BuildConfig.VERSION_NAME}",
                         icon = Icons.Outlined.Update,
@@ -198,6 +200,13 @@ internal fun SettingsContent(
                                 }
                             }
                         }
+                    )
+                    SettingsNavigationPanel(
+                        position = GroupPosition.LAST,
+                        title = "关于",
+                        description = "开源引用、作者与项目地址",
+                        icon = Icons.Outlined.Info,
+                        onClick = onAbout
                     )
                 }
             }

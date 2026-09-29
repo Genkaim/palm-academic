@@ -125,12 +125,7 @@ private fun NotificationHistoryContent(
                     ) {
                         Icon(
                             Icons.Outlined.FileDownload,
-                            "导出 TXT 日志",
-                            tint = if (entries.isNotEmpty()) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
+                            "导出 TXT 日志"
                         )
                     }
                 }
@@ -244,7 +239,7 @@ private fun HistoryEntryCard(
                             DetailLine("HTTP 状态", it.toString())
                         }
                         if (detail.difference.isNotBlank()) {
-                            DetailBlock("差异摘要", detail.difference)
+                            DetailBlock("数据明细", detail.difference)
                         }
                     }
                 }
@@ -311,7 +306,8 @@ internal fun historyExportText(entries: List<PortalPollHistoryEntry>): String = 
                 appendLine("HTTP 状态：$it")
             }
             if (detail.difference.isNotBlank()) {
-                appendLine("差异摘要：${detail.difference}")
+                appendLine("数据明细：")
+                appendLine(detail.difference)
             }
         }
         appendLine("---")

@@ -289,6 +289,74 @@ class PortalPollWorkerTest {
     }
 
     @Test
+    fun courseLogRows_keepConcreteScheduleFieldsAndDropMetadata() {
+        val rows = PortalLogDetails.courseRows(
+            """{
+                "lessonIds":[321124],
+                "lessons":[{
+                    "id":321124,
+                    "courseName":"大学物理B（Ⅱ）",
+                    "courseStdCount":2687,
+                    "scheduleGroups":[{
+                        "weekday":2,
+                        "startUnit":4,
+                        "endUnit":5,
+                        "weeks":[15,1,2],
+                        "room":"C9楼I区206",
+                        "teacher":{"name":"孙志刚"}
+                    }]
+                }]
+            }""".trimIndent()
+        )
+
+        assertEquals(1, rows.size)
+        listOf("大学物理B（Ⅱ）", "321124", "星期二", "第4-5节", "第1-2、15周", "C9楼I区206", "孙志刚")
+            .forEach { value -> assertTrue(rows.single().contains(value)) }
+        assertFalse(rows.single().contains("2687"))
+    }
+
+    @Test
+    fun materialGradeRows_includeCourseScoreCreditsAndGpa() {
+        val rows = PortalLogDetails.materialRows(
+            """{
+                "title":"课程成绩",
+                "sourceUrl":"https://example.test/grade",
+                "choices":[],
+                "actions":[],
+                "sections":[
+                    {"type":"stats","title":"GPA与排名","items":[{"label":"GPA","value":"3.72"}]},
+                    {"type":"cards","title":"2025-2026-1","cards":[{
+                        "title":"大学物理B（Ⅱ）",
+                        "subtitle":"PHYS102",
+                        "accent":"88",
+                        "fields":[{"label":"学分","value":"4"},{"label":"绩点","value":"3.8"}]
+                    }]}
+                ]
+            }""".trimIndent(),
+            "grade"
+        )
+
+        assertTrue(rows.any { it.contains("GPA：3.72") })
+        assertTrue(rows.any {
+            listOf("大学物理B（Ⅱ）", "PHYS102", "成绩：88", "学分：4", "绩点：3.8")
+                .all(it::contains)
+        })
+    }
+
+    @Test
+    fun logDescription_showsConcreteBeforeAndAfterRows() {
+        val previous = PortalLogDetails.encode(listOf("高等数学｜地点：A101｜教师：张老师"))
+        val current = listOf("高等数学｜地点：B305｜教师：张老师")
+
+        val detail = PortalLogDetails.describe(previous, current, changed = true)
+
+        assertTrue(detail.contains("新增或变更后"))
+        assertTrue(detail.contains("B305"))
+        assertTrue(detail.contains("移除或变更前"))
+        assertTrue(detail.contains("A101"))
+    }
+
+    @Test
     fun portalReadRequest_matchesBrowserHeadersForAjaxData() {
         val request = portalReadRequest(
             url = "https://example.test/course-data",

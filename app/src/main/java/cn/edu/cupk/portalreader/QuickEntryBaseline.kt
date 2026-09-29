@@ -39,7 +39,15 @@ internal object QuickEntryBaseline {
                         category = quickBaselineCategory(snapshot.item.nativeType),
                         summary = "已建立初始数据",
                         changed = false,
-                        notificationTriggered = false
+                        notificationTriggered = false,
+                        difference = PortalLogDetails.describe(
+                            previousSnapshot = null,
+                            currentRows = PortalLogDetails.rowsFor(
+                                snapshot.item.nativeType,
+                                snapshot.rawJson
+                            ),
+                            changed = false
+                        )
                     )
                 }
             )

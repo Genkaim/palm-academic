@@ -49,7 +49,7 @@ class PortalPollHistoryTest {
             technicalDetails = "解析详情",
             previousContent = "{\"lessons\":[\"旧课程\"]}",
             currentContent = "{\"lessons\":[\"新课程\"]}",
-            difference = "课程发生变化"
+            difference = "当前数据（1 项）：\n• 大学物理B（Ⅱ）｜星期二｜第4-5节｜地点：C9楼I区206｜教师：孙志刚"
         )
 
         val exported = historyExportText(
@@ -64,7 +64,8 @@ class PortalPollHistoryTest {
         )
 
         listOf(
-            "课表", "检测到变动", "检查完成", "课程发生变化"
+            "课表", "检测到变动", "检查完成", "数据明细", "大学物理B（Ⅱ）",
+            "星期二", "第4-5节", "C9楼I区206", "孙志刚"
         ).forEach { expected ->
             assert(exported.contains(expected)) { "导出内容缺少：$expected" }
         }

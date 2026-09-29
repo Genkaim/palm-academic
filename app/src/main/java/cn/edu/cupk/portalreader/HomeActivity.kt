@@ -195,6 +195,9 @@ class HomeActivity : PortalActivity() {
                             onOpenBackgroundSupport = {
                                 startActivity(Intent(this@HomeActivity, BackgroundSupportActivity::class.java))
                             },
+                            onAbout = {
+                                startPortalActivity(Intent(this@HomeActivity, AboutActivity::class.java))
+                            },
                             onOpenSchoolSelection = {
                                 schoolSelectionLauncher.launch(
                                     Intent(this@HomeActivity, SchoolSelectionActivity::class.java)
@@ -272,6 +275,7 @@ private fun HomeContent(
     onOpenItem: (PortalItem) -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenBackgroundSupport: () -> Unit,
+    onAbout: () -> Unit,
     onOpenSchoolSelection: () -> Unit,
     onLogout: () -> Unit,
     onSessionExpired: () -> Unit,
@@ -495,6 +499,7 @@ private fun HomeContent(
                     SettingsContent(
                         onNotifications = onOpenNotifications,
                         onBackgroundSupport = onOpenBackgroundSupport,
+                        onAbout = onAbout,
                         onOpenSchoolSelection = onOpenSchoolSelection,
                         onLogout = onLogout,
                         topPadding =
