@@ -33,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -79,6 +80,12 @@ private fun BackgroundSupportContent(onBack: () -> Unit, stateVersion: Int) {
     var persistentNotification by remember {
         mutableStateOf(
             preferences.getBoolean(PortalNotificationPreferences.KEY_PERSISTENT_NOTIFICATION, false)
+        )
+    }
+    LaunchedEffect(stateVersion) {
+        persistentNotification = preferences.getBoolean(
+            PortalNotificationPreferences.KEY_PERSISTENT_NOTIFICATION,
+            false
         )
     }
     val supportState = remember(stateVersion) { BackgroundSupport.inspect(context) }

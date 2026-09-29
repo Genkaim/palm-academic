@@ -20,8 +20,8 @@ android {
         applicationId = "cn.edu.cupk.portalreader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 24
-        versionName = "0.4.1"
+        versionCode = 25
+        versionName = "0.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -77,6 +77,7 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
 
 // AGP 9.2 built-in Kotlin currently omits its unit-test output directory from the

@@ -123,7 +123,7 @@ object PortalSnapshot {
             .put("semesterId", semesterId)
         root.keys().asSequence().toList().sorted().forEach { key ->
             val lower = key.lowercase()
-            val value = root.opt(key)
+            val value = sanitizeCourseValue(root.opt(key))
             if (
                 ("course" in lower || "lesson" in lower || "schedule" in lower) &&
                 hasMeaningfulJsonValue(value)
@@ -135,9 +135,32 @@ object PortalSnapshot {
             // Keep the complete response when a school uses different field names.
             // Dropping it here made a valid logged-in response look empty in the
             // background change log even though the WebView rendered it correctly.
-            result.put("payload", root)
+            result.put("payload", sanitizeCourseValue(root))
         }
         return result.toString(2)
+    }
+
+    /**
+     * Removes clock-like fields that change as the semester advances but do not represent a
+     * timetable edit. Sorting object keys also keeps hashes stable when a server changes JSON
+     * property order.
+     */
+    private fun sanitizeCourseValue(value: Any?): Any = when (value) {
+        is JSONObject -> JSONObject().apply {
+            value.keys().asSequence().toList().sorted().forEach { key ->
+                val normalizedKey = key.filter(Char::isLetterOrDigit).lowercase()
+                if (normalizedKey !in VOLATILE_COURSE_KEYS) {
+                    put(key, sanitizeCourseValue(value.opt(key)))
+                }
+            }
+        }
+        is JSONArray -> JSONArray().apply {
+            for (index in 0 until value.length()) {
+                put(sanitizeCourseValue(value.opt(index)))
+            }
+        }
+        null -> JSONObject.NULL
+        else -> value
     }
 
     private fun hasMeaningfulJsonValue(value: Any?): Boolean = when (value) {
@@ -147,6 +170,13 @@ object PortalSnapshot {
         is JSONObject -> value.length() > 0
         else -> true
     }
+
+    private val VOLATILE_COURSE_KEYS = setOf(
+        "currentweek",
+        "currentweekindex",
+        "currentteachingweek",
+        "weekoftheterm"
+    )
 
     fun parsedDataJson(html: String, type: String, tableClass: String? = null): String {
         val normalized = html.trim()

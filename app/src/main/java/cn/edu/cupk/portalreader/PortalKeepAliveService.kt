@@ -66,7 +66,7 @@ class PortalKeepAliveService : Service() {
                 .putBoolean(PortalNotificationPreferences.KEY_PERSISTENT_NOTIFICATION, enabled)
                 .commit()
             ) return false
-            val succeeded = runCatching {
+            runCatching {
                 if (enabled) {
                     ContextCompat.startForegroundService(
                         context,
@@ -75,14 +75,17 @@ class PortalKeepAliveService : Service() {
                 } else {
                     context.stopService(Intent(context, PortalKeepAliveService::class.java))
                 }
-            }.isSuccess
-            if (!succeeded) {
-                preferences.edit()
-                    .putBoolean(PortalNotificationPreferences.KEY_PERSISTENT_NOTIFICATION, !enabled)
-                    .commit()
             }
-            return succeeded
+            // The return value represents whether the user's choice was durably stored. Service
+            // startup may be deferred or temporarily blocked by the OS and is retried on resume,
+            // app update, and boot without silently flipping the switch back.
+            return true
         }
+
+        /** Stops the current service while retaining the user's on/off choice across logout. */
+        fun stopPreservingPreference(context: Context): Boolean = runCatching {
+            context.stopService(Intent(context, PortalKeepAliveService::class.java))
+        }.isSuccess
 
         /** Attempts to restore the service without changing the user's persisted preference. */
         fun restoreIfEnabled(context: Context): Boolean {

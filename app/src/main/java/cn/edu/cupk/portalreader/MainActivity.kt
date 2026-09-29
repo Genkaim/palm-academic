@@ -93,7 +93,11 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var selectedSchoolId by mutableStateOf(SchoolAdapterRepository.activeSchoolId())
         private set
-    var rememberedCredential by mutableStateOf(PasswordCredentialStore.load(application))
+    var hasSelectedSchool by mutableStateOf(SchoolAdapterRepository.hasSelectedSchool(application))
+        private set
+    var rememberedCredential by mutableStateOf(
+        PasswordCredentialStore.load(application).takeIf { hasSelectedSchool }
+    )
         private set
     var loading by mutableStateOf(false)
         private set
@@ -129,13 +133,17 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectSchool(schoolId: String) {
         schoolOptions = SchoolAdapterRepository.options(getApplication())
-        if (loading || !SchoolAdapterRepository.select(getApplication(), schoolId)) return
-        PortalMonitor.cancel(getApplication())
-        PortalHttp.clearSession()
+        if (loading) return
+        val changed = SchoolAdapterRepository.select(getApplication(), schoolId)
+        hasSelectedSchool = SchoolAdapterRepository.hasSelectedSchool(getApplication())
         selectedSchoolId = schoolId
         rememberedCredential = PasswordCredentialStore.load(getApplication(), schoolId)
         error = null
-        PortalSessionCoordinator.clear()
+        if (changed) {
+            PortalMonitor.cancel(getApplication())
+            PortalHttp.clearSession()
+            PortalSessionCoordinator.clear()
+        }
     }
 
     fun completeAuthentication() {
@@ -193,7 +201,7 @@ class MainActivity : PortalActivity() {
                             Intent(this, SchoolSelectionActivity::class.java)
                                 .putExtra(
                                     SchoolSelectionActivity.EXTRA_SELECTED_SCHOOL_ID,
-                                    model.selectedSchoolId
+                                    model.selectedSchoolId.takeIf { model.hasSelectedSchool }.orEmpty()
                                 )
                                 .putExtra(SchoolSelectionActivity.EXTRA_REQUIRES_LOGIN, false)
                         )
@@ -269,7 +277,7 @@ private fun LoginRoute(
             .fillMaxSize()
             .graphicsLayer { alpha = loginAlpha }
     ) {
-        LoginContent(model, openWebLogin, openSchoolSelection)
+        RefactoredLoginContent(model, openWebLogin, openSchoolSelection)
     }
 }
 

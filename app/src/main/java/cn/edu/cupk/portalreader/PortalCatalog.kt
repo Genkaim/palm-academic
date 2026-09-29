@@ -80,10 +80,11 @@ data class PortalMonitorDefinition(
         template.replace("{semesterId}", semesterId).replace("{studentId}", studentId)
     )
 
-    fun extractSemesterId(page: String): String? = semesterIdPatterns.firstNotNullOfOrNull { pattern ->
-        runCatching { Regex(pattern, RegexOption.DOT_MATCHES_ALL) }.getOrNull()
-            ?.find(page)?.groupValues?.getOrNull(1)
-    }
+    fun extractSemesterId(page: String): String? =
+        extractLatestSemesterOption(page) ?: semesterIdPatterns.firstNotNullOfOrNull { pattern ->
+            runCatching { Regex(pattern, RegexOption.DOT_MATCHES_ALL) }.getOrNull()
+                ?.find(page)?.groupValues?.getOrNull(1)
+        }
 
     fun extractStudentId(pageAndUrl: String): String? =
         (studentIdPatterns + GENERIC_STUDENT_ID_PATTERNS).firstNotNullOfOrNull { pattern ->
@@ -112,6 +113,49 @@ data class PortalMonitorDefinition(
             (exam && placeholder in examDataPathTemplate)
 
     private companion object {
+        private val SEMESTER_SELECT = Regex(
+            """<select\b(?=[^>]*\bid\s*=\s*[\"']allSemesters[\"'])[^>]*>(.*?)</select>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val SEMESTER_OPTION = Regex(
+            """<option\b([^>]*)>(.*?)</option>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val OPTION_VALUE = Regex(
+            """\bvalue\s*=\s*[\"']([^\"']+)[\"']""",
+            RegexOption.IGNORE_CASE
+        )
+
+        private fun extractLatestSemesterOption(page: String): String? {
+            val selectBody = SEMESTER_SELECT.find(page)?.groupValues?.getOrNull(1) ?: return null
+            return SEMESTER_OPTION.findAll(selectBody)
+                .mapNotNull { option ->
+                    val value = OPTION_VALUE.find(option.groupValues[1])
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.trim()
+                        ?.takeIf(String::isNotBlank)
+                        ?: return@mapNotNull null
+                    val label = option.groupValues[2]
+                        .replace(Regex("<[^>]+>"), " ")
+                        .replace("&nbsp;", " ", ignoreCase = true)
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+                    val years = Regex("(\\d{4})\\s*[-—]\\s*(\\d{4})").find(label)
+                    val season = when {
+                        "春" in label -> 2
+                        "秋" in label -> 1
+                        else -> 0
+                    }
+                    val order = years?.groupValues?.getOrNull(1)?.toLongOrNull()?.let {
+                        it * 10 + season
+                    } ?: value.toLongOrNull() ?: Long.MIN_VALUE
+                    value to order
+                }
+                .maxByOrNull { it.second }
+                ?.first
+        }
+
         /**
          * EAMS variants do not consistently redirect to /info/{studentId}. Some render the
          * signed-in account only as “姓名(学号)” in the page header, so keep these neutral
@@ -180,14 +224,23 @@ object SchoolAdapterRepository {
         return activeProfile().name
     }
 
+    fun hasSelectedSchool(context: Context): Boolean {
+        ensureInitialized(context)
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .contains(KEY_ACTIVE_SCHOOL)
+    }
+
     fun select(context: Context, schoolId: String): Boolean {
         ensureInitialized(context)
-        if (profiles.none { it.id == schoolId } || selectedSchoolId == schoolId) return false
+        if (profiles.none { it.id == schoolId }) return false
+        val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (selectedSchoolId == schoolId && preferences.getString(KEY_ACTIVE_SCHOOL, null) == schoolId) {
+            return false
+        }
         selectedSchoolId = schoolId
         cachedDefinition = null
         adapterScriptCache.clear()
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
+        preferences.edit()
             .putString(KEY_ACTIVE_SCHOOL, schoolId)
             .commit()
         PortalNotificationPreferences.clearSnapshots(context)

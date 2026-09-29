@@ -91,6 +91,28 @@ class PortalPollWorkerTest {
     }
 
     @Test
+    fun monitorDefinition_prefersLatestSemesterOptionOverStalePageVariable() {
+        val monitor = PortalMonitorDefinition(
+            coursePagePath = "/course-table",
+            courseDataPathTemplate = "/course-data?semester={semesterId}",
+            gradeDataPathTemplate = "/grade",
+            examDataPathTemplate = "/exam",
+            semesterIdPatterns = listOf("var\\s+semesterId\\s*=\\s*(\\d+)"),
+            studentIdPatterns = emptyList()
+        )
+        val page = """
+            <select id="allSemesters">
+              <option value="1">2017-2018学年秋季学期</option>
+              <option value="95">2025-2026学年秋季学期</option>
+              <option value="102">2025-2026学年春季学期</option>
+            </select>
+            <script>var semesterId = 1;</script>
+        """.trimIndent()
+
+        assertEquals("102", monitor.extractSemesterId(page))
+    }
+
+    @Test
     fun diagnosticJson_doesNotExposeUnrelatedPortalPageText() {
         val json = PortalSnapshot.diagnosticJson("course", "未识别学生 ID")
 
@@ -192,6 +214,22 @@ class PortalPollWorkerTest {
         assertTrue(PortalSnapshot.hasCourseEntries("{\"lessonIds\":[12345],\"lessons\":[]}"))
         assertFalse(PortalSnapshot.hasCourseEntries("{\"lessonIds\":[],\"lessons\":[]}"))
         assertTrue(PortalSnapshot.hasCourseEntries("{\"data\":[{\"name\":\"高等数学\"}]}"))
+    }
+
+    @Test
+    fun courseSnapshot_ignoresCurrentWeekButKeepsScheduleWeeks() {
+        val first = PortalSnapshot.courseDataJson(
+            """{"currentWeek":5,"weekIndices":[1,2,3],"lessons":[]}""",
+            "102"
+        )
+        val second = PortalSnapshot.courseDataJson(
+            """{"currentWeek":6,"weekIndices":[1,2,3],"lessons":[]}""",
+            "102"
+        )
+
+        assertEquals(PortalSnapshot.stableHash(first), PortalSnapshot.stableHash(second))
+        assertFalse(first.contains("currentWeek"))
+        assertTrue(first.contains("weekIndices"))
     }
 
     @Test

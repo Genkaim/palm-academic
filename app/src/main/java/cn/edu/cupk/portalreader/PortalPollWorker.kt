@@ -160,13 +160,15 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             }
 
             if (gradeEnabled) {
-                val gradeData = get(
-                    school.monitor.gradeDataUrl(
+                val gradeData = getNativePage(
+                    school = school,
+                    nativeType = "grade",
+                    dataUrl = school.monitor.gradeDataUrl(
                         school.baseUrl,
                         resolvedSemesterId,
                         resolvedStudentId
                     ),
-                    referer = coursePage.finalUrl
+                    initialReferer = coursePage.finalUrl
                 )
                 if (gradeData.isAuthenticationFailure()) {
                     val notified = notifyAuthenticationFailure(preferences)
@@ -188,13 +190,15 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             }
 
             if (examEnabled) {
-                val examData = get(
-                    school.monitor.examDataUrl(
+                val examData = getNativePage(
+                    school = school,
+                    nativeType = "exam",
+                    dataUrl = school.monitor.examDataUrl(
                         school.baseUrl,
                         resolvedSemesterId,
                         resolvedStudentId
                     ),
-                    referer = coursePage.finalUrl
+                    initialReferer = coursePage.finalUrl
                 )
                 if (examData.isAuthenticationFailure()) {
                     val notified = notifyAuthenticationFailure(preferences)
@@ -317,6 +321,40 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
             throw IllegalStateException("GET $url 失败：${error.message ?: error.javaClass.name}", error)
         }
     }
+
+    /**
+     * EAMS establishes controller state when the user enters the grade/exam feature. Opening an
+     * /info/{studentId} URL directly can therefore return a 500 even with a valid session. Follow
+     * the same entry-page path as the interactive UI before requesting a separate data URL.
+     */
+    private fun getNativePage(
+        school: SchoolDefinition,
+        nativeType: String,
+        dataUrl: String,
+        initialReferer: String
+    ): ResponseData {
+        val entryUrl = school.quickItems.firstOrNull { it.nativeType == nativeType }?.url
+            ?: return get(dataUrl, referer = initialReferer)
+        val entryResponse = get(entryUrl, referer = initialReferer)
+        if (!entryResponse.isSuccessful() || entryResponse.isAuthenticationFailure()) {
+            return entryResponse
+        }
+        if (canonicalUrl(entryResponse.finalUrl) == canonicalUrl(dataUrl)) {
+            return entryResponse
+        }
+        val dataResponse = get(dataUrl, referer = entryResponse.finalUrl)
+        return dataResponse.copy(
+            transportDetails = buildString {
+                appendLine("功能入口请求：${entryResponse.requestedUrl}")
+                appendLine(entryResponse.transportDetails)
+                appendLine()
+                appendLine("数据页面请求：${dataResponse.requestedUrl}")
+                append(dataResponse.transportDetails)
+            }
+        )
+    }
+
+    private fun canonicalUrl(value: String): String = value.substringBefore('#').trimEnd('/')
 
     private fun Headers.forHistoryLog(): String {
         if (size == 0) return "（无）"
@@ -677,7 +715,7 @@ object PortalMonitor {
 
     fun cancel(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
-        PortalKeepAliveService.setEnabled(context, false)
+        PortalKeepAliveService.stopPreservingPreference(context)
         PortalNotificationPreferences.preferences(context).edit()
             .putBoolean(PortalPollWorker.KEY_MONITOR_ENABLED, false)
             .apply()
