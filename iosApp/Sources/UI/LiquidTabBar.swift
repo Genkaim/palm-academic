@@ -48,108 +48,6 @@ struct TabPressStyle: ButtonStyle {
     }
 }
 
-/// The search control that sits beside the tab bar.
-///
-/// The destinations themselves live in a system `TabView` rather than in a hand-built bar. That is
-/// the only way to get the platform's own bottom bar: on iOS 26 it is drawn with the system's
-/// Liquid Glass material, and it carries the press, the long-press and the destination-change
-/// animations, none of which a custom view can reproduce -- a custom bar can approximate the
-/// material, but every one of those behaviours has to be rebuilt by hand and will always be a
-/// little behind the real thing.
-///
-/// Search stays outside that bar. Android can afford a search button on the bar because its bar only
-/// exists on the home screen; iOS keeps the bar on every screen, so search has to open where the
-/// user already is. Opening it slides the field in over the width the collapsed button occupied and
-/// brings a cancel control in at the leading edge; closing runs the same two moves backwards.
-struct BarSearchControl: View {
-    @Binding var isSearching: Bool
-    @Binding var query: String
-    var isDark: Bool
-
-    @Namespace private var searchNamespace
-
-    private enum Metric {
-        /// A tab bar item's own height, which is also the collapsed width of this button.
-        static let collapsed: CGFloat = 49
-    }
-
-    /// Matches the Android bar's spring: damping ratio 0.82 at stiffness 440, which for unit mass
-    /// is a damping coefficient of `2 * 0.82 * sqrt(440)`.
-    private var spring: Animation { .interpolatingSpring(stiffness: 440, damping: 34) }
-
-    private var ink: Color { isDark ? .white : .primary }
-
-    var body: some View {
-        // The control occupies the trailing slot. Collapsed it is a 49pt circle; expanded it hands
-        // that slot over to the field, which grows leftwards into the row.
-        ZStack(alignment: .trailing) {
-            if isSearching {
-                HStack(spacing: 4) {
-                    Button {
-                        close()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(ink)
-                            .frame(width: Metric.collapsed, height: Metric.collapsed)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(TabPressStyle())
-                    .accessibilityLabel("关闭搜索")
-
-                    NativeSearchField(
-                        text: $query,
-                        placeholder: "搜索教务功能",
-                        isCancelVisible: true,
-                        onCancel: { close() }
-                    )
-                    .frame(height: Metric.collapsed - 8)
-                    .matchedGeometryEffect(id: "barSearchField", in: searchNamespace)
-                }
-                .background(
-                    SystemGlassSurface(
-                        shape: RoundedRectangle(cornerRadius: 24, style: .continuous),
-                        interactive: true
-                    ) {
-                        Color.clear
-                    }
-                )
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-            } else {
-                Button {
-                    withAnimation(spring) { isSearching = true }
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 19, weight: .regular))
-                        .foregroundStyle(ink)
-                        .frame(width: Metric.collapsed, height: Metric.collapsed)
-                        .contentShape(Rectangle())
-                        .matchedGeometryEffect(id: "barSearchField", in: searchNamespace)
-                        .background(
-                            SystemGlassSurface(shape: Circle(), interactive: true) {
-                                Color.clear
-                            }
-                        )
-                }
-                .buttonStyle(TabPressStyle())
-                .accessibilityLabel(LiquidTabItem.search.title)
-                .accessibilityHint(Text("在当前页面搜索教务功能"))
-            }
-        }
-        .frame(height: Metric.collapsed)
-    }
-
-    /// Closing runs the open animation backwards: the field leaves towards the edge it came from
-    /// and the button takes its place, which is the same relationship Android's bar has when its
-    /// search button collapses back into an icon.
-    private func close() {
-        withAnimation(spring) {
-            isSearching = false
-            query = ""
-        }
-    }
-}
-
 struct LiquidTabItem: Identifiable, Hashable {
     let id: String
     let title: String
@@ -164,9 +62,8 @@ struct LiquidTabItem: Identifiable, Hashable {
     }
 
     /// The two destinations, matching Android's `HomeDestination`. Search is deliberately not one
-    /// of them: it is an action, not a place, and `BarSearchControl` handles it.
+    /// of them: it filters the home page from a field at the top of it, which is not a place you
+    /// travel to and does not belong on a bar that stays put while every screen changes under it.
     static let home = LiquidTabItem(id: "home", title: "主页", systemImage: "house")
     static let settings = LiquidTabItem(id: "settings", title: "设置", systemImage: "gearshape")
-    static let search = LiquidTabItem(id: "search", title: "搜索", systemImage: "magnifyingglass",
-                                      selectedSystemImage: "magnifyingglass")
 }

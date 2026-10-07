@@ -45,6 +45,10 @@ struct HomeView: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
+                // The page's own search box, first and always visible: search is a filter on what
+                // is below it, not a destination of its own, so the field belongs with the content
+                // it filters rather than on a bar that persists across every screen.
+                searchField
                 // Android's status panel leads the page and is hidden while a search is
                 // actually filtering something.
                 if !state.isSearching {
@@ -110,13 +114,6 @@ struct HomeView: View {
                 case .notifications: NotificationSettingsScreen()
                 }
             }
-            // A result picked in the bar's search overlay is pushed here, because this is the only
-            // navigation stack that knows how to open a portal page.
-            .onChange(of: state.pendingNavigation) { item in
-                guard let item else { return }
-                path = [.item(item)]
-                state.pendingNavigation = nil
-            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear.frame(height: BottomClearance.height)
             }
@@ -153,6 +150,56 @@ struct HomeView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("验证失败，点击重试")
         }
+    }
+
+    // MARK: - Search
+
+    /// The home page's search box.
+    ///
+    /// A `TextField` in the system's own search-field shape (a rounded tertiary-fill container with
+    /// a leading glyph) rather than `.searchable`. The modifier would put the same field in the
+    /// navigation bar, which is fine in itself but leaves search looking like a separate screen:
+    /// the bar stays put when the list is replaced by its own results, and the field reads as
+    /// something owned by the navigation stack rather than by this page. Here the field sits above
+    /// the content it filters and moves with it.
+    ///
+    /// The clear button is drawn rather than taken from `.searchable`, whose clear button comes
+    /// with the modifier. It appears only while there is a query, matching what the system does.
+    @ViewBuilder
+    private var searchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(PortalPalette.secondaryText)
+            TextField("搜索教务功能", text: $state.searchQuery)
+                .font(.body)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+            if state.isSearching {
+                Button {
+                    state.clearSearch()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(PortalPalette.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清空搜索")
+            }
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 38)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(uiColor: .tertiarySystemFill))
+        )
+        // A helper row has no background or separator of its own: the group's own edges are drawn
+        // by the section below it, and a separator under the field would suggest it is one of the
+        // entries rather than the control that filters them.
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     // MARK: - Sections
@@ -269,112 +316,4 @@ enum PortalRoute: Hashable {
 /// already accounts for the home indicator, so this is the bar's height plus a little air.
 enum BottomClearance {
     static let height: CGFloat = 84
-}
-
-/// The results list that floats above the bar while its search field is open.
-///
-/// Search on this platform is not a destination, so the results cannot be a page of their own:
-/// they stay attached to the field that produced them and hand the chosen destination back to
-/// whoever asked. The overlay is what makes that possible -- it is dismissed the moment a result
-/// is picked, and the home stack pushes the page from there.
-///
-/// It reuses the home screen's own filtering rules rather than inventing a second set: trimmed
-/// query, title-only match, groups that end up empty are dropped.
-struct SearchResultsOverlay: View {
-    @EnvironmentObject private var state: AppState
-    let onSelect: (PortalItem) -> Void
-
-    private var definition: SchoolDefinition? { state.definition }
-
-    private var quickResults: [PortalItem] {
-        let all = QuickEntryBaseline.orderedQuickBaselineItems(definition?.quickItems ?? [])
-        return all.filter { $0.title.localizedCaseInsensitiveContains(state.trimmedSearchQuery) }
-    }
-
-    private var groupResults: [PortalGroup] {
-        (definition?.groups ?? []).compactMap { group in
-            let items = group.items.filter {
-                $0.quick != true && $0.title.localizedCaseInsensitiveContains(state.trimmedSearchQuery)
-            }
-            return items.isEmpty ? nil : PortalGroup(title: group.title, items: items)
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if quickResults.isEmpty && groupResults.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(PortalPalette.secondaryText)
-                    Text("没有找到相关功能")
-                        .font(.subheadline)
-                        .foregroundStyle(PortalPalette.secondaryText)
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 16)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(groupResults) { group in
-                            Text(group.title)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(PortalPalette.secondaryText)
-                                .padding(.leading, 14)
-                                .padding(.top, 8)
-                                .padding(.bottom, 2)
-                            ForEach(group.items) { item in
-                                resultRow(item)
-                            }
-                        }
-                        if !quickResults.isEmpty {
-                            Text("常用功能")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(PortalPalette.secondaryText)
-                                .padding(.leading, 14)
-                                .padding(.top, 8)
-                                .padding(.bottom, 2)
-                            ForEach(quickResults) { item in
-                                resultRow(item)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-                .frame(maxHeight: 340)
-            }
-        }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(PortalPalette.outline.opacity(0.25), lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
-    }
-
-    private func resultRow(_ item: PortalItem) -> some View {
-        Button {
-            onSelect(item)
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: QuickEntryIcon.name(for: item))
-                    .font(.system(size: 15))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 22)
-                Text(item.title)
-                    .font(.subheadline)
-                    .foregroundStyle(PortalPalette.onSurface)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(QuickEntryIcon.subtitle(for: item))
-                    .font(.caption2)
-                    .foregroundStyle(PortalPalette.secondaryText)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 42)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(TabPressStyle(scale: 0.99))
-    }
 }

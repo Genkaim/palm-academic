@@ -5,9 +5,10 @@ import SwiftUI
 /// Android has two distinct screens rather than one screen with a hidden form: with no school
 /// chosen the page is nothing but the brand block and one button pinned to the bottom, and the
 /// credential fields do not exist in the hierarchy at all. Once a school is chosen the form appears
-/// above a bottom area that stacks the school row, a gap and the web-login row, with the primary
-/// button sitting below all of it. The content padding differs to match (64/112 unselected,
-/// 24/218 selected) and the brand block collapses when the keyboard is up.
+/// above a bottom area that stacks the school row, the web-login row and the primary button, in
+/// that order and at one spacing, so that signing in reads top to bottom in the order you decide
+/// how to do it. The content padding differs between the two states (64/112 unselected, 24/40
+/// selected) and the brand block collapses when the keyboard is up.
 ///
 /// Appearance and controls are iOS's. The fields are SwiftUI's own `TextField` and `SecureField` in
 /// the plain style, sitting on the grouped surface, so they carry the caret, the autofill chrome,
@@ -17,9 +18,11 @@ import SwiftUI
 /// and resigned in the same pass -- the keyboard came up and went straight back down, which reads
 /// as "tapping the field does nothing". `@FocusState` cannot be wrong that way.
 ///
-/// The field group's shape is the Android one -- 14pt outer, 6pt where the two meet -- written as
-/// a background per field rather than as a shape on the control, because `UnevenRoundedRectangle`
-/// is iOS 16.4 and the deployment target is 16.0.
+/// The field group's shape is the Android one -- 14pt outer, square where the two meet -- written
+/// as a background per field rather than as a shape on the control, because
+/// `UnevenRoundedRectangle` is iOS 16.4 and the deployment target is 16.0. Squaring the meeting
+/// ends is what makes the two read as one group with a line through it; rounding them gave each
+/// field a shape of its own and the group a seam instead of a divider.
 struct LoginView: View {
     @EnvironmentObject private var state: AppState
     @State private var showingSchools = false
@@ -27,8 +30,14 @@ struct LoginView: View {
     /// Which field the keyboard belongs to. `@FocusState` is the system's own focus owner, so a tap
     /// needs no extra work to raise the keyboard and "next" moves straight to the password.
     @FocusState private var focusedField: Field?
-    /// Height of the software keyboard in points; 0 while it is dismissed.
+    /// Height of the software keyboard in points; 0 while it is dismissed. Nothing but the brand
+    /// block's collapse and the secondary rows' fade are driven from this: both are things the
+    /// system's own keyboard avoidance does not do, whereas lifting the bottom area is, and that is
+    /// left to it.
     @State private var keyboardHeight: CGFloat = 0
+    /// The duration the system says it is about to animate the keyboard with, read from its own
+    /// notification so this page's movement is not timed against a guess.
+    @State private var keyboardDuration: Double = 0.25
     /// Token handles for the keyboard frame notifications registered in `observeKeyboard`.
     @State private var keyboardObservers: [NSObjectProtocol] = []
 
@@ -42,14 +51,22 @@ struct LoginView: View {
         static let fieldHeight: CGFloat = 50
         static let primaryButtonHeight: CGFloat = 54
         static let secondaryButtonHeight: CGFloat = 52
-        /// The gap between the school row and the web-login row, which exists to clear the
-        /// primary button pinned below them.
-        static let secondaryGap: CGFloat = 54
+        /// The gap between the adjacent rows of the bottom area: between the two secondary rows,
+        /// and between them and the primary button below. One number for both, because they belong
+        /// to one group of actions and a different gap between some of them than between others
+        /// reads as two groups.
+        static let buttonSpacing: CGFloat = 10
+        /// Clearance between the bottom area and the edge of the reserved region.
+        static let bottomPadding: CGFloat = 16
         static let brandHeight: CGFloat = 172
         /// The outer radius of the joined field group, matching Android's 18pt at the system's
         /// slightly tighter 14pt.
         static let fieldGroupRadius: CGFloat = 14
-        static let fieldGroupInnerRadius: CGFloat = 6
+        /// The radius where the two fields meet, which is zero. A positive value there -- 6pt was
+        /// here -- rounds each field into its own shape, so the pair reads as two cards with a seam
+        /// rather than as one group with a divider; rounding one end of each field and squaring the
+        /// other draws neither cleanly.
+        static let fieldGroupInnerRadius: CGFloat = 0
     }
 
     private var hasSchool: Bool { state.selectedSchool != nil }
@@ -59,7 +76,9 @@ struct LoginView: View {
         ZStack {
             // Android paints `MaterialTheme.colorScheme.background`, which is #F2F2F7 light and
             // #000000 dark. `systemGroupedBackground` is exactly those two values, so the page
-            // follows the appearance without a single hand-picked colour.
+            // follows the appearance without a single hand-picked colour. Only this background
+            // opts out of the safe area, so it fills behind the status bar and the home indicator;
+            // the content does not, which is what lets the keyboard move it.
             PortalPalette.page.ignoresSafeArea()
 
             ScrollView {
@@ -74,27 +93,39 @@ struct LoginView: View {
                         .frame(height: brandVisible ? Metric.brandHeight : 0)
                         .clipped()
                         .opacity(brandVisible ? 1 : 0)
+                        // The animation belongs on this one leaf. On the page it also animates the
+                        // bottom area's own movement, which the system is already animating, so the
+                        // two curves run together and the area arrives at a different time from the
+                        // keyboard it is supposed to be riding.
+                        .animation(keyboardAnimation, value: keyboardHeight)
                     if hasSchool {
                         credentialForm
                     }
                 }
                 .padding(.horizontal, Metric.horizontal)
                 // The two Android content paddings, which are what make the unselected screen feel
-                // like a different screen rather than the same one with a hidden form. The selected
-                // padding shrinks while the keyboard is up so the fields stay reachable without the
-                // bottom area having to lift the whole page.
+                // like a different screen rather than the same one with a hidden form. Nothing here
+                // depends on the keyboard: the area below reserves its own space, and the scroll
+                // view's content inset is adjusted by the system when the keyboard comes up.
                 .padding(.top, hasSchool ? 24 : 64)
-                .padding(.bottom, hasSchool ? (keyboardHeight > 0 ? 24 : 218) : 112)
+                .padding(.bottom, hasSchool ? 16 : 40)
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .scrollDisabled(keyboardHeight > 0)
+            // The bottom area sits *inside* the scroll view's bottom safe area rather than on top
+            // of the screen. That single choice is what makes the login button follow the input
+            // method: `safeAreaInset` places its content in the region the system reserves for the
+            // keyboard, so the area is lifted with it -- by the system, along its own curve, at its
+            // own duration, including the hardware keyboard's toolbar and every shape the input
+            // method takes. An overlay aligned to the further side of that ignores all of it, which
+            // is why the button stayed put and disappeared under the keyboard.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                bottomArea
+                    // The reserved region is exclusive, so nothing scrolls through it. Painting it
+                    // with the page's own background costs nothing and keeps it opaque during bounce.
+                    .background(PortalPalette.page)
+            }
         }
-        // The bottom area is an overlay rather than a safe-area inset. An inset is lifted by the
-        // keyboard as a unit, which drags the school row and the web-login row up with it; Android
-        // only moves the primary action and fades the other two, and that is what happens here.
-        .overlay(alignment: .bottom) { bottomArea }
-        .ignoresSafeArea(.keyboard, edges: .bottom)
         .sheet(isPresented: $showingSchools) {
             SchoolPickerView { school in
                 state.selectSchool(school)
@@ -106,7 +137,6 @@ struct LoginView: View {
                 .environmentObject(state)
         }
         .animation(.easeInOut(duration: 0.25), value: hasSchool)
-        .animation(.easeOut(duration: 0.22), value: keyboardHeight > 0)
         .onAppear {
             NotificationPreferences.shared.clearAuthenticationFailureMarker()
             observeKeyboard()
@@ -166,20 +196,26 @@ struct LoginView: View {
         }
     }
 
+    /// The login, school and web-login buttons, as one group at the foot of the page.
+    ///
+    /// They are stacked in reading order -- switch the school, use the browser instead, then commit
+    /// -- with one spacing between each pair, and the group is what the keyboard lifts. The primary
+    /// needs no offset of its own any more: being the last thing in the area already puts it
+    /// against the edge the keyboard leaves.
     private var bottomArea: some View {
         VStack(spacing: 0) {
             if hasSchool {
                 // Android's secondary actions fade as the keyboard arrives
-                // (`secondaryActionAlpha = 1 - imeProgress * 2`) and do not move. They stay pinned
-                // to the bottom while the primary button rides above the keyboard.
-                VStack(spacing: 8) {
+                // (`secondaryActionAlpha = 1 - imeProgress * 2`) and do not move. They keep their
+                // height while invisible rather than being removed from the layout, because
+                // removing them would pull the primary button down onto the keyboard at the same
+                // moment the keyboard arrived -- a second motion on top of the one being watched.
+                VStack(spacing: Metric.buttonSpacing) {
                     secondaryButton(
                         systemImage: "building.columns",
                         title: state.selectedSchool?.name ?? "选择学校",
                         showsChevron: true
                     ) { showingSchools = true }
-                    // The gap is not decorative: it clears the primary button pinned below.
-                    Color.clear.frame(height: Metric.secondaryGap)
                     secondaryButton(systemImage: "safari", title: "用网页登录", showsChevron: false) {
                         focusedField = nil
                         state.showingWebLogin = true
@@ -187,40 +223,43 @@ struct LoginView: View {
                 }
                 .opacity(secondaryOpacity)
                 .allowsHitTesting(keyboardHeight == 0)
-                .padding(.bottom, 20 + Metric.primaryButtonHeight)
 
-                // Only this one follows the keyboard. It is a system prominent button tinted to
-                // Android's `primary` token, so it keeps the system's own corner radius, press
-                // animation and disabled appearance instead of a hand-drawn capsule.
-                Button {
-                    focusedField = nil
-                    Task { await state.login() }
-                } label: {
-                    HStack(spacing: 8) {
-                        if state.isLoading {
-                            ProgressView()
-                        } else {
-                            Image(systemName: "lock")
-                        }
-                        Text(state.isLoading ? "登录中…" : "登录")
-                            .font(.body.weight(.semibold))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: Metric.primaryButtonHeight - 8)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(PortalPalette.primary)
-                .foregroundStyle(PortalPalette.plainSurface)
-                .controlSize(.large)
-                .disabled(!canSubmit || state.isLoading)
-                .offset(y: -primaryLift)
+                loginButton
+                    .padding(.top, Metric.buttonSpacing)
             } else {
                 schoolSelectionPrompt
-                    .padding(.bottom, 20)
             }
         }
         .padding(.horizontal, Metric.horizontal)
-        .padding(.bottom, 20)
+        .padding(.top, 8)
+        .padding(.bottom, Metric.bottomPadding)
+    }
+
+    /// The primary action. A system prominent button tinted to Android's `primary` token, so it
+    /// keeps the system's own corner radius, press animation and disabled appearance instead of a
+    /// hand-drawn capsule.
+    private var loginButton: some View {
+        Button {
+            focusedField = nil
+            Task { await state.login() }
+        } label: {
+            HStack(spacing: 8) {
+                if state.isLoading {
+                    ProgressView()
+                } else {
+                    Image(systemName: "lock")
+                }
+                Text(state.isLoading ? "登录中…" : "登录")
+                    .font(.body.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: Metric.primaryButtonHeight - 8)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(PortalPalette.primary)
+        .foregroundStyle(PortalPalette.plainSurface)
+        .controlSize(.large)
+        .disabled(!canSubmit || state.isLoading)
     }
 
     /// How far the keyboard has risen, 0...1. Android derives this the same way, from the IME inset
@@ -235,10 +274,19 @@ struct LoginView: View {
     /// The secondary actions are gone by the time the keyboard is half up.
     private var secondaryOpacity: Double { max(0, 1 - Double(keyboardProgress) * 2) }
 
-    /// The primary button's travel. It clears the secondary block -- two 52pt rows, a 10pt gap and
-    /// the 20pt of padding -- and then follows the keyboard the rest of the way.
-    private var primaryLift: CGFloat {
-        keyboardProgress * (Metric.secondaryGap + Metric.secondaryButtonHeight * 2 + 24)
+    /// The keyboard's own curve, or as close to it as SwiftUI can be given.
+    ///
+    /// `UIView.AnimationCurve` is what the system publishes alongside its keyboard frame, and it
+    /// has no counterpart here -- the value it reports for a keyboard is one of its reserved ones,
+    /// not a public member -- so the curve is written as its control points instead of being read.
+    /// Linear is what made this read wrong before: an element that travels at a constant speed for
+    /// a constant time looks dragged, because every real thing that has been pushed accelerates out
+    /// and settles in. This curve leaves at once and spends most of its time approaching the end.
+    ///
+    /// The duration *is* read from the system, because that one it does report and getting it wrong
+    /// leaves the page and the keyboard arriving separately.
+    private var keyboardAnimation: Animation {
+        .timingCurve(0.25, 1, 0.5, 1, duration: max(keyboardDuration, 0.2))
     }
 
     /// The unselected screen's only affordance: a line of copy and one full-width button.
@@ -350,6 +398,14 @@ struct LoginView: View {
                         as? CGRect,
                       let screen = notification.object as? UIScreen else { return }
                 let overlap = screen.bounds.maxY - frame.minY
+                // The system publishes the duration it is about to move the keyboard with. Reading
+                // it rather than picking one is what keeps the brand block's collapse from running
+                // against the keyboard's own arrival: the bottom area is moved by the system now, so
+                // anything still animated by hand has to be timed to it or visibly lag it.
+                if let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey]
+                        as? Double, duration > 0 {
+                    keyboardDuration = duration
+                }
                 keyboardHeight = overlap > 0 ? overlap : 0
             },
             NotificationCenter.default.addObserver(

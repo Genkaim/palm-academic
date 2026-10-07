@@ -117,77 +117,35 @@ struct RootView: View {
 
 /// Host for the tab bar and the home/settings content areas.
 ///
-/// The destinations go in a system `TabView`. That is what produces the platform's own bottom bar:
-/// on iOS 26 it is drawn with the system's Liquid Glass material, and the press, long-press and
+/// The destinations live in a system `TabView`. That is what produces the platform's own bottom
+/// bar: on iOS 26 it is drawn with the system's Liquid Glass material, and the press, long-press and
 /// destination-change animations come with it. A hand-built bar can copy the material but has to
 /// reimplement all three behaviours, and they are what makes a bar feel like a bar.
 ///
-/// The search control floats above it rather than living inside it. Android can put search on the
-/// bar because its bar only exists on the home screen; this bar is present on every screen, so
-/// search opens where the user already is.
+/// Search has no tab. It filters the home page from a field at the top of it, which is where it
+/// belongs: it is not a destination you travel to, and putting it on a bar that persists across
+/// every screen would make it one.
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            TabView(selection: $state.selectedTab) {
-                HomeView()
-                    .tag(LiquidTabItem.home)
-                    .tabItem {
-                        Label(LiquidTabItem.home.title, systemImage: LiquidTabItem.home.systemImage)
-                    }
-                SettingsScreen()
-                    .tag(LiquidTabItem.settings)
-                    .tabItem {
-                        Label(LiquidTabItem.settings.title, systemImage: LiquidTabItem.settings.systemImage)
-                    }
-            }
-
-            // Search results sit directly above the control that produced them. They are an overlay
-            // rather than a destination because search is not a place -- it is a way of choosing one
-            // of the places, and the destination that gets pushed is the one the user picked.
-            if state.isBarSearching, state.isSearching {
-                SearchResultsOverlay(
-                    onSelect: { item in
-                        state.endBarSearch()
-                        state.pendingNavigation = item
-                    }
-                )
-                .padding(.horizontal, 16)
-                .padding(.bottom, Metric.aboveBar)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-                .zIndex(1)
-            }
-
-            HStack(spacing: 8) {
-                Spacer(minLength: 0)
-                BarSearchControl(
-                    isSearching: $state.isBarSearching,
-                    query: $state.searchQuery,
-                    isDark: state.isDark
-                )
-                .padding(.trailing, 10)
-                .zIndex(2)
-            }
+        TabView(selection: $state.selectedTab) {
+            HomeView()
+                .tag(LiquidTabItem.home)
+                .tabItem {
+                    Label(LiquidTabItem.home.title, systemImage: LiquidTabItem.home.systemImage)
+                }
+            SettingsScreen()
+                .tag(LiquidTabItem.settings)
+                .tabItem {
+                    Label(LiquidTabItem.settings.title, systemImage: LiquidTabItem.settings.systemImage)
+                }
         }
         .overlay(alignment: .top) {
             if let notice = state.sessionNotice {
                 noticeBanner(notice)
             }
         }
-        .animation(
-            .interpolatingSpring(stiffness: 440, damping: 34),
-            value: state.isBarSearching
-        )
-    }
-
-    private enum Metric {
-        /// Clearance above the floating search control.
-        ///
-        /// The system tab bar is 49pt of content plus the home indicator, which iOS reports as a 34pt
-        /// bottom safe area on a home-button device. The control sits on top of that, so it needs the
-        /// whole of it plus its own height and the air to clear it.
-        static let aboveBar: CGFloat = 49 + 34 + 49 + 10
     }
 
     @ViewBuilder

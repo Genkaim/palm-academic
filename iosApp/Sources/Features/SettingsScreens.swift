@@ -179,23 +179,22 @@ struct SettingsScreen: View {
         } header: {
             Text("账户")
         }
-        // A confirmationDialog is anchored to the middle of the screen by the system, which on a
-        // long page can be nowhere near the row that opened it. Anchoring it to the bottom of the
-        // page puts it directly under that row, which is where the finger already is.
-        .overlay(alignment: .bottom) {
-            if confirmSignOut {
-                SignOutConfirmation(
-                    onConfirm: {
-                        withAnimation(.easeOut(duration: 0.16)) { confirmSignOut = false }
-                        state.signOut()
-                    },
-                    onCancel: {
-                        withAnimation(.easeOut(duration: 0.16)) { confirmSignOut = false }
-                    }
-                )
-                .padding(.bottom, BottomClearance.height)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+        // The system's own confirmation, so the alert is the one iOS draws. The request was to
+        // change where it appears, not what it looks like: an earlier pass answered "lower please"
+        // with a hand-built sheet, which traded the platform's alert for something that merely
+        // resembles it -- its own corner radius, its own type scale, its own dimming -- and those
+        // are exactly the things that drift with every OS release. The lower position comes for
+        // free here: on a phone `confirmationDialog` is an action sheet, and it rises from the
+        // bottom edge, which is where the row that opened it already is.
+        .confirmationDialog(
+            "退出登录？",
+            isPresented: $confirmSignOut,
+            titleVisibility: .visible
+        ) {
+            Button("退出", role: .destructive) { state.signOut() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将清除本应用中的登录会话并停止后台监测。")
         }
     }
 
@@ -241,69 +240,6 @@ struct PortalSettingsRow: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-    }
-}
-
-/// The sign-out confirmation, anchored under the row that opened it.
-///
-/// `confirmationDialog` is presented by the system and lands in the middle of the screen. On a
-/// settings page that is several groups away from the row that triggered it, so the sheet and the
-/// thing it is about are visually unrelated. This one is a plain overlay with a dimming backdrop.
-private struct SignOutConfirmation: View {
-    let onConfirm: () -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.28)
-                .ignoresSafeArea()
-                .onTapGesture(perform: onCancel)
-
-            VStack(spacing: 0) {
-                VStack(spacing: 6) {
-                    Text("退出登录？")
-                        .font(.headline)
-                        .foregroundStyle(PortalPalette.onSurface)
-                    Text("将清除本应用中的登录会话并停止后台监测。")
-                        .font(.subheadline)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(PortalPalette.secondaryText)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 18)
-                .padding(.bottom, 14)
-
-                Divider()
-
-                Button {
-                    onConfirm()
-                } label: {
-                    Text("退出")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .foregroundStyle(PortalPalette.error)
-                }
-                .buttonStyle(.plain)
-
-                Divider()
-
-                Button {
-                    onCancel()
-                } label: {
-                    Text("取消")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .foregroundStyle(Color.accentColor)
-                }
-                .buttonStyle(.plain)
-            }
-            .frame(maxWidth: 320)
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(PortalPalette.plainSurface)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        }
     }
 }
 
@@ -391,24 +327,10 @@ struct NotificationSettingsScreen: View {
 /// Port of `NotificationHistoryActivity.kt`.
 struct NoticeHistoryScreen: View {
     @Binding var entries: [PortalPollHistoryEntry]
-    @State private var filter: Filter = .all
-
-    private enum Filter: String, CaseIterable, Identifiable {
-        case all = "全部"
-        case changes = "有变更"
-        var id: String { rawValue }
-    }
-
-    private var visibleEntries: [PortalPollHistoryEntry] {
-        switch filter {
-        case .all: return entries
-        case .changes: return entries.filter { $0.notificationTriggered || $0.details.contains(where: \.changed) }
-        }
-    }
 
     var body: some View {
         List {
-            if visibleEntries.isEmpty {
+            if entries.isEmpty {
                 // ContentUnavailableView is iOS 17+; the deployment target is 16.
                 VStack(spacing: 10) {
                     Image(systemName: "clock")
@@ -425,7 +347,7 @@ struct NoticeHistoryScreen: View {
                 .padding(.vertical, 36)
                 .listRowSeparator(.hidden)
             }
-            ForEach(visibleEntries) { entry in
+            ForEach(entries) { entry in
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text(entry.status)
@@ -477,14 +399,19 @@ struct NoticeHistoryScreen: View {
         .navigationTitle("检查日志")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // The system's own edit control, which is how rows are deleted on this platform: it
+            // flips the list into its editing environment, where every row gets the platform's
+            // red delete control and its swipe counterpart. Hand-rolling the deletion would mean
+            // re-implementing that whole environment to get a worse result.
+            //
+            // It replaces a filter. The log is short by nature -- one entry per check run, and a
+            // background check runs a handful of times a day -- so there was never enough in it to
+            // filter; what people actually want to do here is get rid of entries. Clearing the
+            // whole log keeps its own button at the bottom, which is the destructive read of "删除"
+            // and deserves to stay separate from deleting one row.
             ToolbarItem(placement: .navigationBarTrailing) {
-                Picker("", selection: $filter) {
-                    ForEach(Filter.allCases) { option in
-                        Text(option.rawValue).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 160)
+                EditButton()
+                    .disabled(entries.isEmpty)
             }
         }
         // Clearing lives here rather than on the parent page: it is an operation *on* the log, so
@@ -519,12 +446,19 @@ struct NoticeHistoryScreen: View {
 struct BackgroundSupportScreen: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject private var notifications = NotificationPreferences.shared
+    @ObservedObject private var localNetwork = LocalNetworkProbe.shared
     @State private var authorisation: UNAuthorizationStatus = .notDetermined
     @State private var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
 
     var body: some View {
         List {
             Section {
+                statusRow(
+                    icon: PortalRowIcon("network"),
+                    title: "本地网络权限",
+                    detail: localNetworkDetail,
+                    healthy: localNetwork.state.isHealthy
+                )
                 statusRow(
                     icon: PortalRowIcon("bolt"),
                     title: "低电量模式",
@@ -567,6 +501,17 @@ struct BackgroundSupportScreen: View {
                     )
                 }
                 .buttonStyle(.plain)
+
+                Button {
+                    Task { await localNetwork.probe(force: true) }
+                } label: {
+                    PortalSettingsRow(
+                        icon: PortalRowIcon("arrow.clockwise"),
+                        title: "重新检测",
+                        subtitle: localNetwork.state.label
+                    )
+                }
+                .buttonStyle(.plain)
             } header: {
                 Text("操作")
             }
@@ -574,7 +519,25 @@ struct BackgroundSupportScreen: View {
         .listStyle(.insetGrouped)
         .navigationTitle("后台运行")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { refreshStatus() }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear.frame(height: BottomClearance.height)
+        }
+        .onAppear {
+            refreshStatus()
+            Task { await localNetwork.probe() }
+        }
+    }
+
+    /// The local-network answer, spelled out. A refused connection is otherwise invisible from the
+    /// UI: the load simply never finishes, which looks identical to a broken reader.
+    private var localNetworkDetail: String {
+        switch localNetwork.state {
+        case .unknown: return "尚未检测"
+        case .probing: return "正在连接教务服务器…"
+        case .allowed: return "已授权，可访问教务系统"
+        case .denied: return "未授权，校园网下无法加载教务页面"
+        case .unreachable(let reason): return reason
+        }
     }
 
     /// A status row with no chevron: nothing here can be fixed from inside the app except by

@@ -664,7 +664,14 @@ struct MaterialPageScreen: View {
         try? await Task.sleep(nanoseconds: 20_000_000_000)
         guard !Task.isCancelled else { return }
         guard renderedPage == nil, loadState == .loading else { return }
-        loadState = .failed(diagnostic ?? "页面在 20 秒内没有返回数据，可能是教务会话已失效或该页面需要网页端交互。")
+        // The page's own account of what went wrong comes first; the local-network answer comes
+        // next, because a refused private-address connection is invisible from the load's own
+        // report and would otherwise be indistinguishable from a broken reader.
+        var reason = diagnostic ?? "页面在 20 秒内没有返回数据，可能是教务会话已失效或该页面需要网页端交互。"
+        if diagnostic == nil, !LocalNetworkProbe.shared.state.isHealthy {
+            reason += "\n本地网络：\(LocalNetworkProbe.shared.state.label)"
+        }
+        loadState = .failed(reason)
     }
 
     /// Writes the three export formats once a schedule page has content, so the share menu can hand

@@ -28,17 +28,10 @@ final class AppState: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
     @Published var selectedTab: LiquidTabItem = .home
-    /// Backs the navigation bar's `.searchable` field. The system owns the affordance -- expand,
-    /// cancel, clear -- so there is no expanded/collapsed state to track here.
+    /// Backs the home screen's search box. The page owns the field and everything about it --
+    /// placement, the clear button, when it filters -- so there is no expanded/collapsed state to
+    /// track here.
     @Published var searchQuery = ""
-    /// Whether the bottom bar is currently expanded into its search field. This is not a tab: on
-    /// this platform the bar is present on every screen, so search has to open where the user
-    /// already is rather than switching them to the home tab first.
-    @Published var isBarSearching = false
-    /// Set when a destination has to be pushed from outside the home tab -- the bar's search overlay
-    /// is the only writer. The home screen consumes it on its next update, which is what lets a
-    /// search result open its page without the search ever becoming a tab of its own.
-    @Published var pendingNavigation: PortalItem?
     @Published private(set) var isDark = false
     /// The user's display-mode choice. `isDark` is derived from this and the current system
     /// appearance, so the two can never disagree.
@@ -63,6 +56,17 @@ final class AppState: ObservableObject {
         isDark = ThemePreferences.shared.mode == .dark
         SessionStore.shared.restoreToCookieStorage()
 
+        // Ask while the school is known and before any page has been loaded. Two things hang on the
+        // timing: the system raises its local-network prompt when something reaches for a campus
+        // address and raises it at most once per install, so reaching early is what gets the
+        // question asked at all; and reaching before the first load is what lets a later failure say
+        // whether it was policy or merely the network.
+        //
+        // Deliberately not awaited. The probe abandons its attempt after a few seconds, and waiting
+        // here would hand that timeout to the launch spinner -- a third of a minute before the app
+        // decides whether it is signed in. Only the attempt has to happen now, not the answer.
+        Task { await LocalNetworkProbe.shared.probe() }
+
         guard PortalHTTP.hasSessionCookie else {
             phase = .signedOut
             return
@@ -82,6 +86,12 @@ final class AppState: ObservableObject {
         case .valid:
             onAuthenticationCompleted()
         }
+    }
+
+    /// Asks once whether the portal is reachable, so a refused local-network connection is visible
+    /// in the settings rather than only showing up as a page that never loads.
+    func probeNetwork() async {
+        await LocalNetworkProbe.shared.probe()
     }
 
     /// Re-runs the session check behind the home screen's status badge, which is the Android
@@ -150,7 +160,6 @@ final class AppState: ObservableObject {
         sessionNotice = nil
         sessionStatus = .hidden
         searchQuery = ""
-        isBarSearching = false
         phase = .signedOut
     }
 
@@ -176,20 +185,6 @@ final class AppState: ObservableObject {
     /// Whether the home screen is showing search results rather than its normal content.
     var isSearching: Bool {
         !trimmedSearchQuery.isEmpty
-    }
-
-    /// Opens the bar's search field without moving off the current destination.
-    func beginBarSearch() {
-        withAnimation(.interpolatingSpring(stiffness: 440, damping: 34)) {
-            isBarSearching = true
-        }
-    }
-
-    func endBarSearch() {
-        withAnimation(.interpolatingSpring(stiffness: 440, damping: 34)) {
-            isBarSearching = false
-            searchQuery = ""
-        }
     }
 
     func clearSearch() {

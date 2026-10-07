@@ -135,7 +135,11 @@ struct QuickEntryCard: View {
     let onOpen: (PortalItem) -> Void
 
     private let cornerRadius: CGFloat = 20
-    private let rowHeight: CGFloat = 78
+    /// The cell's height, which is what gives each entry its vertical breathing room. Android's
+    /// 104dp reads as a third taller than intended on Retina, so this stays well below that, but
+    /// above the 78pt it started at: an icon plus two lines of text need air above and below them,
+    /// and without it the grid's rules sit tight against the glyphs.
+    private let rowHeight: CGFloat = 96
 
     private var rows: [[PortalItem]] {
         stride(from: 0, to: items.count, by: 2).map {
@@ -151,7 +155,7 @@ struct QuickEntryCard: View {
                 }
                 HStack(spacing: 0) {
                     cell(rowItems[0])
-                    Divider().frame(maxHeight: .infinity).padding(.vertical, 10)
+                    Divider().frame(maxHeight: .infinity).padding(.vertical, 14)
                     if rowItems.count > 1 {
                         cell(rowItems[1])
                     } else {
@@ -170,11 +174,11 @@ struct QuickEntryCard: View {
         Button {
             onOpen(item)
         } label: {
-            VStack(spacing: 6) {
+            VStack(spacing: 9) {
                 Image(systemName: QuickEntryIcon.name(for: item))
                     .font(.system(size: 22))
                     .foregroundStyle(PortalPalette.onSurface)
-                VStack(spacing: 1) {
+                VStack(spacing: 2) {
                     Text(item.title)
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
@@ -186,7 +190,7 @@ struct QuickEntryCard: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 10)
-            .padding(.vertical, 10)
+            .padding(.vertical, 14)
             .contentShape(Rectangle())
         }
         .buttonStyle(TabPressStyle(scale: 0.96))
