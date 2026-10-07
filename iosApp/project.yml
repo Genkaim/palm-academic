@@ -13,6 +13,17 @@ targets:
       - Sources
       - path: Resources/Assets.xcassets
         buildPhase: resources
+      # The school catalog and the reader adapters are read at runtime by path
+      # (SchoolCatalog.readBundledText resolves "schools/<id>.json" and "adapters/<id>-reader.js"
+      # through Bundle.main.url(forResource:withExtension:subdirectory:)). Without these two the
+      # catalog is empty and the school picker renders blank, so they must keep their directory
+      # layout in the bundle: `type: folder` makes them folder references rather than loose files.
+      - path: Resources/schools
+        type: folder
+        buildPhase: resources
+      - path: Resources/adapters
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cn.edu.cupk.portalreader.ios

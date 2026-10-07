@@ -6,15 +6,13 @@ struct LoginView: View {
     @State private var showingSchools = false
     @State private var showingWebLogin = false
     @State private var revealPassword = false
-    @FocusState private var focusedField: Field?
+    /// First-responder mirror for the password field. The username field needs no state of its
+    /// own: its "next" key just raises this one.
+    @State private var passwordIsFocused = false
     /// Height of the software keyboard in points; 0 while it is dismissed.
     @State private var keyboardHeight: CGFloat = 0
     /// Token handles for the keyboard frame notifications registered in `observeKeyboard`.
     @State private var keyboardObservers: [NSObjectProtocol] = []
-
-    private enum Field: Hashable {
-        case username, password
-    }
 
     var body: some View {
         ZStack {
@@ -197,69 +195,33 @@ struct LoginView: View {
     }
 
     private var usernameField: some View {
-        FilledTextField(
+        NativeLoginField(
             title: "学号 / 账号",
             systemImage: "person.crop.circle",
             text: $state.username,
+            isSecure: .constant(false),
             contentType: .username,
             submitLabel: .next,
-            isDark: state.isDark,
             isDisabled: state.isLoading,
-            onSubmit: { focusedField = .password }
+            isFocused: .constant(false),
+            onSubmit: { passwordIsFocused = true }
         )
+        .frame(height: 44)
     }
 
     private var passwordField: some View {
-        // Each branch owns its own focus binding. Wrapping them in a Group and attaching
-        // `.focused` to it made the first tap fail to focus, so the caret only appeared on
-        // the second one.
-        HStack(spacing: 6) {
-            Group {
-                if revealPassword {
-                    FilledTextField(
-                        title: "密码",
-                        systemImage: "key",
-                        text: $state.password,
-                        isSecure: false,
-                        contentType: .password,
-                        submitLabel: .go,
-                        isDark: state.isDark,
-                        isDisabled: state.isLoading,
-                        onSubmit: { Task { await state.login() } }
-                    )
-                } else {
-                    FilledTextField(
-                        title: "密码",
-                        systemImage: "key",
-                        text: $state.password,
-                        isSecure: true,
-                        contentType: .password,
-                        submitLabel: .go,
-                        isDark: state.isDark,
-                        isDisabled: state.isLoading,
-                        onSubmit: { Task { await state.login() } }
-                    )
-                }
-            }
-            // The reveal control sits inside the field's row rather than beside a card, so the
-            // whole thing reads as one control the way the system field does.
-            .overlay(alignment: .trailing) {
-                Button {
-                    revealPassword.toggle()
-                } label: {
-                    Image(systemName: revealPassword ? "eye.slash" : "eye")
-                        .font(.system(size: 15))
-                        .foregroundStyle(.secondary)
-                        .padding(.trailing, 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableStyle(scale: 0.9))
-                .accessibilityLabel(revealPassword ? "隐藏密码" : "显示密码")
-                .padding(.trailing, 4)
-            }
-            // Keep the eye from stealing the padding the text field expects.
-            .padding(.trailing, 30)
-        }
+        NativeLoginField(
+            title: "密码",
+            systemImage: "key",
+            text: $state.password,
+            isSecure: $revealPassword,
+            contentType: .password,
+            submitLabel: .go,
+            isDisabled: state.isLoading,
+            isFocused: $passwordIsFocused,
+            onSubmit: { Task { await state.login() } }
+        )
+        .frame(height: 44)
     }
 
     private var rememberCard: some View {
@@ -323,7 +285,7 @@ struct LoginView: View {
             isDark: state.isDark,
             isEnabled: !state.isLoading
         ) {
-            focusedField = nil
+            passwordIsFocused = false
             state.showingWebLogin = true
         }
     }

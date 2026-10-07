@@ -1,92 +1,144 @@
 import SwiftUI
+import UIKit
 
-/// Modern filled-style text field, used by every login input.
+/// The system text field, hosted.
 ///
-/// A bare `TextField` on a card still looks like iOS 14: an underlined, transparent field with a
-/// grey placeholder floating on whatever is behind it. The system filled field instead paints a
-/// rounded grey container with the label inside it, which is what iOS 16 onwards apps use. SwiftUI
-/// has no first-party modifier for that, so the container is drawn here and the `TextField` is
-/// kept transparent on top of it.
+/// SwiftUI's `TextField` cannot toggle `isSecureTextEntry` on an existing instance, so revealing
+/// the password used to mean building a second field and swapping it in — which also threw away
+/// the in-flight editing state. Hosting `UITextField` gives the real control instead: UIKit draws
+/// the rounded border, the caret, the autofill chrome and the iOS 26 treatment on its own, and the
+/// reveal toggle becomes a property write on the same view.
 ///
-/// The decoration layers all carry `allowsHitTesting(false)`. A shape that participates in hit
-/// testing swallows the first tap meant for the text field, so the caret only appears on the
-/// second one.
-struct FilledTextField: View {
+/// Height is pinned rather than left to `intrinsicContentSize`, whose 34pt is the iOS 13-era box
+/// and looks cramped next to a 44pt system row.
+struct NativeLoginField: UIViewRepresentable {
     let title: String
     let systemImage: String
     @Binding var text: String
-    var isSecure: Bool = false
+    /// Bound rather than a plain flag: the reveal button lives inside UIKit, so toggling it has
+    /// to travel back to SwiftUI to keep the two sides in step.
+    @Binding var isSecure: Bool
     var contentType: UITextContentType?
-    var autocapitalization: TextInputAutocapitalization = .never
-    var submitLabel: SubmitLabel = .next
-    var isDark: Bool
+    var submitLabel: UIReturnKeyType = .next
     var isDisabled: Bool = false
+    /// Mirrors first-responder state so the caller can move focus between fields.
+    @Binding var isFocused: Bool
     var onSubmit: () -> Void = {}
 
-    @FocusState private var isFocused: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(iconColor)
-                .frame(width: 20)
-
-            input
-                .focused($isFocused)
-                .submitLabel(submitLabel)
-                .onSubmit { onSubmit() }
-                .disabled(isDisabled)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(container)
-        .overlay(border)
-        // Pressing anywhere in the field should focus it, not only the glyph and the text.
-        .contentShape(Rectangle())
-        .onTapGesture { isFocused = true }
-        .opacity(isDisabled ? 0.55 : 1)
-    }
-
-    @ViewBuilder
-    private var input: some View {
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        field.borderStyle = .roundedRect
+        field.font = .preferredFont(forTextStyle: .body)
+        field.adjustsFontForContentSizeCategory = true
+        field.delegate = context.coordinator
+        field.addTarget(context.coordinator, action: #selector(Coordinator.editingChanged), for: .editingChanged)
+        field.textContentType = contentType
+        field.returnKeyType = submitLabel
+        field.autocapitalizationType = .none
+        field.autocorrectionType = .no
+        field.accessibilityLabel = title
+        // The clear button and the reveal button both want the trailing slot, and UIKit only has
+        // room for one. Username keeps the clear button; the password field gets the eye.
+        field.clearButtonMode = isSecure ? .never : .whileEditing
+        field.leftView = iconView()
+        field.leftViewMode = .always
         if isSecure {
-            SecureField(title, text: $text)
-                .textContentType(contentType)
-        } else {
-            TextField(title, text: $text)
-                .textContentType(contentType)
-                .textInputAutocapitalization(autocapitalization)
-                .autocorrectionDisabled()
+            field.rightView = context.coordinator.makeRevealButton()
+            field.rightViewMode = .always
+        }
+        context.coordinator.applySecure(isSecure, to: field, text: text)
+        field.text = text
+        field.isEnabled = !isDisabled
+        return field
+    }
+
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.parent = self
+        if field.text != text {
+            field.text = text
+        }
+        // Flipping the flag clears UIKit's internal editing buffer, so the value has to be written
+        // back; without this the field goes blank the moment the eye is tapped.
+        if field.isSecureTextEntry != isSecure {
+            context.coordinator.applySecure(isSecure, to: field, text: field.text)
+        }
+        field.isEnabled = !isDisabled
+        field.alpha = isDisabled ? 0.5 : 1
+        if isFocused, !field.isFirstResponder {
+            field.becomeFirstResponder()
+        } else if !isFocused, field.isFirstResponder, !isDisabled {
+            field.resignFirstResponder()
         }
     }
 
-    private var iconColor: Color {
-        if isFocused { return .accentColor }
-        return isDark ? Color.white.opacity(0.55) : Color.secondary
+    private func iconView() -> UIImageView {
+        let configuration = UIImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+        let view = UIImageView(image: UIImage(systemName: systemImage, withConfiguration: configuration))
+        view.tintColor = .secondaryLabel
+        view.contentMode = .center
+        view.frame = CGRect(x: 0, y: 0, width: 34, height: 24)
+        return view
     }
 
-    /// The grey rounded container the system filled field uses. It brightens slightly while
-    /// focused, which is the affordance that tells the user the tap landed.
-    private var container: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(
-                isFocused
-                    ? (isDark ? Color.white.opacity(0.14) : Color.white)
-                    : (isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.045))
-            )
-            .allowsHitTesting(false)
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
     }
 
-    private var border: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(
-                isFocused
-                    ? Color.accentColor.opacity(0.7)
-                    : (isDark ? Color.white.opacity(0.1) : Color.black.opacity(0.06)),
-                lineWidth: isFocused ? 1.4 : 0.8
-            )
-            .allowsHitTesting(false)
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: NativeLoginField
+        /// Guards the programmatic write that follows the reveal toggle, so restoring the text
+        /// does not re-enter the editing-changed callback and fight the binding.
+        private var isRestoring = false
+
+        init(parent: NativeLoginField) {
+            self.parent = parent
+        }
+
+        func applySecure(_ secure: Bool, to field: UITextField, text: String?) {
+            isRestoring = true
+            field.isSecureTextEntry = secure
+            field.text = text
+            isRestoring = false
+        }
+
+        @objc func editingChanged(_ field: UITextField) {
+            guard !isRestoring, field.text != parent.text else { return }
+            parent.text = field.text ?? ""
+        }
+
+        func textFieldShouldReturn(_ field: UITextField) -> Bool {
+            parent.onSubmit()
+            return false
+        }
+
+        func textFieldDidBeginEditing(_ field: UITextField) {
+            parent.isFocused = true
+        }
+
+        func textFieldDidEndEditing(_ field: UITextField) {
+            parent.isFocused = false
+        }
+
+        func makeRevealButton() -> UIButton {
+            let button = UIButton(type: .system)
+            button.addTarget(self, action: #selector(toggleReveal), for: .touchUpInside)
+            button.frame = CGRect(x: 0, y: 0, width: 40, height: 24)
+            button.tintColor = .secondaryLabel
+            updateRevealIcon(button)
+            return button
+        }
+
+        @objc private func toggleReveal(_ sender: UIButton) {
+            parent.$isSecure.wrappedValue.toggle()
+            updateRevealIcon(sender)
+        }
+
+        private func updateRevealIcon(_ button: UIButton) {
+            let name = parent.isSecure ? "eye" : "eye.slash"
+            let configuration = UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+            button.setImage(UIImage(systemName: name, withConfiguration: configuration), for: .normal)
+            button.accessibilityLabel = parent.isSecure ? "显示密码" : "隐藏密码"
+        }
     }
 }
 

@@ -1,6 +1,26 @@
 import SwiftUI
 
+/// SF Symbol chosen for a native portal page kind, shared by the home and quick-entry lists.
+fileprivate enum PortalIcon {
+    static func name(for nativeType: String?) -> String {
+        switch nativeType {
+        case "schedule": return "calendar.day.timeline.leading"
+        case "grade": return "chart.bar.doc.horizontal"
+        case "exam": return "checkmark.seal"
+        case "program": return "list.bullet.clipboard"
+        default: return "doc.text"
+        }
+    }
+}
+
 /// Port of `HomeActivity.kt`: the portal home with the four quick entries and grouped sections.
+///
+/// The layout is a system `List` in `.insetGrouped` rather than a hand-drawn card stack. A grouped
+/// list is what every first-party iOS app uses for a sectioned index: UIKit draws the rounded
+/// section background, the hairline separators, the header typography and the disclosure
+/// indicator, so they track the system appearance and the iOS 26 treatment instead of being
+/// re-implemented here and drifting from it. The previous version hand-painted all four at
+/// `cornerRadius: 18-20` with its own shadows and dividers.
 struct HomeView: View {
     @EnvironmentObject private var state: AppState
     @State private var showingSchools = false
@@ -9,29 +29,24 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    schoolHeader
+            List {
+                schoolSection
 
-                    if let definition {
-                        let quick = QuickEntryBaseline.orderedQuickBaselineItems(definition.quickItems)
-                        if !quick.isEmpty {
-                            quickEntryGrid(quick)
-                        }
-
-                        ForEach(definition.groups) { group in
-                            groupSection(group)
-                        }
-                    } else {
-                        emptyState("学校配置尚未加载")
+                if let definition {
+                    let quick = QuickEntryBaseline.orderedQuickBaselineItems(definition.quickItems)
+                    if !quick.isEmpty {
+                        quickEntrySection(quick)
                     }
+
+                    ForEach(definition.groups) { group in
+                        groupSection(group)
+                    }
+                } else {
+                    unloadedSection
                 }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 24)
             }
-            .background(Color(.systemGroupedBackground))
+            .listStyle(.insetGrouped)
             .navigationTitle("掌上教务")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
@@ -68,173 +83,111 @@ struct HomeView: View {
         }
     }
 
-    private var schoolHeader: some View {
-        HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(state.isDark ? Color.white.opacity(0.1) : Color.blue.opacity(0.1))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Image(systemName: "building.columns")
-                        .foregroundStyle(.tint)
-                )
-            VStack(alignment: .leading, spacing: 2) {
-                Text(state.selectedSchool?.name ?? "未选择学校")
-                    .font(.headline)
-                    .lineLimit(1)
-                Text("已登录教务系统")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(.top, 8)
-    }
+    // MARK: - Sections
 
-    private func quickEntryGrid(_ items: [PortalItem]) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("常用入口")
-                .font(.headline)
-            LazyVGrid(
-                columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
-                spacing: 12
-            ) {
-                ForEach(items) { item in
-                    NavigationLink {
-                        MaterialPageScreen(item: item)
-                    } label: {
-                        quickEntryCard(item)
-                    }
-                    .buttonStyle(.plain)
+    private var schoolSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                Image(systemName: "building.columns")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.accentColor.opacity(0.12))
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(state.selectedSchool?.name ?? "未选择学校")
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                    Text("已登录教务系统")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
+            .padding(.vertical, 4)
         }
     }
 
-    private func quickEntryCard(_ item: PortalItem) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: icon(for: item.nativeType))
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(.tint)
-                .frame(height: 26)
-            Text(item.title)
-                .font(.subheadline.weight(.medium))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .frame(height: 38, alignment: .top)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(state.isDark ? Color.white.opacity(0.07) : Color.white)
-                .shadow(color: .black.opacity(state.isDark ? 0.25 : 0.07), radius: 10, y: 4)
-        )
-    }
-
-    private func icon(for nativeType: String?) -> String {
-        switch nativeType {
-        case "schedule": return "calendar.day.timeline.leading"
-        case "grade": return "chart.bar.doc.horizontal"
-        case "exam": return "checkmark.seal"
-        case "program": return "list.bullet.clipboard"
-        default: return "doc.text"
+    private func quickEntrySection(_ items: [PortalItem]) -> some View {
+        Section("常用入口") {
+            ForEach(items) { item in
+                NavigationLink {
+                    MaterialPageScreen(item: item)
+                } label: {
+                    entryRow(item.title, systemImage: PortalIcon.name(for: item.nativeType), isAccented: true)
+                }
+            }
         }
     }
 
     private func groupSection(_ group: PortalGroup) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(group.title)
-                .font(.headline)
-            VStack(spacing: 0) {
-                ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                    NavigationLink {
-                        MaterialPageScreen(item: item)
-                    } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 24)
-                            Text(item.title)
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 13)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    if index < group.items.count - 1 {
-                        Divider().padding(.leading, 50)
-                    }
+        Section(group.title) {
+            ForEach(group.items) { item in
+                NavigationLink {
+                    MaterialPageScreen(item: item)
+                } label: {
+                    entryRow(item.title, systemImage: "doc.text", isAccented: false)
                 }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(state.isDark ? Color.white.opacity(0.07) : Color.white)
-            )
         }
     }
 
-    private func emptyState(_ message: String) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text(message)
-                .foregroundStyle(.secondary)
+    private var unloadedSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+                Text("学校配置尚未加载")
+                    .foregroundStyle(.secondary)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 50)
+    }
+
+    /// Label of a navigation row. The disclosure chevron is left to the system: `NavigationLink`
+    /// inside a `List` draws the standard one, and a hand-added chevron showed up next to it.
+    private func entryRow(_ title: String, systemImage: String, isAccented: Bool) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(isAccented ? Color.accentColor : Color.secondary)
+                .frame(width: 22)
+            Text(title)
+        }
     }
 }
 
-/// Quick-entry tab: shows the four canonical pages in a single scroll view.
+/// Quick-entry tab: shows the four canonical pages in a single list.
 struct QuickEntriesView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let definition = state.definition {
-                        let quick = QuickEntryBaseline.orderedQuickBaselineItems(definition.quickItems)
+            List {
+                if let definition = state.definition {
+                    let quick = QuickEntryBaseline.orderedQuickBaselineItems(definition.quickItems)
+                    Section("常用入口") {
                         ForEach(quick) { item in
                             NavigationLink {
                                 MaterialPageScreen(item: item)
                             } label: {
                                 HStack(spacing: 12) {
-                                    Image(systemName: "square.grid.2x2")
-                                        .foregroundStyle(.tint)
+                                    Image(systemName: PortalIcon.name(for: item.nativeType))
+                                        .foregroundStyle(Color.accentColor)
+                                        .frame(width: 22)
                                     Text(item.title)
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.tertiary)
                                 }
-                                .padding(14)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                        .fill(state.isDark ? Color.white.opacity(0.07) : Color.white)
-                                )
                             }
-                            .buttonStyle(.plain)
                         }
-                    } else {
+                    }
+                } else {
+                    Section {
                         Text("学校配置尚未加载")
                             .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 40)
                     }
                 }
-                .padding(18)
             }
-            .background(Color(.systemGroupedBackground))
+            .listStyle(.insetGrouped)
             .navigationTitle("快捷入口")
-            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

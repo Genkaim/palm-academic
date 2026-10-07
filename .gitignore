@@ -25,3 +25,6 @@ Thumbs.db
 
 # Local drop point for CI artifacts; not part of the project.
 /build-out/
+
+# Device screenshots captured by tools/burst_shot.py during on-device comparison runs.
+/ios-shots/
