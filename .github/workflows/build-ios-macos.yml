@@ -113,8 +113,12 @@ jobs:
             echo "### Linked SDK (from LC_BUILD_VERSION, this is what gates Liquid Glass)"
             echo
             otool -l "$APP/PalmAcademic" \
-              | awk '/LC_BUILD_VERSION/{f=1} f&&/sdk /{print "- sdk:   " $2; f=0} \
-                     f&&/minos /{print "- minos: " $2; f=0}'
+              | awk '/LC_BUILD_VERSION/{f=1; next}
+                     f && /sdk /{sdk=$2}
+                     f && /minos /{minos=$2}
+                     f && /ncmds|^}/{f=0}
+                     END{ if (sdk)   print "- sdk:   " sdk
+                          if (minos) print "- minos: " minos }'
             echo
             echo "A linked SDK of iOS 26 or later means the system renders its own Liquid Glass."
           } | tee artifacts/build-environment.md

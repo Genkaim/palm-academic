@@ -1,0 +1,177 @@
+name: Build signed iOS IPA (developer certificate)
+
+# Produces an IPA that installs on a stock device without TrollStore or a re-signing tool.
+#
+# Why this exists separately from build-ios-macos.yml: an ad-hoc signature is enough for
+# TrollStore but is rejected by a normal install with
+#   0xe8008014 (The executable contains an invalid signature)
+# A real certificate is required for anything else.
+#
+# Before the first run, add these repository secrets (Settings > Secrets and variables > Actions):
+#
+#   IOS_CERTIFICATE_BASE64   the distribution .p12, base64 of its bytes
+#   IOS_CERTIFICATE_PASSWORD the password for that .p12
+#   IOS_PROVISIONING_PROFILE the .mobileprofile, base64 of its bytes
+#   IOS_TEAM_ID              the 10-character team id
+#
+# The workflow fails at the first step with a clear message when they are absent, rather than
+# producing another artifact that cannot be installed.
+#
+# Certificate renewal: a free personal team profile expires after 7 days and a paid one after a
+# year. Replace the secrets when it lapses; nothing here needs editing.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ios-native-v2
+    paths:
+      - 'iosApp/**'
+      - '.github/workflows/build-ios-signed.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check signing secrets
+        env:
+          CERT: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+          TEAM: ${{ secrets.IOS_TEAM_ID }}
+          PASS: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+        run: |
+          missing=()
+          [ -n "$CERT" ]   || missing+=(IOS_CERTIFICATE_BASE64)
+          [ -n "$PASS" ]   || missing+=(IOS_CERTIFICATE_PASSWORD)
+          [ -n "$PROFILE" ]|| missing+=(IOS_PROVISIONING_PROFILE)
+          [ -n "$TEAM" ]   || missing+=(IOS_TEAM_ID)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing repository secrets: ${missing[*]}"
+            echo "Add them under Settings > Secrets and variables > Actions, then re-run."
+            exit 1
+          fi
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.2'
+
+      - name: Import certificate
+        env:
+          CERT: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          PASS: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          echo "$CERT" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          # A throwaway keychain, removed again below. The password is generated rather than
+          # chosen so it never has to be stored anywhere.
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$PASS" -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Install provisioning profile
+        env:
+          PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+          TEAM: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          echo "$PROFILE" | base64 --decode > "$RUNNER_TEMP/embedded.mobileprovision"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$RUNNER_TEMP/embedded.mobileprovision" \
+            "$HOME/Library/MobileDevice/Provisioning Profiles/$TEAM.mobileprovision"
+          # Fail early and specifically when the profile does not match the bundle id, rather
+          # than letting xcodebuild report a generic signing failure much later.
+          security cms -D -i "$RUNNER_TEMP/embedded.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          /usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' \
+            "$RUNNER_TEMP/profile.plist"
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then brew install xcodegen; fi
+          xcodegen version
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      - name: Build signed device app
+        env:
+          TEAM: ${{ secrets.IOS_TEAM_ID }}
+        run: >-
+          xcodebuild
+          -project iosApp/PalmAcademicIOS.xcodeproj
+          -scheme PalmAcademic
+          -configuration Release
+          -sdk iphoneos
+          -derivedDataPath build/ios
+          DEVELOPMENT_TEAM="$TEAM"
+          CODE_SIGN_STYLE=Manual
+          CODE_SIGN_IDENTITY="Apple Distribution"
+          PROVISIONING_PROFILE_SPECIFIER=""
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS="USE_SYSTEM_GLASS"
+          build
+
+      - name: Package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="build/ios/Build/Products/Release-iphoneos/PalmAcademic.app"
+          codesign --verify --strict "$APP"
+
+          mkdir -p build/package/Payload artifacts
+          cp -R "$APP" build/package/Payload/
+          # The IPA is assembled by hand rather than with -exportArchive, because that needs an
+          # .xcarchive as input and this workflow builds with xcodebuild directly. ditto is the
+          # same tool the macOS workflow uses.
+          xcrun ditto -c -k --sequesterRsrc --keepParent \
+            build/package/Payload artifacts/PalmAcademic-ios-signed.ipa
+          unzip -t artifacts/PalmAcademic-ios-signed.ipa
+          shasum -a 256 artifacts/PalmAcademic-ios-signed.ipa \
+            > artifacts/PalmAcademic-ios-signed.ipa.sha256
+          codesign -dv "$APP" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier" || true
+
+      - name: Record build environment
+        shell: bash
+        run: |
+          APP="build/ios/Build/Products/Release-iphoneos/PalmAcademic.app"
+          {
+            echo "### Build environment"
+            echo
+            echo "- xcode: $(xcodebuild -version | head -1)"
+            echo "- swift: $(swift --version 2>&1 | head -1)"
+            echo "- MinimumOSVersion: $(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")"
+            echo
+            echo "### Linked SDK (from LC_BUILD_VERSION, this is what gates Liquid Glass)"
+            echo
+            otool -l "$APP/PalmAcademic" \
+              | awk '/LC_BUILD_VERSION/{f=1; next}
+                     f && /sdk /{sdk=$2}
+                     f && /minos /{minos=$2}
+                     f && /ncmds|^}/{f=0}
+                     END{ if (sdk)   print "- sdk:   " sdk
+                          if (minos) print "- minos: " minos }'
+          } | tee artifacts/build-environment.md
+
+      - name: Remove keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PalmAcademic-ios-signed
+          path: artifacts/*
+          if-no-files-found: error
