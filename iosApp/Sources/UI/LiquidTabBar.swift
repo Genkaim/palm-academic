@@ -141,16 +141,20 @@ struct LiquidTabBar: View {
     ///
     /// Only reachable on a build that links an SDK declaring the iOS 26 API. The modifier cannot be
     /// named from an older SDK -- that is a compile error, not a runtime condition -- so it stays
-    /// behind the compile-time switch and the runtime path covers every other build.
+    /// behind the compile-time switch.
     ///
-    /// There is no `#available` test inside: the deployment target is 16.0, so on a device older
-    /// than iOS 26 this modifier would be reached at runtime on a system that cannot render it. The
-    /// guard that matters is the runtime version, which `LiquidGlassBackground` already applies to
-    /// the material behind the bar.
+    /// The availability test inside is required rather than defensive: the deployment target is
+    /// 16.0, so without it the compiler rejects the call on the grounds that the modifier is only
+    /// available from iOS 26. `systemDrawsSelectionWell` already established at runtime that the
+    /// device qualifies; this states it in the form the compiler can check.
     @ViewBuilder
     private func applySystemGlass<V: View>(to view: V) -> some View {
         #if USE_SYSTEM_GLASS
-        view.glassEffect(.regular, in: .capsule)
+        if #available(iOS 26.0, *) {
+            view.glassEffect(.regular, in: .capsule)
+        } else {
+            view
+        }
         #else
         view
         #endif
