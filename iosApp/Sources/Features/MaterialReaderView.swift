@@ -28,17 +28,6 @@ struct MaterialReaderView: UIViewRepresentable {
         configuration.websiteDataStore = .default()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
 
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.navigationDelegate = context.coordinator
-        webView.isOpaque = false
-        webView.backgroundColor = .clear
-        webView.scrollView.backgroundColor = .clear
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
-
-        let scriptHandler = BridgeHandler(coordinator: context.coordinator)
-        context.coordinator.bridgeHandler = scriptHandler
-        configuration.userContentController.add(scriptHandler, name: BridgeHandler.name)
-
         // The host API mirrors the Android `PalmAcademicHost` object exactly.
         let hostAPI = """
         window.PalmAcademicHost = {
@@ -49,15 +38,41 @@ struct MaterialReaderView: UIViewRepresentable {
           }
         };
         """
-        let userScript = WKUserScript(
-            source: hostAPI,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+
+        let scriptHandler = BridgeHandler(coordinator: context.coordinator)
+        context.coordinator.bridgeHandler = scriptHandler
+
+        // These have to go on `webView.configuration`, not on the `configuration` local.
+        // `WKWebView` copies the configuration it was handed at init, so the original object is
+        // detached from the running page afterwards. Registering on the local left the web view
+        // with no `PalmAcademicBridge` message handler and no injected host object, so the adapter
+        // script's very first guard -- `if (!window.PalmAcademicHost) return` -- bailed out and
+        // nothing was ever published. That is the "一直加载" the page showed: no content, no error,
+        // just a spinner.
+        let controller = webView.configuration.userContentController
+        controller.add(scriptHandler, name: BridgeHandler.name)
+        controller.addUserScript(
+            WKUserScript(source: hostAPI, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
-        configuration.userContentController.addUserScript(userScript)
-        webView.configuration.userContentController.addUserScript(
-            WKUserScript(source: "", injectionTime: .atDocumentStart, forMainFrameOnly: false)
-        )
+        // The adapter is injected at document-end rather than through `evaluateJavaScript` alone.
+        // Its bootstrap calls `observer.observe(document.body, ...)`, which throws if the body does
+        // not exist yet; at didCommit it often does not, and a thrown bootstrap would leave
+        // `window.PalmAcademicAdapter` half-installed so no retry could recover.
+        let adapter = adapterScript
+        if !adapter.isEmpty {
+            controller.addUserScript(
+                WKUserScript(source: adapter, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+            )
+        }
+
+        context.coordinator.applyAppearance(to: webView, isDark: isDark)
 
         // Replay the persisted session cookie before the first navigation, mirroring
         // `PortalSessionStore.restoreToWebView`. The completion runs after the WebView's own
@@ -145,7 +160,37 @@ struct MaterialReaderView: UIViewRepresentable {
         private func injectReader(_ webView: WKWebView) {
             let adapter = parent.adapterScript
             guard !adapter.isEmpty else { return }
-            webView.evaluateJavaScript(adapter, completionHandler: nil)
+            // Re-inject only when the adapter is genuinely absent. The guard at the top of the
+            // script makes a second run a no-op, but running it on every commit still costs a
+            // round trip and, more importantly, would re-run against a page whose adapter is
+            // already watching -- so this asks first.
+            webView.evaluateJavaScript("!!window.PalmAcademicAdapter") { [weak self] result, _ in
+                guard let self else { return }
+                let installed = (result as? Bool) ?? false
+                guard !installed else { return }
+                self.installReader(webView)
+            }
+        }
+
+        /// The host object is a document-start user script, so it is normally already in place by
+        /// the time this runs. It is re-declared here for the case where the page was restored from
+        /// the back/forward cache and the document-start script did not fire.
+        private func installReader(_ webView: WKWebView) {
+            let hostAPI = """
+            if (!window.PalmAcademicHost) {
+              window.PalmAcademicHost = {
+                apiVersion: 1,
+                schoolConfig: \(parent.schoolConfigJSON),
+                publish: function(payload) {
+                  window.webkit.messageHandlers.\(BridgeHandler.name).postMessage(JSON.stringify(payload));
+                }
+              };
+            }
+            """
+            webView.evaluateJavaScript(hostAPI) { [weak self] _, _ in
+                guard let self else { return }
+                webView.evaluateJavaScript(self.parent.adapterScript, completionHandler: nil)
+            }
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {

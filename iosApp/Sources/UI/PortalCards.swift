@@ -77,7 +77,7 @@ struct PortalSectionHeader: View {
     var body: some View {
         Text(title)
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(PortalPalette.secondaryText)
             .padding(.leading, 8)
             .padding(.bottom, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -103,12 +103,12 @@ struct PortalNavigationRow<Trailing: View>: View {
                     .frame(width: 21, alignment: .leading)
             }
             Text(title)
-                .foregroundStyle(.primary)
+                .foregroundStyle(PortalPalette.onSurface)
             Spacer(minLength: 8)
             trailing
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(PortalPalette.outline)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 15)
@@ -168,14 +168,14 @@ struct QuickEntryCard: View {
                 .frame(height: rowHeight)
             }
         }
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .background(PortalPalette.surface, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
     private func cell(_ item: PortalItem) -> some View {
         VStack(spacing: 0) {
             Image(systemName: QuickEntryIcon.name(for: item))
                 .font(.system(size: 24))
-                .foregroundStyle(Color.primary)
+                .foregroundStyle(PortalPalette.onSurface)
             Spacer(minLength: 8)
             VStack(spacing: 2) {
                 Text(item.title)
@@ -183,7 +183,7 @@ struct QuickEntryCard: View {
                     .lineLimit(1)
                 Text(QuickEntryIcon.subtitle(for: item))
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PortalPalette.secondaryText)
                     .lineLimit(1)
             }
         }

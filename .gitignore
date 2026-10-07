@@ -28,3 +28,4 @@ Thumbs.db
 
 # Device screenshots captured by tools/burst_shot.py during on-device comparison runs.
 /ios-shots/
+artifacts/

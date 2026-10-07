@@ -50,17 +50,25 @@ struct MaterialPageScreen: View {
 
     var body: some View {
         ZStack {
-            Color(.systemGroupedBackground).ignoresSafeArea()
+            PortalPalette.page.ignoresSafeArea()
 
             // The WebView is the data source, so it has to be in the tree before -- and
             // independently of -- anything it feeds. It used to live inside `content(loaded)`, which
             // only renders once `page` is non-nil, and `page` is only ever set by this WebView's
             // callback. On a cold cache that is a circular dependency: the view that produces the
             // data waits for the data, so the page spun forever.
+            //
+            // It is laid out at full size rather than collapsed to zero, and made invisible with an
+            // alpha instead, because that is what Android does (`Modifier.fillMaxSize().alpha(0.01f)`).
+            // A zero-sized WKWebView never lays out its document: WebKit defers the page's first
+            // paint, the adapter's bootstrap can run before there is anything to observe, and the
+            // result is a load that never produces content. Hit testing is off, so a real frame
+            // costs nothing the user can see or touch.
             reader
-                .frame(width: 0, height: 0)
-                .opacity(0)
-                .clipped()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .opacity(0.01)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
 
             switch loadState {
             case .authenticating:
@@ -258,7 +266,7 @@ struct MaterialPageScreen: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(state.isDark ? Color.white.opacity(0.07) : Color.white)
+                    .fill(PortalPalette.surface)
             )
         }
     }
@@ -387,7 +395,7 @@ struct MaterialPageScreen: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(state.isDark ? Color.white.opacity(0.06) : Color(.systemBackground))
+                .fill(PortalPalette.surface)
         )
     }
 
@@ -456,7 +464,7 @@ struct MaterialPageScreen: View {
                     .padding(.vertical, 12)
                     .background(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(state.isDark ? Color.white.opacity(0.06) : Color(.systemBackground))
+                            .fill(PortalPalette.surface)
                     )
                 }
             }
@@ -528,7 +536,7 @@ struct MaterialPageScreen: View {
                 .padding(14)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(state.isDark ? Color.white.opacity(0.06) : Color(.systemBackground))
+                        .fill(PortalPalette.surface)
                 )
             }
 
@@ -585,7 +593,7 @@ struct MaterialPageScreen: View {
                     .padding(8)
                     .background(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(state.isDark ? Color.white.opacity(0.05) : Color(.systemBackground))
+                            .fill(PortalPalette.surface)
                     )
                 }
                 .padding(.leading, CGFloat(depth) * 14)
@@ -623,8 +631,7 @@ struct MaterialPageScreen: View {
 
     private var sectionBackground: some View {
         RoundedRectangle(cornerRadius: 20, style: .continuous)
-            .fill(state.isDark ? Color.white.opacity(0.06) : Color.white)
-            .shadow(color: .black.opacity(state.isDark ? 0.22 : 0.06), radius: 10, y: 4)
+            .fill(PortalPalette.surface)
     }
 
     // MARK: - Loading
@@ -638,6 +645,14 @@ struct MaterialPageScreen: View {
         }
         loadState = .loading
         refreshToken += 1
+        // A watchdog. A portal that answers with a login redirect, a JS error or an empty shell
+        // never calls back, and a spinner that never resolves is indistinguishable from "still
+        // working". After this long without content the page says so and offers a retry, which is
+        // what turns an undebuggable hang into a reportable state.
+        try? await Task.sleep(nanoseconds: 20_000_000_000)
+        guard !Task.isCancelled else { return }
+        guard renderedPage == nil, loadState == .loading else { return }
+        loadState = .failed("页面在 20 秒内没有返回数据，可能是教务会话已失效或该页面需要网页端交互。")
     }
 
     /// Writes the three export formats once a schedule page has content, so the share menu can hand

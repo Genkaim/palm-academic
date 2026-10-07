@@ -31,13 +31,18 @@ final class AppState: ObservableObject {
     /// Backs the navigation bar's `.searchable` field. The system owns the affordance -- expand,
     /// cancel, clear -- so there is no expanded/collapsed state to track here.
     @Published var searchQuery = ""
+    /// Whether the bottom bar is currently expanded into its search field. This is not a tab: on
+    /// this platform the bar is present on every screen, so search has to open where the user
+    /// already is rather than switching them to the home tab first.
+    @Published var isBarSearching = false
+    /// Set when a destination has to be pushed from outside the home tab -- the bar's search overlay
+    /// is the only writer. The home screen consumes it on its next update, which is what lets a
+    /// search result open its page without the search ever becoming a tab of its own.
+    @Published var pendingNavigation: PortalItem?
     @Published private(set) var isDark = false
     /// The user's display-mode choice. `isDark` is derived from this and the current system
     /// appearance, so the two can never disagree.
     @Published var themeMode: ThemeMode = ThemePreferences.shared.mode
-    /// The Android client's "液态玻璃" switch, which chooses between the system material and a
-    /// plain blur on the bottom bar and the glass cards.
-    @Published var glassEnabled = true
     @Published var showingLogin = false
     /// Drives the full-screen web login screen presented from the login form.
     @Published var showingWebLogin = false
@@ -144,6 +149,7 @@ final class AppState: ObservableObject {
         sessionNotice = nil
         sessionStatus = .hidden
         searchQuery = ""
+        isBarSearching = false
         phase = .signedOut
     }
 
@@ -169,6 +175,20 @@ final class AppState: ObservableObject {
     /// Whether the home screen is showing search results rather than its normal content.
     var isSearching: Bool {
         !trimmedSearchQuery.isEmpty
+    }
+
+    /// Opens the bar's search field without moving off the current destination.
+    func beginBarSearch() {
+        withAnimation(.interpolatingSpring(stiffness: 440, damping: 34)) {
+            isBarSearching = true
+        }
+    }
+
+    func endBarSearch() {
+        withAnimation(.interpolatingSpring(stiffness: 440, damping: 34)) {
+            isBarSearching = false
+            searchQuery = ""
+        }
     }
 
     func clearSearch() {

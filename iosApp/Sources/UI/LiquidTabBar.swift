@@ -15,14 +15,11 @@ import UIKit
 struct SystemGlassSurface<Content: View, S: Shape>: View {
     var shape: S
     var interactive: Bool = false
-    /// The Android "液态玻璃" switch. Turning it off keeps the same shape and layout but drops back
-    /// to a plain system material, which is what the client exposes as a user preference.
-    var enabled: Bool = true
     @ViewBuilder var content: Content
 
     var body: some View {
         #if USE_SYSTEM_GLASS
-        if #available(iOS 26.0, *), enabled {
+        if #available(iOS 26.0, *) {
             if interactive {
                 content.glassEffect(.regular.interactive(), in: shape)
             } else {
@@ -58,17 +55,21 @@ struct TabPressStyle: ButtonStyle {
     }
 }
 
-/// The bottom bar: two tabs, nothing else.
+/// The bottom bar: two destinations plus the search field, which expands in place.
 ///
-/// An earlier version carried a trailing search button copied from the Android client, which is the
-/// wrong shape for this platform. A system tab bar holds destinations and nothing more, and the
-/// platform's search affordance is `.searchable` on the navigation bar -- it brings the expand, the
-/// cancel button, the clear button and the keyboard handling for free. Search lives there now, which
-/// is also why the hand-rolled close button that used to sit in the bar is gone.
+/// Search is here rather than in a navigation bar for two reasons that are both about this
+/// platform. First, the bar is present on every screen -- Android's is not, which is why Android
+/// can hide search behind "go back to the home tab first" -- so search has to work where the user
+/// already is, without switching destinations under them. Second, once expanded it *is* the search
+/// field: the bar grows sideways into a `UISearchTextField` with a 取消 button beside it, which is
+/// the same relationship the system search bar has with a navigation bar. Making search a third
+/// destination instead would have been the Android shape, and this is not Android.
 struct LiquidBottomBar: View {
     let isDark: Bool
-    let glassEnabled: Bool
     @Binding var selection: LiquidTabItem
+    /// Whether the bar is currently showing the search field instead of the destinations.
+    @Binding var isSearching: Bool
+    @Binding var searchQuery: String
 
     @Namespace private var indicatorNamespace
 
@@ -87,10 +88,13 @@ struct LiquidBottomBar: View {
     private var spring: Animation { .interpolatingSpring(stiffness: 440, damping: 34) }
 
     var body: some View {
-        SystemGlassSurface(shape: Capsule(), interactive: true, enabled: glassEnabled) {
+        SystemGlassSurface(shape: Capsule(), interactive: true) {
             HStack(spacing: 0) {
-                tabButton(.home)
-                tabButton(.settings)
+                if isSearching {
+                    searchContents
+                } else {
+                    destinations
+                }
             }
             .padding(4)
         }
@@ -102,6 +106,67 @@ struct LiquidBottomBar: View {
             // iOS 17+, and the deployment target is 16.0.
             UISelectionFeedbackGenerator().selectionChanged()
         }
+    }
+
+    private var destinations: some View {
+        HStack(spacing: 0) {
+            tabButton(.home)
+            searchButton
+            tabButton(.settings)
+        }
+    }
+
+    /// The expanded state. The field takes what the destinations used, and 取消 sits at the trailing
+    /// edge, so the layout is the same width and the same capsule -- only the contents change.
+    private var searchContents: some View {
+        HStack(spacing: 6) {
+            NativeSearchField(
+                text: $searchQuery,
+                placeholder: "搜索教务功能",
+                isCancelVisible: true,
+                onCancel: {
+                    withAnimation(spring) { isSearching = false }
+                }
+            )
+            .frame(height: 44)
+
+            Button {
+                withAnimation(spring) {
+                    isSearching = false
+                    searchQuery = ""
+                }
+            } label: {
+                Text("取消")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(TabPressStyle(scale: 0.94))
+            .frame(height: 44)
+            .transition(.opacity.combined(with: .move(edge: .trailing)))
+        }
+    }
+
+    /// The search affordance while collapsed. It is a button and not a third destination: tapping it
+    /// raises the field without moving the user off the screen they are on.
+    private var searchButton: some View {
+        Button {
+            withAnimation(spring) { isSearching = true }
+        } label: {
+            ZStack {
+                VStack(spacing: 2) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 21, weight: .regular))
+                    Text(LiquidTabItem.search.title)
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(ink)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(TabPressStyle())
+        .accessibilityLabel(Text(LiquidTabItem.search.title))
+        .accessibilityHint(Text("在当前页面搜索教务功能"))
     }
 
     private func tabButton(_ item: LiquidTabItem) -> some View {
@@ -147,21 +212,22 @@ struct LiquidTabItem: Identifiable, Hashable {
         self.selectedSystemImage = selectedSystemImage ?? "\(systemImage).fill"
     }
 
-    /// Matches the Android tab set: `主页` and `设置` only. The Android client has no separate
-    /// quick-entry or history tab -- quick entries are the grid on the home screen, search is the
-    /// navigation bar's own field, and the check log is reached from Settings.
+    /// Matches the Android tab set: `主页` and `设置` only, plus the search field that expands out
+    /// of the bar rather than occupying a slot. The search item is never a selection, so it is not
+    /// in this list -- `MainShellView` reads it by hand.
     static let home = LiquidTabItem(id: "home", title: "主页", systemImage: "house")
     static let settings = LiquidTabItem(id: "settings", title: "设置", systemImage: "gearshape")
+    static let search = LiquidTabItem(id: "search", title: "搜索", systemImage: "magnifyingglass",
+                                      selectedSystemImage: "magnifyingglass")
 }
 
 /// Glass card used for content blocks, matching the Android `PortalGlassComponents` surface.
 ///
-/// The fill is resolved through the same helper as the bar, so a card and the bar around it are
-/// made of the same material on a given device. Cards are not interactive: they are content
+/// The fill is resolved through the same semantic colour the bar uses, so a card and the bar around
+/// it are made of the same material on a given device. Cards are not interactive: they are content
 /// surfaces, and requesting the touch response from them would make scrolling feel like pressing.
 struct GlassCard<Content: View>: View {
     var cornerRadius: CGFloat = 20
-    var isDark: Bool
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -170,7 +236,7 @@ struct GlassCard<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(isDark ? Color.white.opacity(0.07) : Color.white.opacity(0.72))
+                    .fill(PortalPalette.surface)
             )
     }
 }

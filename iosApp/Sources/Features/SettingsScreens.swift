@@ -1,31 +1,41 @@
 import SwiftUI
+import UIKit
 
 /// Port of `SettingsActivity.kt`.
 ///
 /// Android groups the page as 外观 / 教务 / 应用 / 账户, and the grouping is not cosmetic: each
-/// section answers one question. The content of each is reproduced, the presentation is iOS's --
-/// a `Form` with `Section`s, which is the system container for a settings screen and supplies the
-/// row grouping, the disclosure indicators and the disclosure behaviour on its own.
+/// section answers one question. The content follows Android exactly, including the icons -- every
+/// row carries one, which is what makes a settings list scannable. The presentation is iOS's
+/// `List` in the inset-grouped style, which supplies the section headers, the row highlighting, the
+/// disclosure indicators and the disclosure behaviour on its own.
+///
+/// Two deliberate divergences:
+///
+/// - The 液态玻璃 switch is gone. On Android it picks between a hand-drawn glass effect and a
+///   plain translucent one. On iOS the bottom bar is a system material (or the system's own
+///   `glassEffect` when the SDK provides it), so there is no hand-drawn fallback to switch away
+///   from and the row would be offering a choice that does not exist.
+/// - 后台运行 is a second-level page rather than a switch. Its Android content is four rows that
+///   deep-link into vendor-specific settings screens (自启动 / 电池优化 / 后台限制 / 通知权限);
+///   iOS has one equivalent control, Low Power Mode, plus the notification authorisation the
+///   app actually depends on, so those are listed as inspectable rows on their own page.
 struct SettingsScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var showingSchools = false
     @State private var release: GitHubRelease?
-    @State private var isRefreshing = false
     @State private var isCheckingRelease = false
-    @State private var statusMessage: String?
     @State private var confirmSignOut = false
     @ObservedObject private var notifications = NotificationPreferences.shared
 
     var body: some View {
         NavigationStack {
-            Form {
+            List {
                 appearanceSection
                 academicSection
-                notificationSection
-                historySection
                 applicationSection
                 accountSection
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.large)
             .sheet(isPresented: $showingSchools) {
@@ -37,7 +47,7 @@ struct SettingsScreen: View {
                 Button("退出登录", role: .destructive) { state.signOut() }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("退出后需要重新使用学校账号登录。")
+                Text("将清除本应用中的登录会话并停止后台监测。")
             }
         }
     }
@@ -45,61 +55,59 @@ struct SettingsScreen: View {
     // MARK: - 外观
 
     private var appearanceSection: some View {
-        Section("外观") {
+        Section {
+            HStack(spacing: 12) {
+                PortalRowIcon("paintpalette", tint: .portalIndigo).glyph()
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("显示模式")
+                        .font(.body)
+                    Text("选择界面的明暗外观")
+                        .font(.caption)
+                        .foregroundStyle(PortalPalette.secondaryText)
+                }
+                Spacer(minLength: 8)
+            }
+            .padding(.vertical, 4)
+
             Picker("显示模式", selection: $state.themeMode) {
                 ForEach(ThemeMode.allCases) { mode in
                     Text(mode.displayName).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
-
-            Toggle("液态玻璃", isOn: $state.glassEnabled)
+            .labelsHidden()
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16))
+        } header: {
+            Text("外观")
         }
     }
 
     // MARK: - 教务
 
     private var academicSection: some View {
-        Section("教务") {
+        Section {
             Button {
                 showingSchools = true
             } label: {
-                PortalNavigationRow(
-                    systemImage: "building.columns",
+                PortalSettingsRow(
+                    icon: PortalRowIcon("building.columns", tint: .portalBlue),
                     title: "学校",
-                    trailing: {
-                        Text(state.selectedSchool?.name ?? "未选择")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
+                    subtitle: state.selectedSchool?.name ?? "未选择"
                 )
             }
             .buttonStyle(.plain)
-            .disabled(state.isLoading)
-        }
-    }
 
-    // MARK: - 变动通知（进入独立页）
-
-    private var notificationSection: some View {
-        Section {
             NavigationLink {
                 NotificationSettingsScreen()
             } label: {
-                PortalNavigationRow(systemImage: "bell", title: "变动通知")
+                PortalSettingsRow(
+                    icon: PortalRowIcon("bell", tint: .portalRed),
+                    title: "变动通知",
+                    subtitle: "课表、成绩与考试提醒"
+                )
             }
-        }
-    }
-
-    /// The check log used to be its own bottom-bar tab. Android has no such tab -- it is reached
-    /// from the notification settings -- so the entry lives here.
-    private var historySection: some View {
-        Section {
-            NavigationLink {
-                NoticeHistoryScreen()
-            } label: {
-                PortalNavigationRow(systemImage: "doc.text.magnifyingglass", title: "检查日志")
-            }
+        } header: {
+            Text("教务")
         }
     }
 
@@ -107,38 +115,42 @@ struct SettingsScreen: View {
 
     private var applicationSection: some View {
         Section {
-            Toggle("后台运行", isOn: $notifications.monitorEnabled)
+            NavigationLink {
+                BackgroundSupportScreen()
+            } label: {
+                PortalSettingsRow(
+                    icon: PortalRowIcon("arrow.triangle.2.circlepath", tint: .portalGreen),
+                    title: "后台运行",
+                    subtitle: "后台刷新、低电量模式与通知权限"
+                )
+            }
+
             Button {
                 Task { await checkRelease(force: true) }
             } label: {
-                PortalNavigationRow(
-                    systemImage: "arrow.down.circle",
+                PortalSettingsRow(
+                    icon: PortalRowIcon("arrow.down.circle", tint: .portalBlue),
                     title: "软件更新",
-                    trailing: {
-                        if isCheckingRelease {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("当前版本 \(appVersion)")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    subtitle: isCheckingRelease ? "正在检查更新…" : "当前版本 \(appVersion)",
+                    showsSpinner: isCheckingRelease
                 )
             }
             .buttonStyle(.plain)
             .disabled(isCheckingRelease)
 
-            if let release {
-                Section {
-                    Link(destination: URL(string: release.htmlUrl)!) {
-                        PortalNavigationRow(systemImage: "tag", title: "发现新版本 \(release.tagName)")
-                    }
-                }
+            NavigationLink {
+                AboutScreen()
+            } label: {
+                PortalSettingsRow(
+                    icon: PortalRowIcon("info.circle", tint: .portalOrange),
+                    title: "关于",
+                    subtitle: "开源引用、作者与项目地址"
+                )
             }
         } header: {
             Text("应用")
         } footer: {
-            Text(statusMessage ?? "更新会检查 GitHub Releases，不会自动安装。")
+            Text(release.map { "发现新版本 \($0.tagName)" } ?? "更新会检查 GitHub Releases，不会自动安装。")
         }
     }
 
@@ -150,25 +162,24 @@ struct SettingsScreen: View {
 
     private var accountSection: some View {
         Section {
-            Button {
+            Button(role: .destructive) {
                 confirmSignOut = true
             } label: {
-                Text("退出登录")
-                    .foregroundStyle(Color.red)
+                HStack(spacing: 12) {
+                    PortalRowIcon("rectangle.portrait.and.arrow.right", tint: .portalRed).glyph()
+                    Text("退出登录")
+                        .foregroundStyle(PortalPalette.error)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         } header: {
             Text("账户")
         }
     }
 
     // MARK: - Actions
-
-    private func refreshSchools() async {
-        isRefreshing = true
-        defer { isRefreshing = false }
-        await state.refreshFromGitHub()
-        statusMessage = state.errorMessage ?? state.sessionNotice
-    }
 
     private func checkRelease(force: Bool = false) async {
         guard force || release == nil else { return }
@@ -178,12 +189,50 @@ struct SettingsScreen: View {
     }
 }
 
-/// Port of `NotificationSettingsActivity.kt`: which changes are watched, how often, and the log.
-struct NotificationSettingsScreen: View {
-    @ObservedObject private var notifications = NotificationPreferences.shared
+/// One settings row: the icon, a title and a subtitle, in the shape `Settings` uses on iOS.
+///
+/// Android's `SettingsNavigationPanel` draws a 34pt box holding a 22pt outline glyph, then the
+/// title and description, then a chevron. The chevron here is the system's -- `NavigationLink`
+/// draws its own, and a hand-drawn one on top of it would double up.
+struct PortalSettingsRow: View {
+    let icon: PortalRowIcon
+    let title: String
+    var subtitle: String = ""
+    var showsSpinner: Bool = false
 
     var body: some View {
-        Form {
+        HStack(spacing: 12) {
+            icon.glyph()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(PortalPalette.onSurface)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(PortalPalette.secondaryText)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            if showsSpinner {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+}
+
+/// Port of `NotificationSettingsActivity.kt`: which changes are watched, how often, and the log.
+struct NotificationSettingsScreen: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject private var notifications = NotificationPreferences.shared
+    @State private var entries: [PortalPollHistoryEntry] = PortalPollHistory.load()
+    @State private var isChecking = false
+
+    var body: some View {
+        List {
             Section {
                 Toggle("课表", isOn: $notifications.scheduleEnabled)
                 Toggle("成绩", isOn: $notifications.gradeEnabled)
@@ -194,6 +243,7 @@ struct NotificationSettingsScreen: View {
             }
 
             Section {
+                Toggle("后台检查", isOn: $notifications.monitorEnabled)
                 Picker("检查频率", selection: $notifications.intervalMinutes) {
                     Text("15 分钟").tag(15)
                     Text("30 分钟").tag(30)
@@ -206,31 +256,61 @@ struct NotificationSettingsScreen: View {
             }
 
             Section {
-                NavigationLink {
-                    NoticeHistoryScreen()
+                Button {
+                    Task { await runCheckNow() }
                 } label: {
-                    PortalNavigationRow(systemImage: "doc.text.magnifyingglass", title: "检查日志")
+                    PortalSettingsRow(
+                        icon: PortalRowIcon("arrow.clockwise", tint: .portalTeal),
+                        title: "立即检查",
+                        subtitle: isChecking ? "正在检查…" : "手动抓取一次并写入日志",
+                        showsSpinner: isChecking
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(isChecking)
+
+                NavigationLink {
+                    NoticeHistoryScreen(entries: $entries)
+                } label: {
+                    PortalSettingsRow(
+                        icon: PortalRowIcon("doc.text.magnifyingglass", tint: .portalPurple),
+                        title: "检查日志",
+                        subtitle: entries.isEmpty ? "暂无记录" : "\(entries.count) 条记录"
+                    )
+                }
+
+                Button(role: .destructive) {
+                    PortalPollHistory.clear()
+                    entries = []
+                } label: {
+                    Text("清空日志")
+                        .foregroundStyle(PortalPalette.error)
                 }
             } header: {
                 Text("记录")
             }
-
-            Section {
-                Button {
-                    PortalPollHistory.clear()
-                } label: {
-                    Text("清空").foregroundStyle(Color.red)
-                }
-            }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("变动通知")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { entries = PortalPollHistory.load() }
+    }
+
+    /// The background worker only runs when the system grants it a slot, which on iOS can be
+    /// minutes or hours after the switch is turned on. Running it inline gives the log its first
+    /// entry immediately and proves the session works, which is what a user opening this page is
+    /// actually trying to find out.
+    private func runCheckNow() async {
+        isChecking = true
+        defer { isChecking = false }
+        _ = await PortalPollWorker.shared.run()
+        entries = PortalPollHistory.load()
     }
 }
 
 /// Port of `NotificationHistoryActivity.kt`.
 struct NoticeHistoryScreen: View {
-    @State private var entries: [PortalPollHistoryEntry] = PortalPollHistory.load()
+    @Binding var entries: [PortalPollHistoryEntry]
     @State private var filter: Filter = .all
 
     private enum Filter: String, CaseIterable, Identifiable {
@@ -247,86 +327,196 @@ struct NoticeHistoryScreen: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                if visibleEntries.isEmpty {
-                    // ContentUnavailableView is iOS 17+; the deployment target is 16.
-                    VStack(spacing: 10) {
-                        Image(systemName: "clock")
-                            .font(.system(size: 34))
-                            .foregroundStyle(.secondary)
-                        Text("暂无检查记录")
-                            .font(.headline)
-                        Text("开启后台检查后，变更记录会显示在这里。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 36)
-                    .listRowSeparator(.hidden)
+        List {
+            if visibleEntries.isEmpty {
+                // ContentUnavailableView is iOS 17+; the deployment target is 16.
+                VStack(spacing: 10) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 34))
+                        .foregroundStyle(PortalPalette.secondaryText)
+                    Text("暂无检查记录")
+                        .font(.headline)
+                    Text("在上方点击“立即检查”即可手动抓取一次。")
+                        .font(.footnote)
+                        .foregroundStyle(PortalPalette.secondaryText)
+                        .multilineTextAlignment(.center)
                 }
-                ForEach(visibleEntries) { entry in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(entry.status)
-                                .font(.subheadline.weight(.semibold))
-                            Spacer()
-                            Text(entry.timestamp, format: .dateTime.month().day().hour().minute())
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(entry.details) { detail in
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack(spacing: 6) {
-                                    Text(detail.category)
-                                        .font(.caption.weight(.medium))
-                                        .foregroundStyle(.tint)
-                                    Text(detail.summary)
-                                        .font(.caption)
-                                    if detail.changed {
-                                        Image(systemName: "arrow.up.circle.fill")
-                                            .font(.caption2)
-                                            .foregroundStyle(.orange)
-                                    }
-                                }
-                                if !detail.difference.isEmpty {
-                                    Text(detail.difference)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 36)
+                .listRowSeparator(.hidden)
+            }
+            ForEach(visibleEntries) { entry in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(entry.status)
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text(entry.timestamp, format: .dateTime.month().day().hour().minute())
+                            .font(.caption)
+                            .foregroundStyle(PortalPalette.secondaryText)
+                    }
+                    ForEach(entry.details) { detail in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Text(detail.category)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(Color.accentColor)
+                                Text(detail.summary)
+                                    .font(.caption)
+                                if detail.changed {
+                                    Image(systemName: "arrow.up.circle.fill")
                                         .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(PortalPalette.error)
                                 }
-                                if let technical = detail.technicalDetails, !technical.isEmpty {
-                                    Text(technical)
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                }
+                            }
+                            if !detail.difference.isEmpty {
+                                Text(detail.difference)
+                                    .font(.caption2)
+                                    .foregroundStyle(PortalPalette.secondaryText)
+                            }
+                            if let technical = detail.technicalDetails, !technical.isEmpty {
+                                Text(technical)
+                                    .font(.caption2)
+                                    .foregroundStyle(PortalPalette.outline)
                             }
                         }
                     }
-                    .padding(.vertical, 4)
                 }
-                .onDelete { indexSet in
-                    var updated = entries
-                    updated.remove(atOffsets: indexSet)
-                    entries = updated
-                    if let data = try? JSONEncoder().encode(updated) {
-                        UserDefaults.standard.set(data, forKey: "poll_history_entries")
-                    }
+                .padding(.vertical, 4)
+            }
+            .onDelete { indexSet in
+                var updated = entries
+                updated.remove(atOffsets: indexSet)
+                entries = updated
+                if let data = try? JSONEncoder().encode(updated) {
+                    UserDefaults.standard.set(data, forKey: "poll_history_entries")
                 }
             }
-            .navigationTitle("变更记录")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Picker("", selection: $filter) {
-                        ForEach(Filter.allCases) { option in
-                            Text(option.rawValue).tag(option)
-                        }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("检查日志")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Picker("", selection: $filter) {
+                    ForEach(Filter.allCases) { option in
+                        Text(option.rawValue).tag(option)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 160)
                 }
+                .pickerStyle(.segmented)
+                .frame(width: 160)
             }
+        }
+    }
+}
+
+/// Port of `BackgroundSupportActivity.kt`.
+///
+/// Android's page lists four things that can be wrong with background execution and deep-links
+/// into vendor settings to fix each. iOS has exactly one comparable switch -- Low Power Mode,
+/// which suspends `BGAppRefreshTask` until it is turned off -- plus the notification authorisation
+/// that a persistent notification would need. The internal mechanics differ by platform, which the
+/// brief allows; what has to match is that the page exists, is reachable in one tap, and says what
+/// state the app is actually in.
+struct BackgroundSupportScreen: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject private var notifications = NotificationPreferences.shared
+    @State private var authorisation: UNAuthorizationStatus = .notDetermined
+    @State private var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+
+    var body: some View {
+        List {
+            Section {
+                statusRow(
+                    icon: PortalRowIcon("bolt", tint: .portalOrange),
+                    title: "低电量模式",
+                    detail: lowPowerMode
+                        ? "已开启，系统会推迟后台刷新"
+                        : "已关闭，后台刷新按请求间隔执行",
+                    healthy: !lowPowerMode
+                )
+                statusRow(
+                    icon: PortalRowIcon("bell.badge", tint: .portalRed),
+                    title: "通知权限",
+                    detail: authorisationLabel,
+                    healthy: authorisation == .authorized || authorisation == .provisional
+                )
+                statusRow(
+                    icon: PortalRowIcon("arrow.triangle.2.circlepath", tint: .portalGreen),
+                    title: "后台检查",
+                    detail: notifications.monitorEnabled
+                        ? "已开启，每 \(notifications.intervalMinutes) 分钟请求一次"
+                        : "已关闭",
+                    healthy: notifications.monitorEnabled
+                )
+            } header: {
+                Text("系统状态")
+            } footer: {
+                Text("iOS 不会让应用常驻后台。刷新由系统的 BGTaskScheduler 调度，"
+                     + "实际执行时间取决于电量与使用习惯，可在「设置 → 通用 → 后台 App 刷新」中查看本应用的授权。")
+            }
+
+            Section {
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    PortalSettingsRow(
+                        icon: PortalRowIcon("gearshape", tint: .portalIndigo),
+                        title: "打开系统设置",
+                        subtitle: "调整通知、低电量模式与后台 App 刷新"
+                    )
+                }
+                .buttonStyle(.plain)
+            } header: {
+                Text("操作")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("后台运行")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { refreshStatus() }
+    }
+
+    /// A status row with no chevron: nothing here can be fixed from inside the app except by
+    /// leaving for Settings, which the section below already offers.
+    private func statusRow(
+        icon: PortalRowIcon,
+        title: String,
+        detail: String,
+        healthy: Bool
+    ) -> some View {
+        HStack(spacing: 12) {
+            icon.glyph()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(healthy ? PortalPalette.secondaryText : PortalPalette.error)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var authorisationLabel: String {
+        switch authorisation {
+        case .authorized: return "已允许"
+        case .provisional: return "已允许（静默通知）"
+        case .denied: return "未允许，变动通知不会送达"
+        case .ephemeral: return "临时授权"
+        case .notDetermined: return "尚未询问"
+        @unknown default: return "未知"
+        }
+    }
+
+    private func refreshStatus() {
+        lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            let status = settings.authorizationStatus
+            Task { @MainActor in authorisation = status }
         }
     }
 }
@@ -336,60 +526,60 @@ struct AboutScreen: View {
     @State private var release: GitHubRelease?
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.12))
-                        .frame(width: 76, height: 76)
-                        .overlay(
-                            Image(systemName: "building.columns")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.tint)
-                        )
+        ScrollView {
+            VStack(spacing: 16) {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 76, height: 76)
+                    .overlay(
+                        Image(systemName: "building.columns")
+                            .font(.system(size: 36))
+                            .foregroundStyle(Color.accentColor)
+                    )
 
+                VStack(spacing: 4) {
                     Text("掌上教务")
                         .font(.title2.bold())
                     Text("iOS 原生版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.5")")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PortalPalette.secondaryText)
+                }
 
-                    GlassCard(isDark: ThemePreferences.shared.isDark) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("关于本应用").font(.headline)
-                            Text("本版本使用 SwiftUI 与 WKWebView 实现，与安卓端共用同一套学校配置和页面解析适配器，因此两端渲染结果保持一致。")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Text("应用不收集任何个人信息，仅在你主动登录后访问对应学校的教务系统。")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("关于本应用").font(.headline)
+                        Text("本版本使用 SwiftUI 与 WKWebView 实现，与安卓端共用同一套学校配置和页面解析适配器，因此两端渲染结果保持一致。")
+                            .font(.subheadline)
+                            .foregroundStyle(PortalPalette.secondaryText)
+                        Text("应用不收集任何个人信息，仅在你主动登录后访问对应学校的教务系统。")
+                            .font(.subheadline)
+                            .foregroundStyle(PortalPalette.secondaryText)
                     }
+                }
 
-                    if let release {
-                        GlassCard(isDark: ThemePreferences.shared.isDark) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("最新版本 \(release.tagName)").font(.headline)
-                                if let body = release.body, !body.isEmpty {
-                                    Text(body)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(12)
-                                }
-                                if let url = URL(string: release.htmlUrl) {
-                                    Link("在 GitHub 查看", destination: url)
-                                        .font(.subheadline)
-                                }
+                if let release {
+                    GlassCard {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("最新版本 \(release.tagName)").font(.headline)
+                            if let body = release.body, !body.isEmpty {
+                                Text(body)
+                                    .font(.caption)
+                                    .foregroundStyle(PortalPalette.secondaryText)
+                                    .lineLimit(12)
+                            }
+                            if let url = URL(string: release.htmlUrl) {
+                                Link("在 GitHub 查看", destination: url)
+                                    .font(.subheadline)
                             }
                         }
                     }
                 }
-                .padding(20)
             }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("关于")
-            .navigationBarTitleDisplayMode(.inline)
-            .task { release = try? await GitHubRepository.latestRelease() }
+            .padding(20)
         }
+        .background(PortalPalette.page)
+        .navigationTitle("关于")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { release = try? await GitHubRepository.latestRelease() }
     }
 }

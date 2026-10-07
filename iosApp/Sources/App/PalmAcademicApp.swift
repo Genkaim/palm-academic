@@ -115,9 +115,14 @@ struct RootView: View {
     }
 }
 
-/// Host for the two-tab liquid glass bar and the home/settings content areas.
+/// Host for the liquid glass bar and the home/settings content areas.
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
+
+    /// The height the floating bar occupies, reserved at the bottom of every scrolling page so the
+    /// bar never covers the last row. Without this the settings page's 退出登录 row sits underneath
+    /// the capsule and cannot be tapped.
+    private let barClearance: CGFloat = 92
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -127,20 +132,56 @@ struct MainShellView: View {
             // measures zero the bottom-aligned bar rises into the middle of the screen.
             ZStack {
                 content(for: state.selectedTab)
+                    // Reserves room at the bottom of every scrolling page so the floating bar never
+                    // covers the last row. A safe-area inset is used rather than a padding because
+                    // a padding would shorten the page's own background; the inset scrolls with the
+                    // content, which is what makes the last row reachable.
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        Color.clear.frame(height: barClearance)
+                    }
+            }
+
+            // Search results float directly above the bar. They are an overlay rather than a
+            // destination because search is not a place -- it is a way of choosing one of the
+            // places, and the destination that gets pushed is the one the user picked.
+            if state.isBarSearching, state.isSearching {
+                SearchResultsOverlay(
+                    onSelect: { item in
+                        state.endBarSearch()
+                        state.selectedTab = .home
+                        state.pendingNavigation = item
+                    },
+                    onDismiss: { state.endBarSearch() }
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, Metric.barTotalHeight)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(1)
             }
 
             // The bar floats above the content so the page stays scrollable underneath.
             LiquidBottomBar(
                 isDark: state.isDark,
-                glassEnabled: state.glassEnabled,
-                selection: $state.selectedTab
+                selection: $state.selectedTab,
+                isSearching: $state.isBarSearching,
+                searchQuery: $state.searchQuery
             )
+            .zIndex(2)
         }
         .overlay(alignment: .top) {
             if let notice = state.sessionNotice {
                 noticeBanner(notice)
             }
         }
+        .animation(
+            .interpolatingSpring(stiffness: 440, damping: 34),
+            value: state.isBarSearching
+        )
+    }
+
+    private enum Metric {
+        /// Bar height 64 + bottom padding 8 + the 20pt of breathing room above it.
+        static let barTotalHeight: CGFloat = 92
     }
 
     @ViewBuilder

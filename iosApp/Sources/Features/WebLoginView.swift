@@ -51,14 +51,14 @@ struct WebLoginView: View {
             if let statusMessage {
                 Text(statusMessage)
                     .font(.subheadline)
-                    .foregroundStyle(Color(red: 0.75, green: 0.15, blue: 0.15))
+                    .foregroundStyle(PortalPalette.error)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .background(Color.black.opacity(state.isDark ? 0.35 : 0.06))
+                    .background(PortalPalette.errorContainer)
             }
         }
-        .background(state.isDark ? Color(red: 0.06, green: 0.07, blue: 0.09) : Color.white)
+        .background(PortalPalette.plainSurface)
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
     }
@@ -92,7 +92,7 @@ struct WebLoginView: View {
         .padding(.horizontal, 14)
         .frame(height: 52)
         .background(
-            state.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+            PortalPalette.surface
         )
     }
 

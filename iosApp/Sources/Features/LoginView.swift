@@ -9,31 +9,47 @@ import SwiftUI
 /// button sitting below all of it. The content padding differs to match (64/112 unselected,
 /// 24/218 selected) and the brand block collapses when the keyboard is up.
 ///
-/// One deliberate divergence: Android draws the two fields as a single control with 18pt outer and
-/// 6pt inner corners. These stay two system text fields, because the corner treatment is styling
-/// and the brief is to keep iOS's own control appearance -- `borderStyle = .roundedRect` is UIKit's
-/// border, which also brings the focus ring, the autofill chrome and the iOS 26 treatment.
+/// Appearance and controls are iOS's. The fields are SwiftUI's own `TextField` and `SecureField` in
+/// the plain style, sitting on the grouped surface, so they carry the caret, the autofill chrome,
+/// the clear button and the keyboard handling without a hosted control. A `UIViewRepresentable`
+/// `UITextField` was the previous answer and it could not keep a focus mirror honest: the username
+/// field passed a constant `false` for it, so `updateUIView` saw "not focused, but first responder"
+/// and resigned in the same pass -- the keyboard came up and went straight back down, which reads
+/// as "tapping the field does nothing". `@FocusState` cannot be wrong that way.
+///
+/// The field group's shape is the Android one -- 14pt outer, 6pt where the two meet -- written as
+/// a background per field rather than as a shape on the control, because `UnevenRoundedRectangle`
+/// is iOS 16.4 and the deployment target is 16.0.
 struct LoginView: View {
     @EnvironmentObject private var state: AppState
     @State private var showingSchools = false
     @State private var revealPassword = false
-    /// First-responder mirror for the password field. The username field needs no state of its
-    /// own: its "next" key just raises this one.
-    @State private var passwordIsFocused = false
+    /// Which field the keyboard belongs to. `@FocusState` is the system's own focus owner, so a tap
+    /// needs no extra work to raise the keyboard and "next" moves straight to the password.
+    @FocusState private var focusedField: Field?
     /// Height of the software keyboard in points; 0 while it is dismissed.
     @State private var keyboardHeight: CGFloat = 0
     /// Token handles for the keyboard frame notifications registered in `observeKeyboard`.
     @State private var keyboardObservers: [NSObjectProtocol] = []
 
+    private enum Field: Hashable {
+        case username
+        case password
+    }
+
     private enum Metric {
         static let horizontal: CGFloat = 20
-        static let fieldHeight: CGFloat = 64
+        static let fieldHeight: CGFloat = 50
         static let primaryButtonHeight: CGFloat = 54
         static let secondaryButtonHeight: CGFloat = 52
         /// The gap between the school row and the web-login row, which exists to clear the
         /// primary button pinned below them.
         static let secondaryGap: CGFloat = 54
         static let brandHeight: CGFloat = 172
+        /// The outer radius of the joined field group, matching Android's 18pt at the system's
+        /// slightly tighter 14pt.
+        static let fieldGroupRadius: CGFloat = 14
+        static let fieldGroupInnerRadius: CGFloat = 6
     }
 
     private var hasSchool: Bool { state.selectedSchool != nil }
@@ -41,7 +57,10 @@ struct LoginView: View {
 
     var body: some View {
         ZStack {
-            backgroundLayer
+            // Android paints `MaterialTheme.colorScheme.background`, which is #F2F2F7 light and
+            // #000000 dark. `systemGroupedBackground` is exactly those two values, so the page
+            // follows the appearance without a single hand-picked colour.
+            PortalPalette.page.ignoresSafeArea()
 
             ScrollView {
                 VStack(spacing: 18) {
@@ -92,10 +111,10 @@ struct LoginView: View {
         VStack(spacing: 12) {
             Image(systemName: "building.columns")
                 .font(.system(size: 42, weight: .light))
-                .foregroundStyle(Color(uiColor: .label))
+                .foregroundStyle(PortalPalette.onSurface)
             Text("掌上教务")
                 .font(.largeTitle.weight(.bold))
-                .foregroundStyle(Color(uiColor: .label))
+                .foregroundStyle(PortalPalette.onSurface)
         }
         .frame(maxWidth: .infinity)
         .frame(height: Metric.brandHeight)
@@ -105,9 +124,27 @@ struct LoginView: View {
     private var credentialForm: some View {
         VStack(alignment: .leading, spacing: 12) {
             formLabel("密码登录")
-            VStack(spacing: 3) {
+            VStack(spacing: 0) {
                 usernameField
+                    .background(
+                        GroupedCardShape(
+                            large: Metric.fieldGroupRadius,
+                            small: Metric.fieldGroupInnerRadius,
+                            position: .first
+                        )
+                        .fill(PortalPalette.surface)
+                    )
+                Divider()
+                    .padding(.leading, 34)
                 passwordField
+                    .background(
+                        GroupedCardShape(
+                            large: Metric.fieldGroupRadius,
+                            small: Metric.fieldGroupInnerRadius,
+                            position: .last
+                        )
+                        .fill(PortalPalette.surface)
+                    )
             }
             rememberRow
             if let errorMessage = state.errorMessage {
@@ -128,7 +165,7 @@ struct LoginView: View {
                     // The gap is not decorative: it clears the primary button pinned below.
                     Color.clear.frame(height: Metric.secondaryGap)
                     secondaryButton(systemImage: "safari", title: "用网页登录", showsChevron: false) {
-                        passwordIsFocused = false
+                        focusedField = nil
                         state.showingWebLogin = true
                     }
                 }
@@ -148,21 +185,21 @@ struct LoginView: View {
         VStack(spacing: 12) {
             Text("选择学校以继续登录")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PortalPalette.secondaryText)
             Button {
                 showingSchools = true
             } label: {
                 ZStack {
                     Image(systemName: "building.columns")
-                        .foregroundStyle(Color(uiColor: .systemBackground))
+                        .foregroundStyle(PortalPalette.plainSurface)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Text("选择学校")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(Color(uiColor: .systemBackground))
+                        .foregroundStyle(PortalPalette.plainSurface)
                 }
                 .padding(.horizontal, 20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Capsule().fill(Color(uiColor: .label)))
+                .background(Capsule().fill(PortalPalette.primary))
             }
             .buttonStyle(TabPressStyle(scale: 0.98))
             .frame(height: Metric.primaryButtonHeight)
@@ -172,19 +209,21 @@ struct LoginView: View {
 
     private var primaryButton: some View {
         Button {
-            passwordIsFocused = false
+            focusedField = nil
             Task { await state.login() }
         } label: {
             HStack(spacing: 8) {
                 if state.isLoading {
-                    ProgressView().tint(Color(uiColor: .systemBackground))
+                    ProgressView().tint(PortalPalette.plainSurface)
+                } else {
+                    Image(systemName: "lock")
                 }
                 Text(state.isLoading ? "登录中…" : "登录")
                     .font(.body.weight(.semibold))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Capsule().fill(Color(uiColor: .label)))
-            .foregroundStyle(Color(uiColor: .systemBackground))
+            .background(Capsule().fill(PortalPalette.primary))
+            .foregroundStyle(PortalPalette.plainSurface)
         }
         .buttonStyle(TabPressStyle(scale: 0.98))
         .disabled(!canSubmit || state.isLoading)
@@ -210,10 +249,10 @@ struct LoginView: View {
                 }
             }
             .font(.body)
-            .foregroundStyle(Color(uiColor: .label))
+            .foregroundStyle(PortalPalette.onSurface)
             .padding(.horizontal, 20)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.14), lineWidth: 1))
+            .overlay(Capsule().strokeBorder(PortalPalette.outline.opacity(0.6), lineWidth: 1))
         }
         .buttonStyle(TabPressStyle(scale: 0.98))
         .frame(height: Metric.secondaryButtonHeight)
@@ -230,17 +269,15 @@ struct LoginView: View {
             HStack {
                 Text("记住密码")
                     .font(.body.weight(.medium))
-                    .foregroundStyle(Color(uiColor: .label))
+                    .foregroundStyle(PortalPalette.onSurface)
                 Spacer()
+                // The system's own switch, at the system's own size.
                 Toggle("", isOn: $state.rememberPassword)
                     .labelsHidden()
             }
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color(.secondarySystemBackground))
-            )
+            .background(Capsule().fill(PortalPalette.surface))
         }
         .buttonStyle(TabPressStyle(scale: 0.99))
         .frame(height: 48)
@@ -250,7 +287,7 @@ struct LoginView: View {
     private func formLabel(_ text: String) -> some View {
         Text(text)
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(PortalPalette.secondaryText)
             .padding(.horizontal, 8)
             .padding(.bottom, -6)
     }
@@ -287,45 +324,74 @@ struct LoginView: View {
 
     // MARK: - Fields
 
-    private var backgroundLayer: some View {
-        LinearGradient(
-            colors: state.isDark
-                ? [Color(red: 0.07, green: 0.08, blue: 0.11), Color(red: 0.11, green: 0.13, blue: 0.18)]
-                : [Color(red: 0.95, green: 0.96, blue: 0.98), Color.white],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .ignoresSafeArea()
-    }
-
+    /// The username field. SwiftUI's own `TextField` is the control Apple's sign-in screens use;
+    /// `@FocusState` owns the keyboard, so a tap raises it and "next" moves to the password without
+    /// either view having to mirror anything.
     private var usernameField: some View {
-        NativeLoginField(
-            title: "学号 / 账号",
-            systemImage: "person.crop.circle",
-            text: $state.username,
-            isSecure: .constant(false),
-            contentType: .username,
-            submitLabel: .next,
-            isDisabled: state.isLoading,
-            isFocused: .constant(false),
-            onSubmit: { passwordIsFocused = true }
-        )
+        HStack(spacing: 8) {
+            Image(systemName: "person.crop.circle")
+                .foregroundStyle(PortalPalette.secondaryText)
+                .frame(width: 22)
+            TextField("学号 / 账号", text: $state.username)
+                .textContentType(.username)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.next)
+                .focused($focusedField, equals: .username)
+                .onSubmit { focusedField = .password }
+                .disabled(state.isLoading)
+        }
+        .padding(.horizontal, 12)
         .frame(height: Metric.fieldHeight)
     }
 
+    /// The password field. `SecureField` and `TextField` are separate types rather than one control
+    /// with a flag, so the reveal toggle swaps them; the text lives in `AppState` either way, which
+    /// is what makes the swap invisible to the user.
+    @ViewBuilder
     private var passwordField: some View {
-        NativeLoginField(
-            title: "密码",
-            systemImage: "key",
-            text: $state.password,
-            isSecure: $revealPassword,
-            contentType: .password,
-            submitLabel: .go,
-            isDisabled: state.isLoading,
-            isFocused: $passwordIsFocused,
-            onSubmit: { Task { await state.login() } }
-        )
+        HStack(spacing: 8) {
+            Image(systemName: "key")
+                .foregroundStyle(PortalPalette.secondaryText)
+                .frame(width: 22)
+            if revealPassword {
+                TextField("密码", text: $state.password)
+                    .textContentType(.password)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.go)
+                    .focused($focusedField, equals: .password)
+                    .onSubmit { submit() }
+            } else {
+                SecureField("密码", text: $state.password)
+                    .textContentType(.password)
+                    .submitLabel(.go)
+                    .focused($focusedField, equals: .password)
+                    .onSubmit { submit() }
+            }
+            if !state.isLoading {
+                Button {
+                    revealPassword.toggle()
+                } label: {
+                    Image(systemName: revealPassword ? "eye.slash" : "eye")
+                        .foregroundStyle(PortalPalette.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 34, height: 44)
+                .contentShape(Rectangle())
+                .accessibilityLabel(revealPassword ? "隐藏密码" : "显示密码")
+            }
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 6)
         .frame(height: Metric.fieldHeight)
+        .disabled(state.isLoading)
+    }
+
+    private func submit() {
+        guard canSubmit else { return }
+        focusedField = nil
+        Task { await state.login() }
     }
 
     private var canSubmit: Bool {
@@ -337,17 +403,16 @@ struct LoginView: View {
     private func errorBanner(_ message: String) -> some View {
         Text(message)
             .font(.subheadline)
-            .foregroundStyle(state.isDark ? Color(red: 1, green: 0.7, blue: 0.7) : Color(red: 0.7, green: 0.1, blue: 0.1))
+            .foregroundStyle(PortalPalette.error)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(state.isDark ? Color.red.opacity(0.16) : Color.red.opacity(0.09))
+                    .fill(PortalPalette.errorContainer)
             )
     }
 }
-
 
 /// Port of `SchoolSelectionUi.kt`.
 ///
