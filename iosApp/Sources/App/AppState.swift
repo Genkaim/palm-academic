@@ -28,9 +28,8 @@ final class AppState: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
     @Published var selectedTab: LiquidTabItem = .home
-    /// The bottom bar's trailing button. Search is a mode of the bar, not a destination: the
-    /// Android client has no search tab, and the field expands over the two tabs while it is open.
-    @Published var isSearchExpanded = false
+    /// Backs the navigation bar's `.searchable` field. The system owns the affordance -- expand,
+    /// cancel, clear -- so there is no expanded/collapsed state to track here.
     @Published var searchQuery = ""
     @Published var isDark = false
     @Published var showingLogin = false
@@ -138,7 +137,7 @@ final class AppState: ObservableObject {
         errorMessage = message
         sessionNotice = nil
         sessionStatus = .hidden
-        closeSearch()
+        searchQuery = ""
         phase = .signedOut
     }
 
@@ -151,15 +150,10 @@ final class AppState: ObservableObject {
 
     /// Whether the home screen is showing search results rather than its normal content.
     var isSearching: Bool {
-        isSearchExpanded && !trimmedSearchQuery.isEmpty
+        !trimmedSearchQuery.isEmpty
     }
 
-    func openSearch() {
-        isSearchExpanded = true
-    }
-
-    func closeSearch() {
-        isSearchExpanded = false
+    func clearSearch() {
         searchQuery = ""
     }
 

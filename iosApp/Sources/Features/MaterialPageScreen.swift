@@ -27,6 +27,16 @@ struct MaterialPageScreen: View {
         ZStack {
             Color(.systemGroupedBackground).ignoresSafeArea()
 
+            // The WebView is the data source, so it has to be in the tree before -- and
+            // independently of -- anything it feeds. It used to live inside `content(loaded)`, which
+            // only renders once `page` is non-nil, and `page` is only ever set by this WebView's
+            // callback. On a cold cache that is a circular dependency: the view that produces the
+            // data waits for the data, so the page spun forever.
+            reader
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .clipped()
+
             if isLoading && page == nil {
                 ProgressView("加载中…")
             } else if let errorMessage, page == nil {
@@ -50,6 +60,40 @@ struct MaterialPageScreen: View {
         .task {
             if page == nil { await loadCachedThenFetch() }
         }
+    }
+
+    /// The hidden reader. It stays mounted for the life of the screen and drives the refresh
+    /// token; the rendered page is only a projection of what it publishes.
+    private var reader: some View {
+        MaterialReaderView(
+            url: url,
+            adapterScript: adapterScript,
+            schoolConfigJSON: SchoolCatalog.shared.readerConfigJSON(),
+            refreshToken: refreshToken,
+            action: action,
+            isDark: state.isDark,
+            onLoading: { loading in
+                Task { @MainActor in if !loading { isLoading = false } }
+            },
+            onContent: { newPage in
+                Task { @MainActor in
+                    page = newPage
+                    isLoading = false
+                    errorMessage = nil
+                }
+            },
+            onError: { message in
+                Task { @MainActor in
+                    isLoading = false
+                    if page == nil { errorMessage = message }
+                }
+            },
+            onSessionExpired: {
+                Task { @MainActor in
+                    state.signOut(message: "登录已过期，请重新登录")
+                }
+            }
+        )
     }
 
     // MARK: - Content
@@ -92,41 +136,6 @@ struct MaterialPageScreen: View {
             refreshToken += 1
             try? await Task.sleep(nanoseconds: 600_000_000)
         }
-        // The WebView is the data source; it stays in the hierarchy and drives the refresh token.
-        .background(
-            MaterialReaderView(
-                url: url,
-                adapterScript: adapterScript,
-                schoolConfigJSON: SchoolCatalog.shared.readerConfigJSON(),
-                refreshToken: refreshToken,
-                action: action,
-                isDark: state.isDark,
-                onLoading: { loading in
-                    Task { @MainActor in if !loading { isLoading = false } }
-                },
-                onContent: { newPage in
-                    Task { @MainActor in
-                        page = newPage
-                        isLoading = false
-                        errorMessage = nil
-                    }
-                },
-                onError: { message in
-                    Task { @MainActor in
-                        isLoading = false
-                        if page == nil { errorMessage = message }
-                    }
-                },
-                onSessionExpired: {
-                    Task { @MainActor in
-                        state.signOut(message: "登录已过期，请重新登录")
-                    }
-                }
-            )
-            .frame(width: 0, height: 0)
-            .opacity(0)
-            .clipped()
-        )
     }
 
     private func choicePicker(_ choice: MaterialChoice) -> some View {

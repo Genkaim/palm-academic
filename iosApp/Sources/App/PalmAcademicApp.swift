@@ -115,10 +115,7 @@ struct MainShellView: View {
             // The bar floats above the content so the page stays scrollable underneath.
             LiquidBottomBar(
                 isDark: state.isDark,
-                selection: $state.selectedTab,
-                searchExpanded: $state.isSearchExpanded,
-                query: $state.searchQuery,
-                onCloseSearch: { state.closeSearch() }
+                selection: $state.selectedTab
             )
         }
         .overlay(alignment: .top) {

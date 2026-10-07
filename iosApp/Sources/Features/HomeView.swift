@@ -66,6 +66,14 @@ struct HomeView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationBarTitleDisplayMode(.inline)
+            // The platform's search affordance. Android puts a button in the bar that expands into
+            // a field; iOS puts the field in the navigation bar and expands it there, which is why
+            // the bar itself stays a plain two-destination bar.
+            .searchable(
+                text: $state.searchQuery,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "搜索教务功能"
+            )
             .toolbar {
                 // Android's top bar carries a bold title with the school name on a second line, so
                 // the principal toolbar item holds both rather than using the system large title.
