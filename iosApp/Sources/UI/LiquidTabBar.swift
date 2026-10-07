@@ -15,11 +15,14 @@ import UIKit
 struct SystemGlassSurface<Content: View, S: Shape>: View {
     var shape: S
     var interactive: Bool = false
+    /// The Android "液态玻璃" switch. Turning it off keeps the same shape and layout but drops back
+    /// to a plain system material, which is what the client exposes as a user preference.
+    var enabled: Bool = true
     @ViewBuilder var content: Content
 
     var body: some View {
         #if USE_SYSTEM_GLASS
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *), enabled {
             if interactive {
                 content.glassEffect(.regular.interactive(), in: shape)
             } else {
@@ -64,6 +67,7 @@ struct TabPressStyle: ButtonStyle {
 /// is also why the hand-rolled close button that used to sit in the bar is gone.
 struct LiquidBottomBar: View {
     let isDark: Bool
+    let glassEnabled: Bool
     @Binding var selection: LiquidTabItem
 
     @Namespace private var indicatorNamespace
@@ -83,7 +87,7 @@ struct LiquidBottomBar: View {
     private var spring: Animation { .interpolatingSpring(stiffness: 440, damping: 34) }
 
     var body: some View {
-        SystemGlassSurface(shape: Capsule(), interactive: true) {
+        SystemGlassSurface(shape: Capsule(), interactive: true, enabled: glassEnabled) {
             HStack(spacing: 0) {
                 tabButton(.home)
                 tabButton(.settings)

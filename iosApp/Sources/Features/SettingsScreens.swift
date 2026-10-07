@@ -1,6 +1,11 @@
 import SwiftUI
 
-/// Port of `SettingsActivity.kt` and `NotificationSettingsActivity.kt`.
+/// Port of `SettingsActivity.kt`.
+///
+/// Android groups the page as 外观 / 教务 / 应用 / 账户, and the grouping is not cosmetic: each
+/// section answers one question. The content of each is reproduced, the presentation is iOS's --
+/// a `Form` with `Section`s, which is the system container for a settings screen and supplies the
+/// row grouping, the disclosure indicators and the disclosure behaviour on its own.
 struct SettingsScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var showingSchools = false
@@ -8,138 +13,155 @@ struct SettingsScreen: View {
     @State private var isRefreshing = false
     @State private var isCheckingRelease = false
     @State private var statusMessage: String?
+    @State private var confirmSignOut = false
     @ObservedObject private var notifications = NotificationPreferences.shared
 
     var body: some View {
         NavigationStack {
             Form {
-                accountSection
-                monitoringSection
+                appearanceSection
+                academicSection
                 notificationSection
                 historySection
-                appearanceSection
-                schoolSection
-                aboutSection
+                applicationSection
+                accountSection
             }
             .navigationTitle("设置")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.large)
             .sheet(isPresented: $showingSchools) {
                 SchoolPickerView { school in state.selectSchool(school) }
+                    .environmentObject(state)
             }
             .task { await checkRelease() }
-        }
-    }
-
-    private var accountSection: some View {
-        Section("账号") {
-            LabeledContent("学校", value: state.selectedSchool?.name ?? "未选择")
-            LabeledContent("账号", value: state.username.isEmpty ? "未记住" : state.username)
-            Button(role: .destructive) {
-                state.signOut()
-            } label: {
-                Text("退出登录")
+            .confirmationDialog("退出登录", isPresented: $confirmSignOut, titleVisibility: .visible) {
+                Button("退出登录", role: .destructive) { state.signOut() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("退出后需要重新使用学校账号登录。")
             }
         }
     }
 
-    private var monitoringSection: some View {
-        Section {
-            Toggle("启用后台检查", isOn: $notifications.monitorEnabled)
-            if notifications.monitorEnabled {
-                Picker("检查间隔", selection: $notifications.intervalMinutes) {
-                    Text("15 分钟").tag(15)
-                    Text("30 分钟").tag(30)
-                    Text("60 分钟").tag(60)
-                    Text("3 小时").tag(180)
+    // MARK: - 外观
+
+    private var appearanceSection: some View {
+        Section("外观") {
+            Picker("显示模式", selection: $state.themeMode) {
+                ForEach(ThemeMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
                 }
             }
-        } header: {
-            Text("后台检查")
-        } footer: {
-            Text("iOS 会根据系统电量与使用情况调整实际执行频率，界面显示的是请求的间隔。")
+            .pickerStyle(.segmented)
+
+            Toggle("液态玻璃", isOn: $state.glassEnabled)
         }
     }
+
+    // MARK: - 教务
+
+    private var academicSection: some View {
+        Section("教务") {
+            Button {
+                showingSchools = true
+            } label: {
+                PortalNavigationRow(
+                    systemImage: "building.columns",
+                    title: "学校",
+                    trailing: {
+                        Text(state.selectedSchool?.name ?? "未选择")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(state.isLoading)
+        }
+    }
+
+    // MARK: - 变动通知（进入独立页）
 
     private var notificationSection: some View {
-        Section("变更提醒") {
-            Toggle("课表", isOn: $notifications.scheduleEnabled)
-            Toggle("成绩", isOn: $notifications.gradeEnabled)
-            Toggle("考试", isOn: $notifications.examEnabled)
-            Toggle("培养方案", isOn: $notifications.programEnabled)
+        Section {
+            NavigationLink {
+                NotificationSettingsScreen()
+            } label: {
+                PortalNavigationRow(systemImage: "bell", title: "变动通知")
+            }
         }
     }
 
-    /// The check log used to be its own bottom-bar tab. Android has no such tab -- the log is
-    /// reached from Settings, under the notification section -- so the entry lives here.
+    /// The check log used to be its own bottom-bar tab. Android has no such tab -- it is reached
+    /// from the notification settings -- so the entry lives here.
     private var historySection: some View {
         Section {
             NavigationLink {
                 NoticeHistoryScreen()
             } label: {
-                LabeledContent("检查日志", value: "查看检测历史与具体变动")
+                PortalNavigationRow(systemImage: "doc.text.magnifyingglass", title: "检查日志")
             }
-        } header: {
-            Text("记录")
         }
     }
 
-    private var appearanceSection: some View {
-        Section("外观") {
-            Toggle("深色模式", isOn: Binding(
-                get: { ThemePreferences.shared.isDark },
-                set: { newValue in
-                    ThemePreferences.shared.isDark = newValue
-                    state.isDark = newValue
-                }
-            ))
-        }
-    }
+    // MARK: - 应用
 
-    private var schoolSection: some View {
+    private var applicationSection: some View {
         Section {
-            Button("切换学校") { showingSchools = true }
-            Button {
-                Task { await refreshSchools() }
-            } label: {
-                HStack {
-                    Text("从 GitHub 更新学校配置")
-                    if isRefreshing { Spacer(); ProgressView().controlSize(.small) }
-                }
-            }
-            .disabled(isRefreshing)
-
-            if let statusMessage {
-                Text(statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("学校配置")
-        } footer: {
-            Text("更新会校验学校定义、HTTPS 地址与远程配置路径，校验失败时保留当前配置。")
-        }
-    }
-
-    private var aboutSection: some View {
-        Section("关于") {
-            LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
-            if let release {
-                LabeledContent("最新版本", value: release.tagName)
-                if let url = URL(string: release.htmlUrl) {
-                    Link("查看更新日志", destination: url)
-                }
-            }
+            Toggle("后台运行", isOn: $notifications.monitorEnabled)
             Button {
                 Task { await checkRelease(force: true) }
             } label: {
-                HStack {
-                    Text("检查更新")
-                    if isCheckingRelease { Spacer(); ProgressView().controlSize(.small) }
+                PortalNavigationRow(
+                    systemImage: "arrow.down.circle",
+                    title: "软件更新",
+                    trailing: {
+                        if isCheckingRelease {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("当前版本 \(appVersion)")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isCheckingRelease)
+
+            if let release {
+                Section {
+                    Link(destination: URL(string: release.htmlUrl)!) {
+                        PortalNavigationRow(systemImage: "tag", title: "发现新版本 \(release.tagName)")
+                    }
                 }
             }
-            .disabled(isCheckingRelease)
+        } header: {
+            Text("应用")
+        } footer: {
+            Text(statusMessage ?? "更新会检查 GitHub Releases，不会自动安装。")
         }
     }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    // MARK: - 账户
+
+    private var accountSection: some View {
+        Section {
+            Button {
+                confirmSignOut = true
+            } label: {
+                Text("退出登录")
+                    .foregroundStyle(Color.red)
+            }
+        } header: {
+            Text("账户")
+        }
+    }
+
+    // MARK: - Actions
 
     private func refreshSchools() async {
         isRefreshing = true
@@ -153,6 +175,56 @@ struct SettingsScreen: View {
         isCheckingRelease = true
         defer { isCheckingRelease = false }
         release = try? await GitHubRepository.latestRelease()
+    }
+}
+
+/// Port of `NotificationSettingsActivity.kt`: which changes are watched, how often, and the log.
+struct NotificationSettingsScreen: View {
+    @ObservedObject private var notifications = NotificationPreferences.shared
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("课表", isOn: $notifications.scheduleEnabled)
+                Toggle("成绩", isOn: $notifications.gradeEnabled)
+                Toggle("考试", isOn: $notifications.examEnabled)
+                Toggle("培养方案", isOn: $notifications.programEnabled)
+            } header: {
+                Text("通知类型")
+            }
+
+            Section {
+                Picker("检查频率", selection: $notifications.intervalMinutes) {
+                    Text("15 分钟").tag(15)
+                    Text("30 分钟").tag(30)
+                    Text("60 分钟").tag(60)
+                }
+            } header: {
+                Text("检查频率")
+            } footer: {
+                Text("iOS 会根据系统电量与使用情况调整实际执行频率，界面显示的是请求的间隔。")
+            }
+
+            Section {
+                NavigationLink {
+                    NoticeHistoryScreen()
+                } label: {
+                    PortalNavigationRow(systemImage: "doc.text.magnifyingglass", title: "检查日志")
+                }
+            } header: {
+                Text("记录")
+            }
+
+            Section {
+                Button {
+                    PortalPollHistory.clear()
+                } label: {
+                    Text("清空").foregroundStyle(Color.red)
+                }
+            }
+        }
+        .navigationTitle("变动通知")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

@@ -104,6 +104,7 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showingSchools) {
                 SchoolPickerView { school in state.selectSchool(school) }
+                    .environmentObject(state)
             }
         }
     }

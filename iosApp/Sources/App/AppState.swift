@@ -31,7 +31,13 @@ final class AppState: ObservableObject {
     /// Backs the navigation bar's `.searchable` field. The system owns the affordance -- expand,
     /// cancel, clear -- so there is no expanded/collapsed state to track here.
     @Published var searchQuery = ""
-    @Published var isDark = false
+    @Published private(set) var isDark = false
+    /// The user's display-mode choice. `isDark` is derived from this and the current system
+    /// appearance, so the two can never disagree.
+    @Published var themeMode: ThemeMode = ThemePreferences.shared.mode
+    /// The Android client's "液态玻璃" switch, which chooses between the system material and a
+    /// plain blur on the bottom bar and the glass cards.
+    @Published var glassEnabled = true
     @Published var showingLogin = false
     /// Drives the full-screen web login screen presented from the login form.
     @Published var showingWebLogin = false
@@ -48,7 +54,7 @@ final class AppState: ObservableObject {
     func bootstrap() async {
         SchoolCatalog.shared.initialize()
         _ = SchoolCatalog.shared.loadDefinition()
-        isDark = ThemePreferences.shared.isDark
+        isDark = ThemePreferences.shared.mode == .dark
         SessionStore.shared.restoreToCookieStorage()
 
         guard PortalHTTP.hasSessionCookie else {
@@ -142,6 +148,18 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - Search
+
+    /// Resolves the display mode against the current system appearance. The root view calls this
+    /// whenever either changes, so a 跟随系统 selection tracks the system without the app having to
+    /// observe anything itself.
+    func resolveTheme(with systemScheme: ColorScheme) {
+        switch themeMode {
+        case .system: isDark = systemScheme == .dark
+        case .light: isDark = false
+        case .dark: isDark = true
+        }
+        ThemePreferences.shared.mode = themeMode
+    }
 
     /// The query actually used for filtering, matching Android's `query.trim()`.
     var trimmedSearchQuery: String {
@@ -241,13 +259,49 @@ enum CredentialStore {
 }
 
 /// Port of the theme preference handling in `PortalTheme.kt`.
+/// Port of `PortalThemeMode`: the three display modes the Android settings page offers.
+///
+/// Android stores the choice as an enum and derives the dark flag from it. iOS needs the same
+/// three states, and "follow the system" is the one that changes how the app is built rather than
+/// what it paints: a nil `preferredColorScheme` is what lets the system drive, which the previous
+/// two-state toggle could not express.
+enum ThemeMode: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    /// Nil means "do not constrain the system", which is how SwiftUI expresses 跟随系统.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light: return "浅色"
+        case .dark: return "深色"
+        }
+    }
+}
+
 final class ThemePreferences {
     static let shared = ThemePreferences()
-    private static let darkKey = "portal_theme_dark"
+    private static let modeKey = "portal_theme_mode"
     private init() {}
 
-    var isDark: Bool {
-        get { UserDefaults.standard.bool(forKey: Self.darkKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Self.darkKey) }
+    var mode: ThemeMode {
+        get {
+            (UserDefaults.standard.string(forKey: Self.modeKey)).flatMap(ThemeMode.init(rawValue:)) ?? .system
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Self.modeKey) }
     }
+
+    /// Whether the app is currently painting dark, whichever mode got it there.
+    var isDark: Bool { mode == .dark }
 }

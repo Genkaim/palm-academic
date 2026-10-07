@@ -5,13 +5,38 @@ struct MaterialPageScreen: View {
     @EnvironmentObject private var state: AppState
     let item: PortalItem
 
-    @State private var page: MaterialPage?
-    @State private var errorMessage: String?
-    @State private var isLoading = true
+    @State private var loadState: LoadState = .authenticating
     @State private var refreshToken = 0
     @State private var action: MaterialReaderAction?
     @State private var actionToken = 0
     @State private var choiceValues: [String: String] = [:]
+    /// Exported schedule files, produced once a schedule page has content. Building them lazily in
+    /// the menu would mean re-serialising on every tap; they are small and immutable.
+    @State private var exports: [ScheduleExport.Format: URL] = [:]
+
+    /// The six states `MaterialPortalActivity` distinguishes. The previous version collapsed these
+    /// into `isLoading` plus an optional error string, which could not tell "the portal is slow"
+    /// apart from "the network is gone" -- and Android gives those two different screens, the second
+    /// with a retry that re-runs validation rather than the fetch.
+    private enum LoadState: Equatable {
+        case authenticating
+        case unavailable
+        case loading
+        case loaded
+        case failed(String)
+        case sessionExpired
+    }
+
+    private var page: MaterialPage? {
+        if case .loaded = loadState { return renderedPage }
+        return nil
+    }
+
+    @State private var renderedPage: MaterialPage?
+
+    private var scheduleSection: MaterialSection? {
+        renderedPage?.sections.first { if case .schedule = $0 { return true } else { return false } }
+    }
 
     private var url: String {
         let base = state.definition?.baseUrl ?? "\(SchoolCatalog.shared.origin)/student"
@@ -37,20 +62,51 @@ struct MaterialPageScreen: View {
                 .opacity(0)
                 .clipped()
 
-            if isLoading && page == nil {
-                ProgressView("加载中…")
-            } else if let errorMessage, page == nil {
-                errorState(errorMessage)
-            } else if let loaded = page {
-                content(loaded)
+            switch loadState {
+            case .authenticating:
+                statusView(icon: "hourglass", title: "尝试登录…", detail: "正在验证教务登录状态")
+            case .unavailable:
+                statusView(
+                    icon: "wifi.exclamationmark",
+                    title: "无法验证教务系统",
+                    detail: "网络较慢，或当前网络无法访问教务系统",
+                    actionTitle: "重试",
+                    action: { Task { await state.revalidateSession() }; loadState = .authenticating }
+                )
+            case .loading:
+                statusView(icon: "arrow.down.doc", title: "正在获取…", detail: item.title)
+            case .failed(let message):
+                statusView(icon: "exclamationmark.triangle", title: "加载失败", detail: message) {
+                    retry()
+                }
+            case .sessionExpired:
+                statusView(icon: "person.crop.circle.badge.exclamationmark", title: "登录状态已失效", detail: "请重新登录后继续")
+            case .loaded:
+                if let loaded = renderedPage {
+                    content(loaded)
+                }
             }
         }
         .navigationTitle(item.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
+                if !exports.isEmpty {
+                    Menu {
+                        ForEach(ScheduleExport.Format.allCases) { format in
+                            if let url = exports[format] {
+                                ShareLink(item: url) {
+                                    Label(format.displayName, systemImage: format.systemImage)
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("导出课表")
+                }
                 Button {
-                    refreshToken += 1
+                    retry()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -58,8 +114,42 @@ struct MaterialPageScreen: View {
             }
         }
         .task {
-            if page == nil { await loadCachedThenFetch() }
+            if renderedPage == nil { await loadCachedThenFetch() }
         }
+    }
+
+    /// One of the non-content states, in the shape Android gives each of them.
+    private func statusView(
+        icon: String,
+        title: String,
+        detail: String,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 40))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.headline)
+            Text(detail)
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.borderedProminent)
+                    .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 40)
+    }
+
+    private func retry() {
+        loadState = .loading
+        refreshToken += 1
     }
 
     /// The hidden reader. It stays mounted for the life of the screen and drives the refresh
@@ -73,23 +163,31 @@ struct MaterialPageScreen: View {
             action: action,
             isDark: state.isDark,
             onLoading: { loading in
-                Task { @MainActor in if !loading { isLoading = false } }
+                Task { @MainActor in
+                    if loading {
+                        // A refresh over existing content keeps the page on screen; only a cold
+                        // load shows the spinner, which is what Android's `.loading` state means.
+                        if renderedPage == nil { loadState = .loading }
+                    } else if loadState == .loading {
+                        loadState = .authenticating
+                    }
+                }
             },
             onContent: { newPage in
                 Task { @MainActor in
-                    page = newPage
-                    isLoading = false
-                    errorMessage = nil
+                    renderedPage = newPage
+                    loadState = .loaded
+                    prepareExports(for: newPage)
                 }
             },
             onError: { message in
                 Task { @MainActor in
-                    isLoading = false
-                    if page == nil { errorMessage = message }
+                    if renderedPage == nil { loadState = .failed(message) }
                 }
             },
             onSessionExpired: {
                 Task { @MainActor in
+                    loadState = .sessionExpired
                     state.signOut(message: "登录已过期，请重新登录")
                 }
             }
@@ -104,7 +202,7 @@ struct MaterialPageScreen: View {
     private func content(_ snapshot: MaterialPage) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if isLoading {
+                if loadState == .loading {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("正在刷新…")
@@ -534,31 +632,39 @@ struct MaterialPageScreen: View {
     /// Renders the cached snapshot immediately, then lets the WebView refresh behind it.
     private func loadCachedThenFetch() async {
         if let cached = MaterialPageCache.load(url: url) {
-            page = cached
-            isLoading = false
+            renderedPage = cached
+            loadState = .loaded
+            prepareExports(for: cached)
         }
-        isLoading = true
+        loadState = .loading
         refreshToken += 1
     }
 
-    private func errorState(_ message: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: "wifi.exclamationmark")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text("加载失败")
-                .font(.headline)
-            Text(message)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-            Button("重试") {
-                refreshToken += 1
-                isLoading = true
-                errorMessage = nil
-            }
-            .buttonStyle(.borderedProminent)
-            .padding(.top, 4)
+    /// Writes the three export formats once a schedule page has content, so the share menu can hand
+    /// out files instead of re-serialising on every tap.
+    private func prepareExports(for page: MaterialPage) {
+        guard case .schedule(let semester, let semesterStart, let days) = scheduleSection else {
+            exports = [:]
+            return
         }
-        .padding(24)
+        let profile = state.selectedSchool?.fallbackUnitTimes ?? [:]
+        let entries = ScheduleExport.entries(
+            semesterStartDate: semesterStart,
+            days: days,
+            unitTimes: profile
+        )
+        guard !entries.isEmpty else {
+            exports = [:]
+            return
+        }
+        let schoolID = SchoolCatalog.shared.selectedSchoolID
+        var produced: [ScheduleExport.Format: URL] = [:]
+        for format in ScheduleExport.Format.allCases {
+            if let url = ScheduleExport.write(format, semester: semester, entries: entries, schoolID: schoolID) {
+                produced[format] = url
+            }
+        }
+        exports = produced
     }
+
 }

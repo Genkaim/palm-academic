@@ -9,12 +9,29 @@ struct PalmAcademicApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environmentObject(state)
-                .preferredColorScheme(state.isDark ? .dark : .light)
-                .tint(Color(red: 0.16, green: 0.44, blue: 0.85))
-                .task { await state.bootstrap() }
+            AppRoot(state: state)
         }
+    }
+}
+
+/// Resolves the display mode against the system appearance and hands the resolved state on.
+///
+/// "跟随系统" is a nil `preferredColorScheme`, so the system drives the appearance; the app still
+/// has to know which one won, because the reader's WebView and a few surfaces are told explicitly
+/// rather than inheriting it.
+private struct AppRoot: View {
+    @ObservedObject var state: AppState
+    @Environment(\.colorScheme) private var systemScheme
+
+    var body: some View {
+        RootView()
+            .environmentObject(state)
+            .preferredColorScheme(state.themeMode.colorScheme)
+            .tint(Color(red: 0.16, green: 0.44, blue: 0.85))
+            .task { await state.bootstrap() }
+            .onAppear { state.resolveTheme(with: systemScheme) }
+            .onChange(of: systemScheme) { scheme in state.resolveTheme(with: scheme) }
+            .onChange(of: state.themeMode) { _ in state.resolveTheme(with: systemScheme) }
     }
 }
 
@@ -115,6 +132,7 @@ struct MainShellView: View {
             // The bar floats above the content so the page stays scrollable underneath.
             LiquidBottomBar(
                 isDark: state.isDark,
+                glassEnabled: state.glassEnabled,
                 selection: $state.selectedTab
             )
         }
