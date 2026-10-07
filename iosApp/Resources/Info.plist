@@ -24,14 +24,20 @@
 	<true/>
 	<key>MinimumOSVersion</key>
 	<string>16.0</string>
-	<key>DTPlatformVersion</key>
-	<string>16.5</string>
-	<key>DTSDKName</key>
-	<string>iphoneos16.5</string>
-	<key>DTXcode</key>
-	<string>1500</string>
-	<key>DTXcodeBuild</key>
-	<string>15A240d</string>
+	<!--
+	  DTPlatformVersion / DTSDKName / DTXcode are deliberately absent.
+
+	  They used to be pinned to 16.5 here, which was accurate only for the Windows build and
+	  became a lie the moment the macOS runner compiled the same target against a current SDK: the
+	  bundle kept claiming iphoneos16.5 while the executable's LC_BUILD_VERSION said otherwise.
+	  Anything reading the plist would draw the wrong conclusion, including the build report that
+	  this repository publishes next to the artifact.
+
+	  Nothing needs them to be set. Xcode derives all three from the toolchain in use when it
+	  builds, and the Windows path has no use for them. The value that actually decides whether
+	  the system draws Liquid Glass is the linked SDK recorded in the binary's LC_BUILD_VERSION
+	  load command, which no Info.plist key can override.
+	-->
 	<key>UIDeviceFamily</key>
 	<array>
 		<integer>1</integer>

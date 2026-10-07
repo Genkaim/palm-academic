@@ -1,4 +1,4 @@
-name: Build unsigned iOS IPA (macOS, Liquid Glass)
+name: Build signed iOS IPA (macOS, Liquid Glass)
 
 # The Windows cross-compile path cannot use an iOS 26+ SDK: SwiftUI's property wrappers
 # (@State, @Environment, ...) became external macros shipped in SwiftUIMacros.dylib, and that
@@ -68,42 +68,59 @@ jobs:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS="USE_SYSTEM_GLASS"
           build
 
-      - name: Package unsigned IPA
+      - name: Package installable IPA
         shell: bash
         run: |
           set -euo pipefail
+          APP="build/ios/Build/Products/Release-iphoneos/PalmAcademic.app"
+
+          # An unsigned bundle cannot be installed: installd rejects it with
+          # "ApplicationVerificationFailed: No code signature found". TrollStore accepts an
+          # ad-hoc signature, and so does any device that re-signs the IPA, so signing here
+          # makes the artifact directly installable instead of requiring a second tool.
+          #
+          # --deep is not used: it rewrites nested code and Apple's own guidance is to sign
+          # nested content explicitly. There is none here beyond the executable.
+          codesign --force --sign - --timestamp=none "$APP"
+          codesign --force --sign - --timestamp=none --preserve-metadata=entitlements "$APP/Frameworks" 2>/dev/null || true
+          # Verify rather than assume, so a silent signing failure cannot reach the artifact.
+          codesign --verify --deep --strict "$APP"
+
           mkdir -p build/package/Payload artifacts
-          cp -R build/ios/Build/Products/Release-iphoneos/PalmAcademic.app build/package/Payload/
+          cp -R "$APP" build/package/Payload/
           ditto -c -k --sequesterRsrc --keepParent \
-            build/package/Payload artifacts/PalmAcademic-ios-liquidglass-unsigned.ipa
-          unzip -t artifacts/PalmAcademic-ios-liquidglass-unsigned.ipa
-          shasum -a 256 artifacts/PalmAcademic-ios-liquidglass-unsigned.ipa \
-            > artifacts/PalmAcademic-ios-liquidglass-unsigned.ipa.sha256
+            build/package/Payload artifacts/PalmAcademic-ios-liquidglass.ipa
+          unzip -t artifacts/PalmAcademic-ios-liquidglass.ipa
+          shasum -a 256 artifacts/PalmAcademic-ios-liquidglass.ipa \
+            > artifacts/PalmAcademic-ios-liquidglass.ipa.sha256
+          echo "Signature applied:"; codesign -dv "$APP" 2>&1 | grep -E "Signature|Identifier" || true
 
       - name: Record what the build actually linked against
         shell: bash
         run: |
-          # The linked SDK decides whether the system draws glass, so it is worth stating
-          # explicitly next to the artifact rather than leaving it to be inferred.
+          # The system decides whether to draw Liquid Glass from the SDK recorded in the
+          # executable's LC_BUILD_VERSION, not from any Info.plist key. That is why this reads
+          # the binary: an earlier version of this file trusted DTSDKName, which was pinned in
+          # the plist to whatever the Windows build used and therefore reported 16.5 here.
+          APP="build/ios/Build/Products/Release-iphoneos/PalmAcademic.app"
           {
             echo "### Build environment"
             echo
             echo "- xcode: $(xcodebuild -version | head -1)"
             echo "- swift: $(swift --version 2>&1 | head -1)"
-            echo "- deployment target: $(grep -A1 IPHONEOS_DEPLOYMENT_TARGET \
-              iosApp/PalmAcademicIOS.xcodeproj/project.pbxproj | head -1 | sed 's/.*= //')"
-            echo "- MinimumOSVersion: $(/usr/libexec/PlistBuddy \
-              -c 'Print :MinimumOSVersion' \
-              build/ios/Build/Products/Release-iphoneos/PalmAcademic.app/Info.plist)"
-            echo "- DTSDKName: $(/usr/libexec/PlistBuddy \
-              -c 'Print :DTSDKName' \
-              build/ios/Build/Products/Release-iphoneos/PalmAcademic.app/Info.plist)"
+            echo "- MinimumOSVersion: $(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")"
             echo
-            echo "Liquid Glass is applied by the system when the linked SDK is iOS 26 or later."
+            echo "### Linked SDK (from LC_BUILD_VERSION, this is what gates Liquid Glass)"
+            echo
+            otool -l "$APP/PalmAcademic" \
+              | awk '/LC_BUILD_VERSION/{f=1} f&&/sdk /{print "- sdk:   " $2; f=0} \
+                     f&&/minos /{print "- minos: " $2; f=0}'
+            echo
+            echo "A linked SDK of iOS 26 or later means the system renders its own Liquid Glass."
           } | tee artifacts/build-environment.md
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PalmAcademic-ios-liquidglass-unsigned
+          name: PalmAcademic-ios-liquidglass
           path: artifacts/*
           if-no-files-found: error
