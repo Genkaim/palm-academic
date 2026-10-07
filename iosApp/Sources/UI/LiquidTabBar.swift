@@ -1,102 +1,214 @@
 import SwiftUI
 import UIKit
 
-/// Hand-drawn liquid glass bottom bar.
+/// Applies SwiftUI's own glass modifier where the build links an SDK that declares it.
 ///
-/// The Android client ships its own Compose liquid-glass components. On a system that renders
-/// Liquid Glass, the same material is available natively, so it is preferred when present and the
-/// hand-drawn material stands in everywhere else. Which of the two applies is decided by
-/// `SystemGlassSupport.canRenderGlass`, which accounts for the linked SDK as well as the running
-/// system.
+/// The modifier cannot be named from an older SDK -- that is a compile error, not a runtime
+/// condition -- so it stays behind the compile-time switch, with the availability test inside:
+/// the deployment target is 16.0, so without it the compiler rejects the call outright.
 ///
-/// Note that a recent system alone does not bring the native look: Apple gates the design on the
-/// SDK the app was linked against. An app built with an older SDK keeps the previous system
-/// appearance even on iOS 27, so the system version is necessary but not sufficient.
-/// The material behind the bar.
+/// When it cannot be applied the view is returned untouched and the caller falls back to a system
+/// material, which is also what a build without the API gets on a recent device.
 ///
-/// Prefers the system's own glass when the running system has it, and falls back to an
-/// `ultraThin` blur otherwise. The choice is made per instance rather than at compile time, so
-/// the same binary renders glass on a recent device and blur on an older one.
-struct LiquidGlassBackground: UIViewRepresentable {
-    var cornerRadius: CGFloat = 32
-    var isDark: Bool = false
+/// The shape is generic rather than an existential because `glassEffect(_:in:)` and
+/// `background(_:in:)` both want a concrete `Shape`; handing them an `any Shape` does not compile.
+struct SystemGlassSurface<Content: View, S: Shape>: View {
+    var shape: S
+    var interactive: Bool = false
+    @ViewBuilder var content: Content
 
-    func makeUIView(context: Context) -> UIVisualEffectView {
-        let effect = SystemGlassSupport.makeEffect(style: 0)
-            ?? UIBlurEffect(style: .systemUltraThinMaterial)
-        let view = UIVisualEffectView(effect: effect)
-        view.layer.cornerRadius = cornerRadius
-        view.layer.cornerCurve = .continuous
-        view.clipsToBounds = true
-        view.isUserInteractionEnabled = false
-        return view
+    var body: some View {
+        #if USE_SYSTEM_GLASS
+        if #available(iOS 26.0, *) {
+            if interactive {
+                content.glassEffect(.regular.interactive(), in: shape)
+            } else {
+                content.glassEffect(.regular, in: shape)
+            }
+        } else {
+            fallback
+        }
+        #else
+        fallback
+        #endif
     }
 
-    func updateUIView(_ uiView: UIVisualEffectView, context: Context) {
-        uiView.overrideUserInterfaceStyle = isDark ? .dark : .light
+    /// The material used when the native glass is unavailable. `.ultraThinMaterial` is itself a
+    /// system material, so it keeps tracking the appearance instead of being a hand-mixed colour.
+    private var fallback: some View {
+        content.background(.ultraThinMaterial, in: shape)
     }
 }
 
-/// The capsule behind the selected tab.
+/// Port of the Android `FloatingHomeNavigation`: two tabs and a search button that share one row.
 ///
-/// Real glass where the system provides it, `.ultraThinMaterial` otherwise. The material is
-/// resolved by the same helper the bar uses, so both surfaces on this screen agree on which one
-/// is in use instead of each deciding separately.
-struct LiquidGlassIndicator: View {
-    var isActive: Bool
-    var isDark: Bool
+/// The numbers below are the Android ones. What makes the layout non-obvious is that the two
+/// pieces overlap rather than sit side by side once search opens. Collapsed, the row is
+/// `210 + 10 + 64 = 284` wide and the search button occupies the row's trailing spacer. Expanded,
+/// the tabs grow to the full 284 and the search field grows to 284 as well, so the field covers
+/// them completely -- which is why the trailing spacer animates to zero and the field's own centre
+/// offset animates back to zero at the same time.
+struct LiquidBottomBar: View {
+    let isDark: Bool
+    @Binding var selection: LiquidTabItem
+    @Binding var searchExpanded: Bool
+    @Binding var query: String
+    var onCloseSearch: () -> Void
 
-    var body: some View {
-        indicatorBackground
-            .overlay(
-                Capsule()
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                (isDark ? Color.white : Color.black).opacity(0.18),
-                                (isDark ? Color.white : Color.black).opacity(0.04)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.8
-                    )
-            )
-            .frame(width: 62, height: 46)
-            // Only the transform and the opacity are animated. A drop shadow here was the single
-            // biggest source of tab-switch jank: it has to re-rasterise its bitmap on every frame
-            // of the spring, which the container renderer does not accelerate. Drawing the shade
-            // as a static shape behind the capsule keeps the motion down to a pure transform.
-            .background(
-                Capsule()
-                    .fill(Color.black)
-                    .opacity(isDark ? 0.3 : 0.12)
-                    .blur(radius: 8)
-                    .offset(y: 3)
-                    .allowsHitTesting(false)
-            )
-            .scaleEffect(y: isActive ? 1.0 : 0.86)
-            .opacity(isActive ? 1.0 : 0.0)
-            .animation(.spring(response: 0.34, dampingFraction: 0.68), value: isActive)
+    private enum Metric {
+        static let tabsCollapsed: CGFloat = 210
+        static let tabsExpanded: CGFloat = 284
+        static let searchCollapsed: CGFloat = 64
+        static let searchExpandedWidth: CGFloat = 284
+        static let gapCollapsed: CGFloat = 10
+        static let slotCollapsed: CGFloat = 64
+        /// How far the collapsed field sits right of centre, which lands it on the row's spacer.
+        static let collapsedOffset: CGFloat = 110
+        static let barHeight: CGFloat = 64
     }
 
-    /// The capsule's own fill.
-    ///
-    /// `isInteractive` is what makes system glass swell and catch the light on touch, which is the
-    /// behaviour that reads as glass rather than as a translucent fill. It needs children to
-    /// respond to, so it is only requested here, where the tab's icon and label sit above it.
-    @ViewBuilder
-    private var indicatorBackground: some View {
-        if let glass = SystemGlassSupport.makeGlassView(
-            style: 0,
-            interactive: true,
-            cornerRadius: 23
-        ) {
-            glass
-        } else {
-            Capsule()
-                .fill(.ultraThinMaterial)
+    private var tabsWidth: CGFloat {
+        searchExpanded ? Metric.tabsExpanded : Metric.tabsCollapsed
+    }
+
+    private var searchWidth: CGFloat {
+        searchExpanded ? Metric.searchExpandedWidth : Metric.searchCollapsed
+    }
+
+    private var gap: CGFloat { searchExpanded ? 0 : Metric.gapCollapsed }
+    private var slotWidth: CGFloat { searchExpanded ? 0 : Metric.slotCollapsed }
+    private var collapsedOffset: CGFloat { searchExpanded ? 0 : Metric.collapsedOffset }
+
+    /// Matches the Android spring: damping ratio 0.82 at stiffness 440, which for unit mass is a
+    /// damping coefficient of `2 * 0.82 * sqrt(440)`.
+    private var spring: Animation { .interpolatingSpring(stiffness: 440, damping: 34) }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            tabRow
+            searchLayer
+                .frame(width: searchWidth, height: Metric.barHeight)
+                .frame(maxWidth: .infinity)
+                .offset(x: collapsedOffset)
         }
+        .animation(spring, value: searchExpanded)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
+    private var tabRow: some View {
+        HStack(spacing: gap) {
+            tabBar
+                .frame(width: tabsWidth)
+            Color.clear.frame(width: slotWidth, height: Metric.barHeight)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var tabBar: some View {
+        SystemGlassSurface(shape: Capsule()) {
+            HStack(spacing: 0) {
+                tabButton(.home)
+                tabButton(.settings)
+            }
+            .padding(4)
+        }
+        .frame(height: Metric.barHeight)
+    }
+
+    private var searchLayer: some View {
+        SystemGlassSurface(shape: Capsule(), interactive: searchExpanded) {
+            Group {
+                if searchExpanded {
+                    expandedSearchField
+                } else {
+                    collapsedSearchButton
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(height: Metric.barHeight)
+    }
+
+    private var collapsedSearchButton: some View {
+        Button {
+            searchExpanded = true
+        } label: {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(ink)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .accessibilityLabel("搜索")
+    }
+
+    private var expandedSearchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            TextField("搜索教务功能", text: $query)
+                .textFieldStyle(.plain)
+                .font(.body)
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清空搜索")
+            }
+
+            Button {
+                onCloseSearch()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("关闭搜索")
+        }
+        .padding(.horizontal, 18)
+    }
+
+    private var ink: Color {
+        isDark ? Color.white : Color.primary
+    }
+
+    private func tabButton(_ item: LiquidTabItem) -> some View {
+        let isActive = item == selection
+        return Button {
+            withAnimation(spring) { selection = item }
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: isActive ? item.selectedSystemImage : item.systemImage)
+                    .font(.system(size: 21, weight: .regular))
+                Text(item.title)
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(ink)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            // The selected well. On a system that draws the glass itself the tint is left to it,
+            // which is the same rule SystemGlassSupport.hasNativeGlassAPI encodes.
+            Capsule()
+                .fill(isActive ? Color.primary.opacity(isDark ? 0.16 : 0.08) : .clear)
+        )
+        .accessibilityLabel(Text(item.title))
+        .accessibilityAddTraits(isActive ? [.isSelected, .isButton] : .isButton)
     }
 }
 
@@ -113,156 +225,17 @@ struct LiquidTabItem: Identifiable, Hashable {
         self.selectedSystemImage = selectedSystemImage ?? "\(systemImage).fill"
     }
 
-    static let home = LiquidTabItem(id: "home", title: "首页", systemImage: "house")
-    static let quick = LiquidTabItem(id: "quick", title: "快捷", systemImage: "square.grid.2x2")
-    static let notices = LiquidTabItem(id: "notices", title: "记录", systemImage: "clock.arrow.circlepath")
+    /// Matches the Android tab set: `主页` and `设置` only. The Android client has no separate
+    /// quick-entry or history tab -- quick entries are the grid on the home screen, search is the
+    /// trailing button, and the check log is reached from Settings.
+    static let home = LiquidTabItem(id: "home", title: "主页", systemImage: "house")
     static let settings = LiquidTabItem(id: "settings", title: "设置", systemImage: "gearshape")
-}
-
-struct LiquidTabBar: View {
-    let items: [LiquidTabItem]
-    @Binding var selection: LiquidTabItem
-    let isDark: Bool
-
-    var body: some View {
-        if systemDrawsSelectionWell {
-            applySystemGlass(to: barContent.overlay(rimStroke))
-        } else {
-            // No modifier to call, but the runtime may still produce the material.
-            // `LiquidGlassBackground` asks for it and falls back to a blur on its own, so the bar
-            // gets real glass on a recent device without any compile-time coupling.
-            barContent
-                .background(LiquidGlassBackground(cornerRadius: 30, isDark: isDark))
-                .overlay(rimStroke)
-        }
-    }
-
-    /// Applies SwiftUI's own glass modifier.
-    ///
-    /// Only reachable on a build that links an SDK declaring the iOS 26 API. The modifier cannot be
-    /// named from an older SDK -- that is a compile error, not a runtime condition -- so it stays
-    /// behind the compile-time switch.
-    ///
-    /// The availability test inside is required rather than defensive: the deployment target is
-    /// 16.0, so without it the compiler rejects the call on the grounds that the modifier is only
-    /// available from iOS 26. `systemDrawsSelectionWell` already established at runtime that the
-    /// device qualifies; this states it in the form the compiler can check.
-    @ViewBuilder
-    private func applySystemGlass<V: View>(to view: V) -> some View {
-        #if USE_SYSTEM_GLASS
-        if #available(iOS 26.0, *) {
-            view.glassEffect(.regular, in: .capsule)
-        } else {
-            view
-        }
-        #else
-        view
-        #endif
-    }
-
-    /// The hairline along the bar's rim.
-    ///
-    /// Kept on both paths: neither `UIGlassEffect` nor SwiftUI's `glassEffect` draws an outline,
-    /// and without one the bar's edge dissolves into the content behind it. A static stroke is
-    /// rasterised once, so unlike a shadow it costs nothing per frame.
-    private var rimStroke: some View {
-        Capsule()
-            .strokeBorder(
-                LinearGradient(
-                    colors: [
-                        (isDark ? Color.white : Color.black).opacity(0.22),
-                        (isDark ? Color.white : Color.black).opacity(0.05)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
-                lineWidth: 0.8
-            )
-            .allowsHitTesting(false)
-    }
-
-    @ViewBuilder
-    private var barContent: some View {
-        HStack(spacing: 0) {
-            ForEach(items) { item in
-                tabButton(item)
-            }
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 6)
-        // Same reasoning as the indicator: the bar's own drop shadow is a static shape sitting
-        // behind the content, so it costs one rasterisation rather than one per frame.
-        .background(
-            Capsule()
-                .fill(Color.black)
-                .opacity(isDark ? 0.4 : 0.14)
-                .blur(radius: 18)
-                .offset(y: 8)
-                .allowsHitTesting(false)
-        )
-        .padding(.horizontal, 18)
-        .padding(.bottom, 6)
-    }
-
-    private var accent: Color {
-        isDark ? Color(red: 0.55, green: 0.78, blue: 1.0) : Color(red: 0.16, green: 0.44, blue: 0.85)
-    }
-
-    @ViewBuilder
-    private func tabButton(_ item: LiquidTabItem) -> some View {
-        let isActive = item == selection
-        Button {
-            withAnimation(.spring(response: 0.34, dampingFraction: 0.7)) {
-                selection = item
-            }
-        } label: {
-            ZStack {
-                if isActive {
-                    indicator(isActive: true)
-                }
-                VStack(spacing: 3) {
-                    Image(systemName: isActive ? item.selectedSystemImage : item.systemImage)
-                        .font(.system(size: 17, weight: .semibold))
-                    Text(item.title)
-                        .font(.system(size: 10.5, weight: isActive ? .semibold : .medium))
-                }
-                .foregroundStyle(isActive ? accent : (isDark ? Color.white.opacity(0.6) : Color.secondary))
-            }
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(item.title))
-        .accessibilityAddTraits(isActive ? [.isSelected, .isButton] : .isButton)
-    }
-
-    /// Whether the system draws the selection well itself.
-    ///
-    /// True only when the modifier can be named *and* the running system renders it. On a build
-    /// that has the API but runs on an older device, the bar falls back to the hand-drawn
-    /// material and this must stay false, or the selected item would have no indicator at all.
-    private var systemDrawsSelectionWell: Bool {
-        SystemGlassSupport.hasNativeGlassAPI && SystemGlassSupport.isLiquidGlassOS
-    }
-
-    @ViewBuilder
-    private func indicator(isActive: Bool) -> some View {
-        // The system glass draws its own selection well, but only in the same case the bar itself
-        // does. Everywhere else the runtime path renders the bar's material yet no well, so the
-        // hand-drawn capsule stays responsible. Gating this on the system version rather than on
-        // the SDK would leave older devices with neither.
-        if systemDrawsSelectionWell {
-            Color.clear.frame(width: 62, height: 46)
-        } else {
-            LiquidGlassIndicator(isActive: isActive, isDark: isDark)
-        }
-    }
 }
 
 /// Glass card used for content blocks, matching the Android `PortalGlassComponents` surface.
 ///
-/// The fill is resolved through the same helper as the tab bar, so a card and the bar around it
-/// are made of the same material on a given device. Cards are not interactive: they are content
+/// The fill is resolved through the same helper as the bar, so a card and the bar around it are
+/// made of the same material on a given device. Cards are not interactive: they are content
 /// surfaces, and requesting the touch response from them would make scrolling feel like pressing.
 struct GlassCard<Content: View>: View {
     var cornerRadius: CGFloat = 20
@@ -273,41 +246,9 @@ struct GlassCard<Content: View>: View {
         content
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(cardFill)
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                (isDark ? Color.white : Color.black).opacity(0.16),
-                                (isDark ? Color.white : Color.black).opacity(0.03)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.8
-                    )
-                    .allowsHitTesting(false)
-            )
-            // Static background layer instead of `.shadow`. These cards get rebuilt while their
-            // content scrolls, and a modifier-driven shadow is re-rasterised on each rebuild.
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.black)
-                    .opacity(isDark ? 0.28 : 0.07)
-                    .blur(radius: 12)
-                    .offset(y: 5)
-                    .allowsHitTesting(false)
+                    .fill(isDark ? Color.white.opacity(0.07) : Color.white.opacity(0.72))
             )
-    }
-
-    @ViewBuilder
-    private var cardFill: some View {
-        if let glass = SystemGlassSupport.makeGlassView(cornerRadius: cornerRadius) {
-            glass
-        } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(isDark ? Color.white.opacity(0.07) : Color.white.opacity(0.72))
-        }
     }
 }

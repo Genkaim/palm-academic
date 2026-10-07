@@ -12,6 +12,15 @@ final class AppState: ObservableObject {
         case signedIn
     }
 
+    /// Port of `PortalSessionCoordinator.state` as the home screen consumes it: a hidden state, a
+    /// "checking" state that spins, and a failure the user can tap to retry. Android hides the
+    /// badge for a healthy session rather than showing a confirmation.
+    enum SessionStatus: Equatable {
+        case hidden
+        case checking
+        case unavailable(String)
+    }
+
     @Published private(set) var phase: Phase = .launching
     @Published var username = ""
     @Published var password = ""
@@ -19,11 +28,16 @@ final class AppState: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
     @Published var selectedTab: LiquidTabItem = .home
+    /// The bottom bar's trailing button. Search is a mode of the bar, not a destination: the
+    /// Android client has no search tab, and the field expands over the two tabs while it is open.
+    @Published var isSearchExpanded = false
+    @Published var searchQuery = ""
     @Published var isDark = false
     @Published var showingLogin = false
     /// Drives the full-screen web login screen presented from the login form.
     @Published var showingWebLogin = false
     @Published private(set) var sessionNotice: String?
+    @Published private(set) var sessionStatus: SessionStatus = .hidden
 
     private let auth = AuthRepository()
     private var credentialKey = ""
@@ -53,8 +67,25 @@ final class AppState: ObservableObject {
         case .unavailable:
             // Keep the cached session: an unreachable campus network is not a credential failure.
             sessionNotice = "暂时无法连接教务系统，已保留当前会话"
+            sessionStatus = .unavailable("网络较慢，或当前网络无法访问教务系统")
         case .valid:
             onAuthenticationCompleted()
+        }
+    }
+
+    /// Re-runs the session check behind the home screen's status badge, which is the Android
+    /// `onRetry` action on the "验证失败，点击重试" state.
+    func revalidateSession() async {
+        guard sessionStatus != .checking else { return }
+        sessionStatus = .checking
+        switch await auth.validateSession() {
+        case .valid:
+            sessionStatus = .hidden
+            sessionNotice = nil
+        case .expired:
+            signOut(message: "登录状态已失效")
+        case .unavailable:
+            sessionStatus = .unavailable("网络较慢，或当前网络无法访问教务系统")
         }
     }
 
@@ -106,7 +137,30 @@ final class AppState: ObservableObject {
         rememberPassword = false
         errorMessage = message
         sessionNotice = nil
+        sessionStatus = .hidden
+        closeSearch()
         phase = .signedOut
+    }
+
+    // MARK: - Search
+
+    /// The query actually used for filtering, matching Android's `query.trim()`.
+    var trimmedSearchQuery: String {
+        searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Whether the home screen is showing search results rather than its normal content.
+    var isSearching: Bool {
+        isSearchExpanded && !trimmedSearchQuery.isEmpty
+    }
+
+    func openSearch() {
+        isSearchExpanded = true
+    }
+
+    func closeSearch() {
+        isSearchExpanded = false
+        searchQuery = ""
     }
 
     private func onAuthenticationCompleted() {

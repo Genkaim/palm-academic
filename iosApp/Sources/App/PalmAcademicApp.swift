@@ -98,34 +98,28 @@ struct RootView: View {
     }
 }
 
-/// Host for the hand-drawn liquid glass tab bar and the four native content areas.
+/// Host for the two-tab liquid glass bar and the home/settings content areas.
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
-    @State private var actionItem: PortalItem?
-
-    private var tabs: [LiquidTabItem] {
-        [.home, .quick, .notices, .settings]
-    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             // The tab's own root view has to sit in the stack, not in an overlay. An overlay is
             // proposed whatever size the ZStack ends up with, and a NavigationStack given no height
             // collapses: its bar still draws, its content does not, and because the ZStack then
-            // measures zero the bottom-aligned tab bar rises into the middle of the screen. Each tab
-            // root is self-contained -- HomeView and QuickEntriesView each own a NavigationStack --
-            // so switching tabs legitimately rebuilds the stack.
+            // measures zero the bottom-aligned bar rises into the middle of the screen.
             ZStack {
                 content(for: state.selectedTab)
             }
 
-            // The glass bar floats above the content so both tabs stay scrollable underneath.
-            LiquidTabBar(
-                items: tabs,
+            // The bar floats above the content so the page stays scrollable underneath.
+            LiquidBottomBar(
+                isDark: state.isDark,
                 selection: $state.selectedTab,
-                isDark: state.isDark
+                searchExpanded: $state.isSearchExpanded,
+                query: $state.searchQuery,
+                onCloseSearch: { state.closeSearch() }
             )
-            .padding(.bottom, 4)
         }
         .overlay(alignment: .top) {
             if let notice = state.sessionNotice {
@@ -138,8 +132,6 @@ struct MainShellView: View {
     private func content(for tab: LiquidTabItem) -> some View {
         switch tab.id {
         case LiquidTabItem.home.id: HomeView()
-        case LiquidTabItem.quick.id: QuickEntriesView()
-        case LiquidTabItem.notices.id: NoticeHistoryScreen()
         case LiquidTabItem.settings.id: SettingsScreen()
         default: EmptyView()
         }

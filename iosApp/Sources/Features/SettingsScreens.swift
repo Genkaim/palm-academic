@@ -16,6 +16,7 @@ struct SettingsScreen: View {
                 accountSection
                 monitoringSection
                 notificationSection
+                historySection
                 appearanceSection
                 schoolSection
                 aboutSection
@@ -65,6 +66,20 @@ struct SettingsScreen: View {
             Toggle("成绩", isOn: $notifications.gradeEnabled)
             Toggle("考试", isOn: $notifications.examEnabled)
             Toggle("培养方案", isOn: $notifications.programEnabled)
+        }
+    }
+
+    /// The check log used to be its own bottom-bar tab. Android has no such tab -- the log is
+    /// reached from Settings, under the notification section -- so the entry lives here.
+    private var historySection: some View {
+        Section {
+            NavigationLink {
+                NoticeHistoryScreen()
+            } label: {
+                LabeledContent("检查日志", value: "查看检测历史与具体变动")
+            }
+        } header: {
+            Text("记录")
         }
     }
 
