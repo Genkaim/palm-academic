@@ -93,12 +93,12 @@ final class LocalNetworkProbe: ObservableObject {
             case .ready:
                 finish(.allowed)
             case .failed(let error):
-                finish(Self.classify(error))
+                finish(LocalNetworkRefusal.state(for: error))
             case .waiting(let error):
                 // A waiting state on a private address is what a policy refusal looks like before
                 // it is promoted to a failure, so it is reported as a denial rather than retried
                 // forever.
-                if Self.isPermissionDenial(error) { finish(.denied) }
+                if LocalNetworkRefusal.isPolicy(error) { finish(.denied) }
             case .cancelled:
                 break
             default:
@@ -144,28 +144,36 @@ final class LocalNetworkProbe: ObservableObject {
         }
         return PortalEndpoint(host: host, port: url.scheme == "https" ? 443 : 80)
     }
+}
 
-    /// `EPERM` is the signature of a policy refusal. A refused socket is not an ordinary network
-    /// failure -- those surface as timeouts, resets or name-resolution errors -- so separating it
-    /// here is what makes the answer useful.
-    private static func isPermissionDenial(_ error: NWError) -> Bool {
+/// Reads an `NWError` as either "the system refused this" or "this failed".
+///
+/// Deliberately outside `LocalNetworkProbe`, which is `@MainActor`: the connection reports its
+/// state on the queue it was started on, and calling back into main-actor members from there is
+/// not permitted, because reaching them synchronously would mean running them on the wrong actor.
+/// Nothing here touches state, so there is nothing to isolate it from.
+private enum LocalNetworkRefusal {
+    /// kDNSServiceErr_PolicyDenied. DNS reports refusals as status values of its own rather than as
+    /// errno, which is why recognising one means looking for the number instead of comparing
+    /// against a POSIX code -- no DNS error ever equals one.
+    private static let dnsPolicyDenied: Int32 = -65570
+
+    /// `EPERM` is the signature of a policy refusal on a socket. A refused socket is not an
+    /// ordinary network failure -- those surface as timeouts, resets or name-resolution errors --
+    /// so separating it here is what makes the answer useful rather than merely accurate.
+    static func isPolicy(_ error: NWError) -> Bool {
         switch error {
         case .posix(let code):
             return code == POSIXErrorCode.EPERM
         case .dns(let code):
-            // DNS reports its own refusals as kDNSServiceErr_* values, not as errno, so the two
-            // cases cannot share a comparison. kDNSServiceErr_PolicyDenied is what the local
-            // network restriction produces on a name lookup.
-            return Int32(code) == Self.dnsPolicyDenied || Int32(code) == POSIXErrorCode.EPERM.rawValue
+            return Int32(code) == dnsPolicyDenied
         default:
             return false
         }
     }
 
-    private static let dnsPolicyDenied: Int32 = -65570
-
-    private static func classify(_ error: NWError) -> State {
-        if isPermissionDenial(error) { return .denied }
+    static func state(for error: NWError) -> LocalNetworkProbe.State {
+        if isPolicy(error) { return .denied }
         switch error {
         case .posix(let code): return .unreachable("连接被拒绝（\(code)）")
         case .dns: return .unreachable("域名无法解析")
