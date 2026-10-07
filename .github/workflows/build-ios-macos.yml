@@ -1,0 +1,109 @@
+name: Build unsigned iOS IPA (macOS, Liquid Glass)
+
+# The Windows cross-compile path cannot use an iOS 26+ SDK: SwiftUI's property wrappers
+# (@State, @Environment, ...) became external macros shipped in SwiftUIMacros.dylib, and that
+# file is a macOS binary, so loading it on Windows fails. Building on a macOS runner is therefore
+# the only way to compile against a current SDK, and the only way the system renders its own
+# Liquid Glass -- Apple gates that on the SDK the app was linked against, not on the OS version,
+# so an iOS 26/27 look requires an iOS 26/27 build no matter which device runs it.
+#
+# The app keeps a deployment target of 16.0, so the same binary still runs on older devices and
+# falls back to its own materials there.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ios-native-v2
+    paths:
+      - 'iosApp/**'
+      - '.github/workflows/build-ios-macos.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          # A 26.x toolchain is what makes the system glass available. The workflow fails loudly
+          # rather than silently producing an old-style build if this one is unavailable.
+          xcode-version: '26.2'
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen version
+
+      - name: Report toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      - name: Build unsigned device app
+        # USE_SYSTEM_GLASS makes SystemGlassSupport.hasNativeGlassAPI true, which is what lets the
+        # tab bar and the cards name SwiftUI's own glassEffect instead of falling back to the
+        # runtime path. The deployment target stays at 16.0, so older devices keep working.
+        run: >-
+          xcodebuild
+          -project iosApp/PalmAcademicIOS.xcodeproj
+          -scheme PalmAcademic
+          -configuration Release
+          -sdk iphoneos
+          -derivedDataPath build/ios
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGN_IDENTITY=""
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS="USE_SYSTEM_GLASS"
+          build
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/package/Payload artifacts
+          cp -R build/ios/Build/Products/Release-iphoneos/PalmAcademic.app build/package/Payload/
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/package/Payload artifacts/PalmAcademic-ios-liquidglass-unsigned.ipa
+          unzip -t artifacts/PalmAcademic-ios-liquidglass-unsigned.ipa
+          shasum -a 256 artifacts/PalmAcademic-ios-liquidglass-unsigned.ipa \
+            > artifacts/PalmAcademic-ios-liquidglass-unsigned.ipa.sha256
+
+      - name: Record what the build actually linked against
+        shell: bash
+        run: |
+          # The linked SDK decides whether the system draws glass, so it is worth stating
+          # explicitly next to the artifact rather than leaving it to be inferred.
+          {
+            echo "### Build environment"
+            echo
+            echo "- xcode: $(xcodebuild -version | head -1)"
+            echo "- swift: $(swift --version 2>&1 | head -1)"
+            echo "- deployment target: $(grep -A1 IPHONEOS_DEPLOYMENT_TARGET \
+              iosApp/PalmAcademicIOS.xcodeproj/project.pbxproj | head -1 | sed 's/.*= //')"
+            echo "- MinimumOSVersion: $(/usr/libexec/PlistBuddy \
+              -c 'Print :MinimumOSVersion' \
+              build/ios/Build/Products/Release-iphoneos/PalmAcademic.app/Info.plist)"
+            echo "- DTSDKName: $(/usr/libexec/PlistBuddy \
+              -c 'Print :DTSDKName' \
+              build/ios/Build/Products/Release-iphoneos/PalmAcademic.app/Info.plist)"
+            echo
+            echo "Liquid Glass is applied by the system when the linked SDK is iOS 26 or later."
+          } | tee artifacts/build-environment.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PalmAcademic-ios-liquidglass-unsigned
+          path: artifacts/*
+          if-no-files-found: error

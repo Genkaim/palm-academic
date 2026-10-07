@@ -11,20 +11,20 @@ targets:
     platform: iOS
     sources:
       - Sources
-      - Resources/Assets.xcassets
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cn.edu.cupk.portalreader.ios
         PRODUCT_NAME: PalmAcademic
-        MARKETING_VERSION: 0.3.5
+        MARKETING_VERSION: 0.4.5
         CURRENT_PROJECT_VERSION: 1
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1,2"
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: 掌上教务
-        INFOPLIST_KEY_CFBundleIconName: AppIcon
+        # The Info.plist is checked in rather than generated. Xcode's generated plist rewrites
+        # CFBundleIcons, which would drop the icon entry the Windows cross-compile path relies on.
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_KEY_LSRequiresIPhoneOS: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        SWIFT_EMIT_LOC_STRINGS: NO

@@ -7,8 +7,18 @@
 /.kotlin/
 /local.properties
 /**/build/
+# The iOS build script moves the previous build-ios aside as build-ios.old.<pid> instead of
+# deleting it, so an interrupted or repeated build leaves those behind. They are tens of megabytes
+# each and must never be committed. The pattern is anchored because the plain name would also
+# match a legitimate source directory.
+/iosApp/build-ios/
+/iosApp/build-ios.old.*/
+*.ipa
 *.apk
 *.aab
 captures/
 .DS_Store
 Thumbs.db
+# Tool working directories, not part of the project.
+/.workbuddy/
+/.codex-remote-attachments/
