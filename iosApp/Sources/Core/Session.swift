@@ -102,13 +102,118 @@ final class SessionStore {
     }
 
     /// Captures the current WKWebView cookie state after a navigation.
-    func captureFromWebView() {
-        guard let url = URL(string: SchoolCatalog.shared.origin)?.appendingPathComponent("student"),
-              let header = HTTPCookieStorage.shared.cookies(for: url)?
-                .map({ "\($0.name)=\($0.value)" })
-                .joined(separator: "; "),
-              !header.isEmpty else { return }
+    ///
+    /// Mirrors `PortalSessionStore.captureFromWebView`. The reading path is `WKHTTPCookieStore`,
+    /// not `HTTPCookieStorage`: a real EAMS WebView populates the WebKit store, and that copy is
+    /// what the server will accept on the next request.
+    func captureFromWebView() async {
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
+            store.getAllCookies { cookies in
+                continuation.resume(returning: cookies)
+            }
+        }
+        guard !cookies.isEmpty else { return }
+        let host = URL(string: SchoolCatalog.shared.origin)?.host ?? ""
+        let filtered = cookies.filter { cookie in
+            let cookieDomain = cookie.domain
+            let normalised = cookieDomain.hasPrefix(".") ? String(cookieDomain.dropFirst()) : cookieDomain
+            return normalised == host || normalised == "." + host || host.hasSuffix("." + normalised)
+        }
+        guard !filtered.isEmpty else { return }
+        let header = filtered
+            .sorted(by: { $0.name < $1.name })
+            .map { "\($0.name)=\($0.value)" }
+            .joined(separator: "; ")
         saveCookieHeader(header)
+        // Make URLSession requests see the same cookies immediately, mirroring
+        // `WebViewCookieJar.loadForRequest` which merges persisted and live cookies per request.
+        restoreToCookieStorage()
+    }
+
+    /// Installs the persisted cookies into the WebView's own cookie store, mirroring
+    /// `PortalSessionStore.restoreToWebView`. The completion runs once every cookie has been
+    /// accepted by `WKHTTPCookieStore`; the WebView must not `load` until then or the portal
+    /// will answer with a fresh login redirect.
+    @discardableResult
+    func restoreToWebView(completion: (() -> Void)? = nil) -> Bool {
+        guard let header = persistedCookieHeader else {
+            completion?()
+            return false
+        }
+        let pairs = header.split(separator: ";")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.contains("=") }
+        guard !pairs.isEmpty else {
+            completion?()
+            return false
+        }
+        let host = URL(string: SchoolCatalog.shared.origin)?.host ?? ""
+        let isSecure = SchoolCatalog.shared.origin.hasPrefix("https://")
+        let path = "/student"
+        let cookies: [HTTPCookie] = pairs.compactMap { pair in
+            guard let sep = pair.firstIndex(of: "=") else { return nil }
+            let name = String(pair[pair.startIndex..<sep])
+            let value = String(pair[pair.index(after: sep)...])
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: name,
+                .value: value,
+                .domain: host,
+                .path: path
+            ]
+            if isSecure { properties[.secure] = "TRUE" }
+            if name.uppercased() == "SESSION" {
+                properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE"
+            }
+            return HTTPCookie(properties: properties)
+        }
+        guard !cookies.isEmpty else {
+            completion?()
+            return false
+        }
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        // Fast path: skip the writes when the WebView already has the exact cookies we want.
+        store.getAllCookies { [weak self] existing in
+            let alreadyInstalled = cookies.allSatisfy { cookie in
+                existing.contains { existingCookie in
+                    existingCookie.name == cookie.name &&
+                    existingCookie.value == cookie.value &&
+                    (existingCookie.domain == cookie.domain ||
+                        existingCookie.domain == "." + cookie.domain)
+                }
+            }
+            if alreadyInstalled {
+                Task { @MainActor in completion?() }
+                return
+            }
+            let group = DispatchGroup()
+            for cookie in cookies {
+                group.enter()
+                store.setCookie(cookie) { group.leave() }
+            }
+            group.notify(queue: .main) {
+                Task { @MainActor in
+                    self?.saveCookieHeader(
+                        cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+                    )
+                    completion?()
+                }
+            }
+        }
+        return true
+    }
+
+    /// Async form of `restoreToWebView`, mirroring `PortalSessionStore.restoreToWebViewAndWait`.
+    @discardableResult
+    func restoreToWebViewAndWait() async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let started = restoreToWebView {
+                continuation.resume(returning: true)
+            }
+            if !started {
+                continuation.resume(returning: false)
+            }
+        }
     }
 
     func clear() {
@@ -222,11 +327,22 @@ struct AuthRepository {
             cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
         )
         SessionStore.shared.restoreToCookieStorage()
+        // Mirror Android: install the cookies into the WebView's own store before declaring the
+        // login successful. Without this, the first page navigation bounces off a login redirect
+        // and reports "登录已过期" immediately.
+        let installed = await SessionStore.shared.restoreToWebViewAndWait()
+        if !installed {
+            throw PortalError.webViewSessionMissing
+        }
     }
 
     /// Port of `AuthRepository.validateSession`.
     func validateSession() async -> SessionValidation {
         guard SessionStore.shared.hasPersistedSession else { return .expired }
+        // Replay the durable cookie header into HTTPCookieStorage so the URLSession probe sees
+        // the SESSION cookie even when the persisted header was captured by `WebLoginView` and
+        // only lives in the WebKit store.
+        SessionStore.shared.restoreToCookieStorage()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = HTTPCookieStorage.shared
         configuration.httpShouldSetCookies = true
@@ -255,7 +371,8 @@ struct AuthRepository {
     /// Pure string inspection, so it is deliberately left outside the main actor: the
     /// web view bridge calls it from a nonisolated delegate context.
     nonisolated static func isLoginPage(_ content: String, finalURL: String = "") -> Bool {
-        let path = finalURL.split(separator: "?").first.map(String.init) ?? ""
+        var path = finalURL.split(separator: "?").first.map(String.init) ?? ""
+        while path.hasSuffix("/") { path.removeLast() }
         if path.hasSuffix("/login") { return true }
         if content.contains("<title>登入页面</title>") { return true }
         return content.contains("id=\"vue_main\"") && content.contains("login-salt")

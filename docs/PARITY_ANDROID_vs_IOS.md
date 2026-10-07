@@ -1,8 +1,3 @@
-# Android / iOS 功能对照
-
-对比基准：`app/src/main`（Android，v0.4.5 正式客户端）与 `iosApp/Sources`（iOS，实验原型）。
-方法：关键字命中数 + 源码结构核对，不含真机跑通验证。
-
 ## 一、总览
 
 | 能力 | Android | iOS | 差异 |
@@ -59,14 +54,24 @@ iOS 是二值布尔 + 强制指定外观：
 Android `PullRefresh` 相关 14 处；iOS 仅 `Features/MaterialPageScreen.swift:91` 一处
 `.refreshable`。首页课表/成绩列表与设置页均无下拉刷新。
 
-## 三、iOS 端额外具备
+## 三、iOS 端 UI 官方化改造（已落地）
+| 项 | 改造前 | 改造后 |
+|---|---|---|
+| 登录账号/密码框 | 自绘 `FilledTextField`：手画圆角容器 + 描边 + 焦点环 + SF Symbol 图标 | 托管 `UITextField`，`borderStyle = .roundedRect`，边框/光标/自动填充/iOS 26 质感和 iOS 26 适配全由 UIKit 画 |
+| 密码显示切换 | 建两个字段互相替换（丢编辑状态） | 同一实例改 `isSecureTextEntry`，眼睛按钮作为 `rightView` |
+| 账号框清除按钮 | 无 | `clearButtonMode = .whileEditing`（与密码框的眼睛按钮互斥，二选一占 trailing 槽） |
+| 首页容器 | 自绘卡片栈：`cornerRadius 18/20` + 每卡阴影 + 手画分隔线 | `List` + `.insetGrouped`，section 背景/分隔线/header 排版/disclosure 指示器全交给系统 |
+| 首页快捷入口 | 2 列 `LazyVGrid` 卡片 | 系统 `NavigationLink` 行，去掉与系统 chevron 重复的手画箭头 |
+| 快捷 tab | `ScrollView` + 自绘圆角卡片 | 同样改为 `.insetGrouped` List |
+
+## 四、iOS 端额外具备
 
 - **Liquid Glass 玻璃质感控件**：`UI/SystemGlassSupport.swift` + `UI/LiquidTabBar.swift`，
   运行时经 ObjC runtime 取 `UIGlassEffect`；`hasNativeGlassAPI` 区分编译期能力，
   `isLiquidGlassOS` 区分运行期能力，缺任一则回落到 `UIBlurEffect` 系统材质。
   Android 侧对应实现是 `com.kyant.backdrop.catalog.components.Liquid*` 自绘组件。
 
-## 四、真机验证结果（iOS 27.2 beta3 / LiveContainer）
+## 五、真机验证结果（iOS 27.2 beta3 / LiveContainer）
 
 ### P0：`选择学校` 页空白，登录流程无法开始
 
@@ -128,4 +133,3 @@ CI 产物只有 7 个文件，`Payload/PalmAcademic.app/` 下根本没有 `schoo
 | 截屏 | 原生 `com.apple.mobile.screenshotr` 在 iOS 27 beta 返 `InvalidService`；改走 DVT（需先建无 root 用户态隧道） |
 | 模拟点击 | **做不到**：pymobiledevice3 无 HID 注入，DVT condition inducer 无 tap profile，XCUITest 需设备侧 test runner。故本轮对比由「用户手动点 + 脚本连拍」完成，脚本见 `tools/burst_shot.py` |
 | 无障碍元素树 | `developer accessibility list-items` 可用，可交叉验证页面文案 |
-

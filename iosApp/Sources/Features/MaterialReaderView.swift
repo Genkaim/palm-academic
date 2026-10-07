@@ -60,11 +60,13 @@ struct MaterialReaderView: UIViewRepresentable {
         )
 
         // Replay the persisted session cookie before the first navigation, mirroring
-        // `PortalSessionStore.restoreToWebView`.
-        SessionStore.shared.restoreToCookieStorage()
-        context.coordinator.applyAppearance(to: webView, isDark: isDark)
+        // `PortalSessionStore.restoreToWebView`. The completion runs after the WebView's own
+        // cookie store has been populated; loading before then bounces off a login redirect.
         if let target = URL(string: url) {
-            webView.load(URLRequest(url: target))
+            let request = URLRequest(url: target)
+            SessionStore.shared.restoreToWebView { [weak webView] in
+                webView?.load(request)
+            }
         }
         return webView
     }
@@ -170,8 +172,8 @@ struct MaterialReaderView: UIViewRepresentable {
             }
             // WKWebView delegate callbacks are not annotated as main-actor isolated,
             // so the hop to the session store is made explicitly.
-            Task { @MainActor in
-                SessionStore.shared.captureFromWebView()
+            Task {
+                await SessionStore.shared.captureFromWebView()
             }
             // Fallback for page loads that never issued a commit callback.
             injectReader(webView)

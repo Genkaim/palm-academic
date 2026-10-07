@@ -100,6 +100,9 @@ struct WebLoginView: View {
     /// programmatic session. The portal can render a page that looks signed in while still
     /// withholding SESSION, so the cookie is validated before the app commits to `.signedIn`.
     private func adoptWebSession() async {
+        // The captured cookies live in the WebKit store; replay them into HTTPCookieStorage so
+        // the URLSession probe below can carry SESSION, mirroring `WebViewCookieJar.loadForRequest`.
+        SessionStore.shared.restoreToCookieStorage()
         let auth = AuthRepository()
         switch await auth.validateSession() {
         case .valid:
@@ -215,8 +218,10 @@ private struct WebLoginWebView: UIViewRepresentable {
                         // Still the login form: the user has to finish typing there.
                         return
                     }
-                    // Past the login form, so its cookies are the session now.
-                    SessionStore.shared.captureFromWebView()
+                    // Past the login form, so its cookies are the session now. Pull them from the
+                    // WebView's own store -- `HTTPCookieStorage` does not see WK cookies, so
+                    // reading it here would always be empty and the session would never persist.
+                    await SessionStore.shared.captureFromWebView()
                     self.didAuthenticate = true
                     self.parent.onProgress(1)
                     self.parent.onAuthenticated()

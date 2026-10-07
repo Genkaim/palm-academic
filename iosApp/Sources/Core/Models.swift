@@ -272,6 +272,7 @@ enum PortalError: LocalizedError {
     case emptySalt
     case loginRejected(String)
     case noSession
+    case webViewSessionMissing
     case sessionExpired
     case unavailable
 
@@ -284,6 +285,7 @@ enum PortalError: LocalizedError {
         case .emptySalt: return "无法获取登录校验信息"
         case .loginRejected(let message): return message
         case .noSession: return "登录请求已完成，但没有收到会话信息，请重试"
+        case .webViewSessionMissing: return "登录会话未能写入系统浏览器"
         case .sessionExpired: return "登录已过期，请重新登录"
         case .unavailable: return "教务系统暂时无法访问"
         }
