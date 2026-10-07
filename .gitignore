@@ -22,3 +22,6 @@ Thumbs.db
 # Tool working directories, not part of the project.
 /.workbuddy/
 /.codex-remote-attachments/
+
+# Local drop point for CI artifacts; not part of the project.
+/build-out/
