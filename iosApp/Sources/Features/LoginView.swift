@@ -172,7 +172,7 @@ struct LoginView: View {
                 // Android's secondary actions fade as the keyboard arrives
                 // (`secondaryActionAlpha = 1 - imeProgress * 2`) and do not move. They stay pinned
                 // to the bottom while the primary button rides above the keyboard.
-                VStack(spacing: 10) {
+                VStack(spacing: 8) {
                     secondaryButton(
                         systemImage: "building.columns",
                         title: state.selectedSchool?.name ?? "选择学校",
@@ -382,12 +382,21 @@ struct LoginView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.next)
+                // The field has to claim the remaining width itself. Left to itself inside an
+                // HStack it is sized to its text, so the tappable area is the few glyphs the
+                // placeholder occupies -- which is why tapping the row next to it did nothing and
+                // the field appeared to need two taps.
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .focused($focusedField, equals: .username)
                 .onSubmit { focusedField = .password }
                 .disabled(state.isLoading)
         }
         .padding(.horizontal, 12)
         .frame(height: Metric.fieldHeight)
+        // Tapping anywhere on the row -- including the leading glyph and the empty space -- focuses
+        // the field. This is what a text field's own hit area covers on iOS.
+        .contentShape(Rectangle())
+        .onTapGesture { focusedField = .username }
     }
 
     /// The password field. `SecureField` and `TextField` are separate types rather than one control
@@ -405,12 +414,14 @@ struct LoginView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.go)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .focused($focusedField, equals: .password)
                     .onSubmit { submit() }
             } else {
                 SecureField("密码", text: $state.password)
                     .textContentType(.password)
                     .submitLabel(.go)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .focused($focusedField, equals: .password)
                     .onSubmit { submit() }
             }
@@ -425,13 +436,28 @@ struct LoginView: View {
                 .frame(width: 34, height: 44)
                 .contentShape(Rectangle())
                 .accessibilityLabel(revealPassword ? "隐藏密码" : "显示密码")
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in revealButtonIsHit = true }
+                        .onEnded { _ in revealButtonIsHit = false }
+                )
             }
         }
         .padding(.leading, 12)
         .padding(.trailing, 6)
         .frame(height: Metric.fieldHeight)
         .disabled(state.isLoading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // The reveal button is a sibling inside this row, so the tap has to be ignored while it
+            // is the thing under the finger; otherwise flipping the reveal also raises the keyboard.
+            if !revealButtonIsHit { focusedField = .password }
+        }
     }
+
+    /// Set by the reveal button for the duration of its own tap. SwiftUI gives no way to ask a
+    /// gesture whether it landed on a sibling, so the button marks the moment itself.
+    @State private var revealButtonIsHit = false
 
     private func submit() {
         guard canSubmit else { return }

@@ -53,8 +53,11 @@ struct HomeView: View {
 
                 if !visibleQuickItems.isEmpty {
                     Section {
-                        QuickEntryCard(items: visibleQuickItems)
-                            // The card brings its own surface, so the section must not add one.
+                        QuickEntryCard(items: visibleQuickItems) { item in
+                            path = [.item(item)]
+                        }
+                            // The card brings its own surface and its cells are plain buttons, so
+                            // the section must not add a row background or a disclosure indicator.
                             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)

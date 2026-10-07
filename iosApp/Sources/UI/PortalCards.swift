@@ -94,6 +94,8 @@ struct PortalNavigationRow<Trailing: View>: View {
     let title: String
     @ViewBuilder var trailing: Trailing
 
+    /// No chevron here on purpose. These rows live inside `NavigationLink`, and the system draws a
+    /// disclosure indicator for free; drawing one as well gave every entry two arrows.
     var body: some View {
         HStack(spacing: 13) {
             if let systemImage {
@@ -106,12 +108,7 @@ struct PortalNavigationRow<Trailing: View>: View {
                 .foregroundStyle(PortalPalette.onSurface)
             Spacer(minLength: 8)
             trailing
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(PortalPalette.outline)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 15)
         .contentShape(Rectangle())
     }
 }
@@ -125,14 +122,20 @@ extension PortalNavigationRow where Trailing == EmptyView {
 /// The Android `QuickEntryGrid`: one 20pt card holding a two-column grid with rules between the
 /// cells, rather than a grid of separate cards.
 ///
-/// The differences that matter visually are that the rules are *inside* a single surface, the row
-/// height is a fixed 104pt, and each cell carries a subtitle under its title. Splitting it into
-/// independent cards -- as the iOS version did -- loses the ruled-table read that Android has.
+/// Two things differ from Android on purpose. The cells are buttons rather than `NavigationLink`s,
+/// because a link inside a `List` section draws a disclosure indicator on every cell and Android's
+/// grid has none. And the row is 78pt rather than Android's 104dp: dp and pt are not the same
+/// physical size on a Retina display, so copying the number across makes the block roughly a third
+/// taller than it looks on the phone the design came from.
 struct QuickEntryCard: View {
     let items: [PortalItem]
+    /// Hands the chosen entry back so the caller can push it. Navigation cannot be done from in
+    /// here: this card is deliberately not a `NavigationLink`, and the stack it belongs to types
+    /// its destinations as `PortalRoute`, not `PortalItem`.
+    let onOpen: (PortalItem) -> Void
 
     private let cornerRadius: CGFloat = 20
-    private let rowHeight: CGFloat = 104
+    private let rowHeight: CGFloat = 78
 
     private var rows: [[PortalItem]] {
         stride(from: 0, to: items.count, by: 2).map {
@@ -147,18 +150,10 @@ struct QuickEntryCard: View {
                     Divider().padding(.horizontal, 14)
                 }
                 HStack(spacing: 0) {
-                    NavigationLink(value: rowItems[0]) {
-                        cell(rowItems[0])
-                    }
-                    .buttonStyle(.plain)
-
-                    Divider().frame(maxHeight: .infinity).padding(.vertical, 14)
-
+                    cell(rowItems[0])
+                    Divider().frame(maxHeight: .infinity).padding(.vertical, 10)
                     if rowItems.count > 1 {
-                        NavigationLink(value: rowItems[1]) {
-                            cell(rowItems[1])
-                        }
-                        .buttonStyle(.plain)
+                        cell(rowItems[1])
                     } else {
                         // An odd trailing entry leaves the right half empty, exactly as the
                         // Android Row does with its weight(1f) Spacer.
@@ -172,25 +167,29 @@ struct QuickEntryCard: View {
     }
 
     private func cell(_ item: PortalItem) -> some View {
-        VStack(spacing: 0) {
-            Image(systemName: QuickEntryIcon.name(for: item))
-                .font(.system(size: 24))
-                .foregroundStyle(PortalPalette.onSurface)
-            Spacer(minLength: 8)
-            VStack(spacing: 2) {
-                Text(item.title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                Text(QuickEntryIcon.subtitle(for: item))
-                    .font(.caption2)
-                    .foregroundStyle(PortalPalette.secondaryText)
-                    .lineLimit(1)
+        Button {
+            onOpen(item)
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: QuickEntryIcon.name(for: item))
+                    .font(.system(size: 22))
+                    .foregroundStyle(PortalPalette.onSurface)
+                VStack(spacing: 1) {
+                    Text(item.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Text(QuickEntryIcon.subtitle(for: item))
+                        .font(.caption2)
+                        .foregroundStyle(PortalPalette.secondaryText)
+                        .lineLimit(1)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .contentShape(Rectangle())
+        .buttonStyle(TabPressStyle(scale: 0.96))
     }
 }
 

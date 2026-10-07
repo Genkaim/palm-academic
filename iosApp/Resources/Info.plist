@@ -86,6 +86,16 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<false/>
 	</dict>
+	<!--
+	  A university portal is very often reached over the campus network, where its host name
+	  resolves to a private address. Since iOS 14 an app that touches such an address needs the
+	  local-network permission, and without this key the system refuses the connection outright --
+	  the request fails before a byte is sent, with no error the app can read. The symptom is a
+	  page that loads forever on campus and works everywhere else, which is indistinguishable from
+	  a broken reader.
+	-->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>掌上教务需要访问学校教务系统。校园网内该系统解析为内网地址，未授权将无法加载课表、成绩与考试数据。</string>
 	<key>CFBundleIcons</key>
 	<dict>
 		<key>CFBundlePrimaryIcon</key>

@@ -21,7 +21,6 @@ import UIKit
 ///   app actually depends on, so those are listed as inspectable rows on their own page.
 struct SettingsScreen: View {
     @EnvironmentObject private var state: AppState
-    @State private var showingSchools = false
     @State private var release: GitHubRelease?
     @State private var isCheckingRelease = false
     @State private var confirmSignOut = false
@@ -45,17 +44,7 @@ struct SettingsScreen: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear.frame(height: BottomClearance.height)
             }
-            .sheet(isPresented: $showingSchools) {
-                SchoolPickerView { school in state.selectSchool(school) }
-                    .environmentObject(state)
-            }
             .task { await checkRelease() }
-            .confirmationDialog("退出登录", isPresented: $confirmSignOut, titleVisibility: .visible) {
-                Button("退出登录", role: .destructive) { state.signOut() }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("将清除本应用中的登录会话并停止后台监测。")
-            }
         }
     }
 
@@ -83,7 +72,10 @@ struct SettingsScreen: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16))
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
+            // The segmented control is the last thing in the group, so the section's closing
+            // separator would draw a line under a control that already has its own edges.
+            .listRowSeparator(.hidden)
         } header: {
             Text("外观")
         }
@@ -93,8 +85,12 @@ struct SettingsScreen: View {
 
     private var academicSection: some View {
         Section {
-            Button {
-                showingSchools = true
+            // A NavigationLink rather than a Button, so the system draws the disclosure indicator.
+            // The earlier Button carried a hand-drawn one and the row had none at all, which is why
+            // 学校 looked like the only entry that did something.
+            NavigationLink {
+                SchoolPickerView { school in state.selectSchool(school) }
+                    .environmentObject(state)
             } label: {
                 PortalSettingsRow(
                     icon: PortalRowIcon("building.columns"),
@@ -102,7 +98,6 @@ struct SettingsScreen: View {
                     subtitle: state.selectedSchool?.name ?? "未选择"
                 )
             }
-            .buttonStyle(.plain)
 
             NavigationLink {
                 NotificationSettingsScreen()
@@ -169,8 +164,8 @@ struct SettingsScreen: View {
 
     private var accountSection: some View {
         Section {
-            Button(role: .destructive) {
-                confirmSignOut = true
+            Button {
+                withAnimation(.easeOut(duration: 0.16)) { confirmSignOut = true }
             } label: {
                 HStack(spacing: 12) {
                     PortalRowIcon("rectangle.portrait.and.arrow.right").glyph()
@@ -183,6 +178,24 @@ struct SettingsScreen: View {
             .buttonStyle(.plain)
         } header: {
             Text("账户")
+        }
+        // A confirmationDialog is anchored to the middle of the screen by the system, which on a
+        // long page can be nowhere near the row that opened it. Anchoring it to the bottom of the
+        // page puts it directly under that row, which is where the finger already is.
+        .overlay(alignment: .bottom) {
+            if confirmSignOut {
+                SignOutConfirmation(
+                    onConfirm: {
+                        withAnimation(.easeOut(duration: 0.16)) { confirmSignOut = false }
+                        state.signOut()
+                    },
+                    onCancel: {
+                        withAnimation(.easeOut(duration: 0.16)) { confirmSignOut = false }
+                    }
+                )
+                .padding(.bottom, BottomClearance.height)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
     }
 
@@ -198,9 +211,9 @@ struct SettingsScreen: View {
 
 /// One settings row: the icon, a title and a subtitle, in the shape `Settings` uses on iOS.
 ///
-/// Android's `SettingsNavigationPanel` draws a 34pt box holding a 22pt outline glyph, then the
-/// title and description, then a chevron. The chevron here is the system's -- `NavigationLink`
-/// draws its own, and a hand-drawn one on top of it would double up.
+/// Android's `SettingsNavigationPanel` draws a 22pt outline glyph, then the title and description,
+/// then a chevron. The chevron here is the system's -- `NavigationLink` draws its own, and a
+/// hand-drawn one on top of it would double up.
 struct PortalSettingsRow: View {
     let icon: PortalRowIcon
     let title: String
@@ -228,6 +241,69 @@ struct PortalSettingsRow: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+    }
+}
+
+/// The sign-out confirmation, anchored under the row that opened it.
+///
+/// `confirmationDialog` is presented by the system and lands in the middle of the screen. On a
+/// settings page that is several groups away from the row that triggered it, so the sheet and the
+/// thing it is about are visually unrelated. This one is a plain overlay with a dimming backdrop.
+private struct SignOutConfirmation: View {
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+                .onTapGesture(perform: onCancel)
+
+            VStack(spacing: 0) {
+                VStack(spacing: 6) {
+                    Text("退出登录？")
+                        .font(.headline)
+                        .foregroundStyle(PortalPalette.onSurface)
+                    Text("将清除本应用中的登录会话并停止后台监测。")
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(PortalPalette.secondaryText)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 14)
+
+                Divider()
+
+                Button {
+                    onConfirm()
+                } label: {
+                    Text("退出")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .foregroundStyle(PortalPalette.error)
+                }
+                .buttonStyle(.plain)
+
+                Divider()
+
+                Button {
+                    onCancel()
+                } label: {
+                    Text("取消")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(maxWidth: 320)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(PortalPalette.plainSurface)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
     }
 }
 
@@ -580,14 +656,18 @@ struct AboutScreen: View {
             Section {
                 Link(destination: URL(string: "https://github.com/Genkaim")!) {
                     AboutLinkRow(
-                        icon: "person.crop.circle",
+                        leading: AnyView(AuthorAvatar()),
                         title: "作者",
                         description: "Genkaim"
                     )
                 }
                 Link(destination: URL(string: "https://github.com/Genkaim/palm-academic")!) {
                     AboutLinkRow(
-                        icon: "chevron.left.forwardslash.chevron.right",
+                        leading: AnyView(
+                            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                .font(.system(size: 22))
+                                .foregroundStyle(PortalPalette.onSurface)
+                        ),
                         title: "项目地址",
                         description: "github.com/Genkaim/palm-academic"
                     )
@@ -655,13 +735,11 @@ struct AboutScreen: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
     }
 
-    /// The same rows as Android's `AboutLinkCard`, minus the avatar image, which is a drawable the
-    /// iOS bundle does not carry.
-    private func AboutLinkRow(icon: String, title: String, description: String) -> some View {
+    /// The rows Android's `AboutLinkCard` draws: a leading slot 40pt square, the title and
+    /// description, and the open-in-new glyph.
+    private func AboutLinkRow(leading: AnyView, title: String, description: String) -> some View {
         HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 24))
-                .foregroundStyle(PortalPalette.onSurface)
+            leading
                 .frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
@@ -678,6 +756,28 @@ struct AboutScreen: View {
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
+    }
+
+    /// The author row's avatar. Android ships a 40dp drawable for it; there is no equivalent asset
+    /// in the iOS bundle, so the same 40pt circle is drawn with the owner's initial -- the circle is
+    /// what carries the layout, not the picture.
+    private struct AuthorAvatar: View {
+        var body: some View {
+            ZStack {
+                Circle().fill(
+                    LinearGradient(
+                        colors: [Color(red: 0.31, green: 0.58, blue: 0.95), Color(red: 0.45, green: 0.36, blue: 0.88)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                Text("G")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 40, height: 40)
+            .clipShape(Circle())
+        }
     }
 
     private struct OpenSourceReference: Identifiable {

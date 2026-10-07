@@ -115,47 +115,60 @@ struct RootView: View {
     }
 }
 
-/// Host for the liquid glass bar and the home/settings content areas.
+/// Host for the tab bar and the home/settings content areas.
+///
+/// The destinations go in a system `TabView`. That is what produces the platform's own bottom bar:
+/// on iOS 26 it is drawn with the system's Liquid Glass material, and the press, long-press and
+/// destination-change animations come with it. A hand-built bar can copy the material but has to
+/// reimplement all three behaviours, and they are what makes a bar feel like a bar.
+///
+/// The search control floats above it rather than living inside it. Android can put search on the
+/// bar because its bar only exists on the home screen; this bar is present on every screen, so
+/// search opens where the user already is.
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            // The tab's own root view has to sit in the stack, not in an overlay. An overlay is
-            // proposed whatever size the ZStack ends up with, and a NavigationStack given no height
-            // collapses: its bar still draws, its content does not, and because the ZStack then
-            // measures zero the bottom-aligned bar rises into the middle of the screen.
-            //
-            // Each tab reserves its own bottom clearance, because an inset applied here would be
-            // swallowed by the navigation stack's own inset handling and the last row would still
-            // end up under the bar.
-            content(for: state.selectedTab)
+            TabView(selection: $state.selectedTab) {
+                HomeView()
+                    .tag(LiquidTabItem.home)
+                    .tabItem {
+                        Label(LiquidTabItem.home.title, systemImage: LiquidTabItem.home.systemImage)
+                    }
+                SettingsScreen()
+                    .tag(LiquidTabItem.settings)
+                    .tabItem {
+                        Label(LiquidTabItem.settings.title, systemImage: LiquidTabItem.settings.systemImage)
+                    }
+            }
 
-            // Search results float directly above the bar. They are an overlay rather than a
-            // destination because search is not a place -- it is a way of choosing one of the
-            // places, and the destination that gets pushed is the one the user picked.
+            // Search results sit directly above the control that produced them. They are an overlay
+            // rather than a destination because search is not a place -- it is a way of choosing one
+            // of the places, and the destination that gets pushed is the one the user picked.
             if state.isBarSearching, state.isSearching {
                 SearchResultsOverlay(
                     onSelect: { item in
                         state.endBarSearch()
-                        state.selectedTab = .home
                         state.pendingNavigation = item
                     }
                 )
                 .padding(.horizontal, 16)
-                .padding(.bottom, Metric.barTotalHeight)
+                .padding(.bottom, Metric.aboveBar)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(1)
             }
 
-            // The bar floats above the content so the page stays scrollable underneath.
-            LiquidBottomBar(
-                isDark: state.isDark,
-                selection: $state.selectedTab,
-                isSearching: $state.isBarSearching,
-                searchQuery: $state.searchQuery
-            )
-            .zIndex(2)
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                BarSearchControl(
+                    isSearching: $state.isBarSearching,
+                    query: $state.searchQuery,
+                    isDark: state.isDark
+                )
+                .padding(.trailing, 10)
+                .zIndex(2)
+            }
         }
         .overlay(alignment: .top) {
             if let notice = state.sessionNotice {
@@ -169,17 +182,12 @@ struct MainShellView: View {
     }
 
     private enum Metric {
-        /// Bar content height 49 + bottom padding 6 + the air above it.
-        static let barTotalHeight: CGFloat = 76
-    }
-
-    @ViewBuilder
-    private func content(for tab: LiquidTabItem) -> some View {
-        switch tab.id {
-        case LiquidTabItem.home.id: HomeView()
-        case LiquidTabItem.settings.id: SettingsScreen()
-        default: EmptyView()
-        }
+        /// Clearance above the floating search control.
+        ///
+        /// The system tab bar is 49pt of content plus the home indicator, which iOS reports as a 34pt
+        /// bottom safe area on a home-button device. The control sits on top of that, so it needs the
+        /// whole of it plus its own height and the air to clear it.
+        static let aboveBar: CGFloat = 49 + 34 + 49 + 10
     }
 
     @ViewBuilder
