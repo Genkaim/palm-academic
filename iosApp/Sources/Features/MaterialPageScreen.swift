@@ -13,6 +13,9 @@ struct MaterialPageScreen: View {
     /// Exported schedule files, produced once a schedule page has content. Building them lazily in
     /// the menu would mean re-serialising on every tap; they are small and immutable.
     @State private var exports: [ScheduleExport.Format: URL] = [:]
+    /// The reader's own account of a load that produced nothing, kept so the watchdog's failure
+    /// text can name a cause instead of only reporting that there was one.
+    @State private var diagnostic: String?
 
     /// The six states `MaterialPortalActivity` distinguishes. The previous version collapsed these
     /// into `isLoading` plus an optional error string, which could not tell "the portal is slow"
@@ -197,6 +200,15 @@ struct MaterialPageScreen: View {
                 Task { @MainActor in
                     loadState = .sessionExpired
                     state.signOut(message: "登录已过期，请重新登录")
+                }
+            },
+            onDiagnostic: { reason in
+                // The page's own explanation of why it produced nothing. It arrives while the load
+                // state is still "loading", so it is kept apart from the error text and only shown
+                // once the watchdog has actually given up -- otherwise a slow-but-fine page would
+                // flash a scary message.
+                Task { @MainActor in
+                    diagnostic = reason
                 }
             }
         )
@@ -652,7 +664,7 @@ struct MaterialPageScreen: View {
         try? await Task.sleep(nanoseconds: 20_000_000_000)
         guard !Task.isCancelled else { return }
         guard renderedPage == nil, loadState == .loading else { return }
-        loadState = .failed("页面在 20 秒内没有返回数据，可能是教务会话已失效或该页面需要网页端交互。")
+        loadState = .failed(diagnostic ?? "页面在 20 秒内没有返回数据，可能是教务会话已失效或该页面需要网页端交互。")
     }
 
     /// Writes the three export formats once a schedule page has content, so the share menu can hand

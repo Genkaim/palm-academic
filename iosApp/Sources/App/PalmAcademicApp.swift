@@ -119,27 +119,17 @@ struct RootView: View {
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
 
-    /// The height the floating bar occupies, reserved at the bottom of every scrolling page so the
-    /// bar never covers the last row. Without this the settings page's 退出登录 row sits underneath
-    /// the capsule and cannot be tapped.
-    private let barClearance: CGFloat = 92
-
     var body: some View {
         ZStack(alignment: .bottom) {
             // The tab's own root view has to sit in the stack, not in an overlay. An overlay is
             // proposed whatever size the ZStack ends up with, and a NavigationStack given no height
             // collapses: its bar still draws, its content does not, and because the ZStack then
             // measures zero the bottom-aligned bar rises into the middle of the screen.
-            ZStack {
-                content(for: state.selectedTab)
-                    // Reserves room at the bottom of every scrolling page so the floating bar never
-                    // covers the last row. A safe-area inset is used rather than a padding because
-                    // a padding would shorten the page's own background; the inset scrolls with the
-                    // content, which is what makes the last row reachable.
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        Color.clear.frame(height: barClearance)
-                    }
-            }
+            //
+            // Each tab reserves its own bottom clearance, because an inset applied here would be
+            // swallowed by the navigation stack's own inset handling and the last row would still
+            // end up under the bar.
+            content(for: state.selectedTab)
 
             // Search results float directly above the bar. They are an overlay rather than a
             // destination because search is not a place -- it is a way of choosing one of the
@@ -150,8 +140,7 @@ struct MainShellView: View {
                         state.endBarSearch()
                         state.selectedTab = .home
                         state.pendingNavigation = item
-                    },
-                    onDismiss: { state.endBarSearch() }
+                    }
                 )
                 .padding(.horizontal, 16)
                 .padding(.bottom, Metric.barTotalHeight)
@@ -180,8 +169,8 @@ struct MainShellView: View {
     }
 
     private enum Metric {
-        /// Bar height 64 + bottom padding 8 + the 20pt of breathing room above it.
-        static let barTotalHeight: CGFloat = 92
+        /// Bar content height 49 + bottom padding 6 + the air above it.
+        static let barTotalHeight: CGFloat = 76
     }
 
     @ViewBuilder

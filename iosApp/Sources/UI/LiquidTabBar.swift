@@ -55,15 +55,18 @@ struct TabPressStyle: ButtonStyle {
     }
 }
 
-/// The bottom bar: two destinations plus the search field, which expands in place.
+/// The bottom bar.
 ///
-/// Search is here rather than in a navigation bar for two reasons that are both about this
-/// platform. First, the bar is present on every screen -- Android's is not, which is why Android
-/// can hide search behind "go back to the home tab first" -- so search has to work where the user
-/// already is, without switching destinations under them. Second, once expanded it *is* the search
-/// field: the bar grows sideways into a `UISearchTextField` with a 取消 button beside it, which is
-/// the same relationship the system search bar has with a navigation bar. Making search a third
-/// destination instead would have been the Android shape, and this is not Android.
+/// Search is a **separate button at the edge**, not a third destination sitting beside the other
+/// two. Android's bar carries a search action off to one side, and it can, because Android's bar
+/// only exists on the home screen. On iOS the bar is present on every screen, so the search action
+/// here is deliberately *not* a destination: it expands the bar in place into a
+/// `UISearchTextField` with a 取消 button, and the results float above the bar. Tapping search
+/// therefore never moves the user off the page they are on.
+///
+/// Sizes follow Apple's own tab bar: 49pt of content, a 25pt glyph, a 10pt label. An earlier
+/// version used a 64pt capsule with 21pt glyphs, which is neither the system metric nor the
+/// Android one, and read as two unrelated controls rather than a bar.
 struct LiquidBottomBar: View {
     let isDark: Bool
     @Binding var selection: LiquidTabItem
@@ -74,9 +77,13 @@ struct LiquidBottomBar: View {
     @Namespace private var indicatorNamespace
 
     private enum Metric {
-        static let height: CGFloat = 64
-        static let horizontalPadding: CGFloat = 16
-        static let bottomPadding: CGFloat = 8
+        /// Apple's tab bar content height, excluding the home-indicator safe area.
+        static let contentHeight: CGFloat = 49
+        static let horizontalPadding: CGFloat = 12
+        static let bottomPadding: CGFloat = 6
+        static let glyphSize: CGFloat = 25
+        static let labelSize: CGFloat = 10
+        static let searchButtonSize: CGFloat = 49
     }
 
     private var ink: Color {
@@ -88,17 +95,25 @@ struct LiquidBottomBar: View {
     private var spring: Animation { .interpolatingSpring(stiffness: 440, damping: 34) }
 
     var body: some View {
-        SystemGlassSurface(shape: Capsule(), interactive: true) {
-            HStack(spacing: 0) {
-                if isSearching {
-                    searchContents
-                } else {
-                    destinations
+        HStack(spacing: 8) {
+            // The destinations keep their own glass capsule, so the bar still reads as one object
+            // while the search action is visibly a separate control.
+            SystemGlassSurface(shape: RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: true) {
+                HStack(spacing: 0) {
+                    if isSearching {
+                        searchField
+                    } else {
+                        tabButton(.home)
+                        tabButton(.settings)
+                    }
                 }
+                .padding(.horizontal, 4)
+                .frame(height: Metric.contentHeight)
             }
-            .padding(4)
+            .frame(maxWidth: .infinity)
+
+            searchButton
         }
-        .frame(height: Metric.height)
         .padding(.horizontal, Metric.horizontalPadding)
         .padding(.bottom, Metric.bottomPadding)
         .onChange(of: selection) { _ in
@@ -108,18 +123,11 @@ struct LiquidBottomBar: View {
         }
     }
 
-    private var destinations: some View {
-        HStack(spacing: 0) {
-            tabButton(.home)
-            searchButton
-            tabButton(.settings)
-        }
-    }
-
-    /// The expanded state. The field takes what the destinations used, and 取消 sits at the trailing
-    /// edge, so the layout is the same width and the same capsule -- only the contents change.
-    private var searchContents: some View {
-        HStack(spacing: 6) {
+    /// The expanded state. The field takes the width the destinations used and the cancel button
+    /// sits at its trailing edge, so only the contents change -- not the capsule, and not the
+    /// separate search button on the right.
+    private var searchField: some View {
+        HStack(spacing: 4) {
             NativeSearchField(
                 text: $searchQuery,
                 placeholder: "搜索教务功能",
@@ -128,7 +136,7 @@ struct LiquidBottomBar: View {
                     withAnimation(spring) { isSearching = false }
                 }
             )
-            .frame(height: 44)
+            .frame(height: 40)
 
             Button {
                 withAnimation(spring) {
@@ -137,36 +145,50 @@ struct LiquidBottomBar: View {
                 }
             } label: {
                 Text("取消")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.subheadline)
                     .foregroundStyle(Color.accentColor)
+                    .frame(height: 40)
             }
             .buttonStyle(TabPressStyle(scale: 0.94))
-            .frame(height: 44)
-            .transition(.opacity.combined(with: .move(edge: .trailing)))
+            .transition(.opacity)
         }
+        .padding(.leading, 8)
     }
 
-    /// The search affordance while collapsed. It is a button and not a third destination: tapping it
-    /// raises the field without moving the user off the screen they are on.
+    /// The edge button. It is always present: while search is open it becomes the cancel action,
+    /// which is where a user's finger already is, rather than adding a second way out.
     private var searchButton: some View {
         Button {
-            withAnimation(spring) { isSearching = true }
+            withAnimation(spring) {
+                if isSearching {
+                    isSearching = false
+                    searchQuery = ""
+                } else {
+                    isSearching = true
+                }
+            }
         } label: {
             ZStack {
-                VStack(spacing: 2) {
+                if isSearching {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .bold))
+                } else {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 21, weight: .regular))
-                    Text(LiquidTabItem.search.title)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: 19, weight: .regular))
                 }
-                .foregroundStyle(ink)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .foregroundStyle(ink)
+            .frame(width: Metric.searchButtonSize, height: Metric.searchButtonSize)
             .contentShape(Rectangle())
         }
         .buttonStyle(TabPressStyle())
-        .accessibilityLabel(Text(LiquidTabItem.search.title))
-        .accessibilityHint(Text("在当前页面搜索教务功能"))
+        .background(
+            SystemGlassSurface(shape: Circle(), interactive: true) {
+                Color.clear.frame(width: Metric.searchButtonSize, height: Metric.searchButtonSize)
+            }
+        )
+        .accessibilityLabel(Text(isSearching ? "关闭搜索" : LiquidTabItem.search.title))
+        .accessibilityHint(Text(isSearching ? "收起搜索框" : "在当前页面搜索教务功能"))
     }
 
     private func tabButton(_ item: LiquidTabItem) -> some View {
@@ -178,15 +200,15 @@ struct LiquidBottomBar: View {
                 // The selection well travels between tabs rather than cross-fading in place, which
                 // is what `matchedGeometryEffect` buys over giving each tab its own background.
                 if isActive {
-                    Capsule()
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .fill(Color.primary.opacity(isDark ? 0.18 : 0.09))
                         .matchedGeometryEffect(id: "tabIndicator", in: indicatorNamespace)
                 }
-                VStack(spacing: 2) {
+                VStack(spacing: 1) {
                     Image(systemName: isActive ? item.selectedSystemImage : item.systemImage)
-                        .font(.system(size: 21, weight: .regular))
+                        .font(.system(size: Metric.glyphSize, weight: .regular))
                     Text(item.title)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: Metric.labelSize, weight: .medium))
                 }
                 .foregroundStyle(ink)
             }
@@ -219,24 +241,4 @@ struct LiquidTabItem: Identifiable, Hashable {
     static let settings = LiquidTabItem(id: "settings", title: "设置", systemImage: "gearshape")
     static let search = LiquidTabItem(id: "search", title: "搜索", systemImage: "magnifyingglass",
                                       selectedSystemImage: "magnifyingglass")
-}
-
-/// Glass card used for content blocks, matching the Android `PortalGlassComponents` surface.
-///
-/// The fill is resolved through the same semantic colour the bar uses, so a card and the bar around
-/// it are made of the same material on a given device. Cards are not interactive: they are content
-/// surfaces, and requesting the touch response from them would make scrolling feel like pressing.
-struct GlassCard<Content: View>: View {
-    var cornerRadius: CGFloat = 20
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        content
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(PortalPalette.surface)
-            )
-    }
 }

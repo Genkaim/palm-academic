@@ -2,16 +2,20 @@ import SwiftUI
 
 /// Port of `HomeActivity.kt`'s `HomeContent`.
 ///
-/// Structure and copy follow Android; the surfaces are iOS. Concretely that means the two-column
-/// quick-entry block is one ruled card rather than a grid of tiles, the group stacks use the
-/// four-position radius scheme, the header carries the school name on its own line, and the whole
-/// page filters through the bar's search field.
+/// The order and the copy come from Android and are not reordered: 状态, then 常用功能, then the
+/// school's own groups in the order the definition lists them. Quick entries are ordered by
+/// `nativeType` (课表 / 成绩 / 考试 / 培养方案) through the same helper Android uses, and a group's
+/// own items keep their declared order.
+///
+/// The presentation is iOS's. Each group is a `List` section rather than a hand-stacked card
+/// group, because "a titled group of rows you tap through" is exactly what an inset-grouped list
+/// is for, and reproducing Android's four-position radius stack on top of a `ScrollView` re-derives
+/// what the system already draws.
 struct HomeView: View {
     @EnvironmentObject private var state: AppState
-    @State private var showingSchools = false
     /// Value-based navigation so the status panel can push the page a pending change belongs to,
     /// the way Android acknowledges the notice and then opens the matching quick entry.
-    @State private var path: [PortalItem] = []
+    @State private var path: [PortalRoute] = []
 
     private var definition: SchoolDefinition? { state.definition }
 
@@ -40,35 +44,49 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    // Android's status panel leads the page and is hidden while a search is
-                    // actually filtering something.
-                    if !state.isSearching {
-                        statusPanel
-                    }
+            List {
+                // Android's status panel leads the page and is hidden while a search is
+                // actually filtering something.
+                if !state.isSearching {
+                    statusPanel
+                }
 
-                    if !visibleQuickItems.isEmpty {
-                        PortalSectionHeader(title: state.isSearching ? "搜索结果" : "常用功能")
+                if !visibleQuickItems.isEmpty {
+                    Section {
                         QuickEntryCard(items: visibleQuickItems)
-                    }
-
-                    ForEach(visibleGroups) { group in
-                        groupStack(group)
-                    }
-
-                    if state.isSearching && !hasSearchResults {
-                        searchEmptyState
+                            // The card brings its own surface, so the section must not add one.
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    } header: {
+                        Text(state.isSearching ? "搜索结果" : "常用功能")
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 112)
+
+                ForEach(visibleGroups) { group in
+                    Section {
+                        ForEach(group.items) { item in
+                            NavigationLink(value: PortalRoute.item(item)) {
+                                PortalNavigationRow(title: item.title)
+                            }
+                        }
+                    } header: {
+                        Text(group.title)
+                    }
+                }
+
+                if state.isSearching && !hasSearchResults {
+                    searchEmptyState
+                        .listRowSeparator(.hidden)
+                }
             }
+            .listStyle(.insetGrouped)
             .background(PortalPalette.page)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // Android's top bar carries a bold title with the school name on a second line, so
-                // the principal toolbar item holds both rather than using the system large title.
+                // Android's top bar carries a bold title with the school name on its second line.
+                // There is no leading item: the school is changed from Settings, which is where
+                // Android puts it too.
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 1) {
                         Text("掌上教务")
@@ -79,31 +97,28 @@ struct HomeView: View {
                             .lineLimit(1)
                     }
                 }
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        showingSchools = true
-                    } label: {
-                        Image(systemName: "building.2")
-                    }
-                    .accessibilityLabel("切换学校")
-                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     sessionStatusBadge
                 }
             }
-            .navigationDestination(for: PortalItem.self) { item in
-                MaterialPageScreen(item: item)
-            }
-            .sheet(isPresented: $showingSchools) {
-                SchoolPickerView { school in state.selectSchool(school) }
-                    .environmentObject(state)
+            .navigationDestination(for: PortalRoute.self) { route in
+                switch route {
+                case .item(let item): MaterialPageScreen(item: item)
+                case .notifications: NotificationSettingsScreen()
+                }
             }
             // A result picked in the bar's search overlay is pushed here, because this is the only
             // navigation stack that knows how to open a portal page.
             .onChange(of: state.pendingNavigation) { item in
                 guard let item else { return }
-                path = [item]
+                path = [.item(item)]
                 state.pendingNavigation = nil
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Color.clear.frame(height: BottomClearance.height)
+            }
+            .overlay {
+                QuickEntryBaselinePrefetch()
             }
         }
     }
@@ -139,11 +154,14 @@ struct HomeView: View {
 
     // MARK: - Sections
 
-    /// Port of `HomeStatusPanel`. It opens the notification settings when nothing has changed, and
-    /// jumps to the affected page when something has.
+    /// Port of `HomeStatusPanel`.
+    ///
+    /// Android's behaviour is: with no pending change the panel opens the notification settings,
+    /// and with one it acknowledges the notice and opens the page the change belongs to. Both are
+    /// implemented here; the earlier version only switched tabs, so the panel looked like it did
+    /// nothing when tapped.
     private var statusPanel: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            PortalSectionHeader(title: "状态")
+        Section {
             Button {
                 openStatusPanel()
             } label: {
@@ -171,17 +189,13 @@ struct HomeView: View {
                                     .fill(Color(uiColor: .tertiarySystemFill))
                             )
                     }
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(PortalPalette.outline)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 15)
+                .padding(.vertical, 6)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .background(PortalPalette.surface,
-                          in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } header: {
+            Text("状态")
         }
     }
 
@@ -207,7 +221,9 @@ struct HomeView: View {
 
     private func openStatusPanel() {
         guard let notice = state.sessionNotice, let definition else {
-            state.selectedTab = .settings
+            // No pending change: Android opens the notification settings page itself
+            // (`onNormalClick = onOpenNotifications`), not the settings tab.
+            path.append(.notifications)
             return
         }
         let quick = QuickEntryBaseline.orderedQuickBaselineItems(definition.quickItems)
@@ -215,27 +231,9 @@ struct HomeView: View {
             ?? definition.groups.flatMap(\.items).first { $0.title.contains(notice) }
         state.dismissSessionNotice()
         if let target {
-            path = [target]
-        }
-    }
-
-    /// Port of `PortalItemCard`: one stack of rows sharing a single surface, the corners stepping
-    /// from 18pt to 6pt so the block reads as one card.
-    private func groupStack(_ group: PortalGroup) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            PortalSectionHeader(title: group.title)
-            VStack(spacing: 3) {
-                ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                    NavigationLink(value: item) {
-                        PortalNavigationRow(title: item.title)
-                    }
-                    .buttonStyle(.plain)
-                    .background(
-                        PortalPalette.surface,
-                        in: GroupedCardShape(position: GroupPosition(index: index, count: group.items.count))
-                    )
-                }
-            }
+            path = [.item(target)]
+        } else {
+            path.append(.notifications)
         }
     }
 
@@ -251,24 +249,37 @@ struct HomeView: View {
                 .foregroundStyle(PortalPalette.secondaryText)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 56)
+        .padding(.vertical, 48)
         .padding(.horizontal, 24)
     }
+}
+
+/// Everything the home stack can push. One route type keeps a single `navigationDestination`,
+/// which SwiftUI requires -- a stack cannot mix destination types.
+enum PortalRoute: Hashable {
+    case item(PortalItem)
+    case notifications
+}
+
+/// How much room every scrolling page has to leave below its content so the floating bar never
+/// covers the last row. The bar is 64pt tall with 8pt below it, and the list's own bottom inset
+/// already accounts for the home indicator, so this is the bar's height plus a little air.
+enum BottomClearance {
+    static let height: CGFloat = 84
 }
 
 /// The results list that floats above the bar while its search field is open.
 ///
 /// Search on this platform is not a destination, so the results cannot be a page of their own:
-/// they have to stay attached to the field that produced them and hand the chosen destination
-/// back to whoever asked. The overlay is what makes that possible -- it is dismissed the moment a
-/// result is picked, and the home stack pushes the page from there.
+/// they stay attached to the field that produced them and hand the chosen destination back to
+/// whoever asked. The overlay is what makes that possible -- it is dismissed the moment a result
+/// is picked, and the home stack pushes the page from there.
 ///
 /// It reuses the home screen's own filtering rules rather than inventing a second set: trimmed
 /// query, title-only match, groups that end up empty are dropped.
 struct SearchResultsOverlay: View {
     @EnvironmentObject private var state: AppState
     let onSelect: (PortalItem) -> Void
-    let onDismiss: () -> Void
 
     private var definition: SchoolDefinition? { state.definition }
 

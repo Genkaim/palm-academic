@@ -38,6 +38,13 @@ struct SettingsScreen: View {
             .listStyle(.insetGrouped)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.large)
+            // The bar floats over the content rather than insetting the page, so the last row --
+            // 退出登录 -- would otherwise sit under it and could not be tapped. An inset added
+            // around the NavigationStack is swallowed by the stack's own inset handling, so the
+            // clearance has to live on the List itself.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Color.clear.frame(height: BottomClearance.height)
+            }
             .sheet(isPresented: $showingSchools) {
                 SchoolPickerView { school in state.selectSchool(school) }
                     .environmentObject(state)
@@ -57,7 +64,7 @@ struct SettingsScreen: View {
     private var appearanceSection: some View {
         Section {
             HStack(spacing: 12) {
-                PortalRowIcon("paintpalette", tint: .portalIndigo).glyph()
+                PortalRowIcon("paintpalette").glyph()
                 VStack(alignment: .leading, spacing: 3) {
                     Text("显示模式")
                         .font(.body)
@@ -90,7 +97,7 @@ struct SettingsScreen: View {
                 showingSchools = true
             } label: {
                 PortalSettingsRow(
-                    icon: PortalRowIcon("building.columns", tint: .portalBlue),
+                    icon: PortalRowIcon("building.columns"),
                     title: "学校",
                     subtitle: state.selectedSchool?.name ?? "未选择"
                 )
@@ -101,7 +108,7 @@ struct SettingsScreen: View {
                 NotificationSettingsScreen()
             } label: {
                 PortalSettingsRow(
-                    icon: PortalRowIcon("bell", tint: .portalRed),
+                    icon: PortalRowIcon("bell"),
                     title: "变动通知",
                     subtitle: "课表、成绩与考试提醒"
                 )
@@ -119,7 +126,7 @@ struct SettingsScreen: View {
                 BackgroundSupportScreen()
             } label: {
                 PortalSettingsRow(
-                    icon: PortalRowIcon("arrow.triangle.2.circlepath", tint: .portalGreen),
+                    icon: PortalRowIcon("arrow.triangle.2.circlepath"),
                     title: "后台运行",
                     subtitle: "后台刷新、低电量模式与通知权限"
                 )
@@ -129,7 +136,7 @@ struct SettingsScreen: View {
                 Task { await checkRelease(force: true) }
             } label: {
                 PortalSettingsRow(
-                    icon: PortalRowIcon("arrow.down.circle", tint: .portalBlue),
+                    icon: PortalRowIcon("arrow.down.circle"),
                     title: "软件更新",
                     subtitle: isCheckingRelease ? "正在检查更新…" : "当前版本 \(appVersion)",
                     showsSpinner: isCheckingRelease
@@ -142,7 +149,7 @@ struct SettingsScreen: View {
                 AboutScreen()
             } label: {
                 PortalSettingsRow(
-                    icon: PortalRowIcon("info.circle", tint: .portalOrange),
+                    icon: PortalRowIcon("info.circle"),
                     title: "关于",
                     subtitle: "开源引用、作者与项目地址"
                 )
@@ -166,7 +173,7 @@ struct SettingsScreen: View {
                 confirmSignOut = true
             } label: {
                 HStack(spacing: 12) {
-                    PortalRowIcon("rectangle.portrait.and.arrow.right", tint: .portalRed).glyph()
+                    PortalRowIcon("rectangle.portrait.and.arrow.right").glyph()
                     Text("退出登录")
                         .foregroundStyle(PortalPalette.error)
                     Spacer()
@@ -260,7 +267,7 @@ struct NotificationSettingsScreen: View {
                     Task { await runCheckNow() }
                 } label: {
                     PortalSettingsRow(
-                        icon: PortalRowIcon("arrow.clockwise", tint: .portalTeal),
+                        icon: PortalRowIcon("arrow.clockwise"),
                         title: "立即检查",
                         subtitle: isChecking ? "正在检查…" : "手动抓取一次并写入日志",
                         showsSpinner: isChecking
@@ -273,26 +280,23 @@ struct NotificationSettingsScreen: View {
                     NoticeHistoryScreen(entries: $entries)
                 } label: {
                     PortalSettingsRow(
-                        icon: PortalRowIcon("doc.text.magnifyingglass", tint: .portalPurple),
+                        icon: PortalRowIcon("doc.text.magnifyingglass"),
                         title: "检查日志",
                         subtitle: entries.isEmpty ? "暂无记录" : "\(entries.count) 条记录"
                     )
                 }
-
-                Button(role: .destructive) {
-                    PortalPollHistory.clear()
-                    entries = []
-                } label: {
-                    Text("清空日志")
-                        .foregroundStyle(PortalPalette.error)
-                }
             } header: {
                 Text("记录")
+            } footer: {
+                Text("清空日志在“检查日志”页内进行。")
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("变动通知")
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear.frame(height: BottomClearance.height)
+        }
         .onAppear { entries = PortalPollHistory.load() }
     }
 
@@ -407,6 +411,24 @@ struct NoticeHistoryScreen: View {
                 .frame(width: 160)
             }
         }
+        // Clearing lives here rather than on the parent page: it is an operation *on* the log, so
+        // it belongs where the log is read. The clearance for the floating bar and the button share
+        // one inset, because a view can only have one inset per edge.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Color.clear.frame(height: BottomClearance.height)
+                Button(role: .destructive) {
+                    entries = []
+                    PortalPollHistory.clear()
+                } label: {
+                    Text("清空日志")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                }
+                .disabled(entries.isEmpty)
+            }
+            .background(PortalPalette.page)
+        }
     }
 }
 
@@ -428,7 +450,7 @@ struct BackgroundSupportScreen: View {
         List {
             Section {
                 statusRow(
-                    icon: PortalRowIcon("bolt", tint: .portalOrange),
+                    icon: PortalRowIcon("bolt"),
                     title: "低电量模式",
                     detail: lowPowerMode
                         ? "已开启，系统会推迟后台刷新"
@@ -436,13 +458,13 @@ struct BackgroundSupportScreen: View {
                     healthy: !lowPowerMode
                 )
                 statusRow(
-                    icon: PortalRowIcon("bell.badge", tint: .portalRed),
+                    icon: PortalRowIcon("bell.badge"),
                     title: "通知权限",
                     detail: authorisationLabel,
                     healthy: authorisation == .authorized || authorisation == .provisional
                 )
                 statusRow(
-                    icon: PortalRowIcon("arrow.triangle.2.circlepath", tint: .portalGreen),
+                    icon: PortalRowIcon("arrow.triangle.2.circlepath"),
                     title: "后台检查",
                     detail: notifications.monitorEnabled
                         ? "已开启，每 \(notifications.intervalMinutes) 分钟请求一次"
@@ -463,7 +485,7 @@ struct BackgroundSupportScreen: View {
                     }
                 } label: {
                     PortalSettingsRow(
-                        icon: PortalRowIcon("gearshape", tint: .portalIndigo),
+                        icon: PortalRowIcon("gearshape"),
                         title: "打开系统设置",
                         subtitle: "调整通知、低电量模式与后台 App 刷新"
                     )
@@ -522,64 +544,177 @@ struct BackgroundSupportScreen: View {
 }
 
 /// Port of `AboutActivity.kt`.
+///
+/// The content is Android's exactly, in the same order: an identity block, then 项目 (author and
+/// repository address), then 开源引用 with the same five entries, the same descriptions and the
+/// same licence strings. It is a legal notice as much as a credits page -- the attribution has to
+/// match the licences it is claiming -- so the list is copied rather than paraphrased.
+///
+/// Only the rendering is iOS's: a `List` in the inset-grouped style instead of a LazyColumn of
+/// hand-shaped cards, with the logo and the two heading lines as the first group.
 struct AboutScreen: View {
     @State private var release: GitHubRelease?
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.12))
-                    .frame(width: 76, height: 76)
-                    .overlay(
-                        Image(systemName: "building.columns")
-                            .font(.system(size: 36))
-                            .foregroundStyle(Color.accentColor)
-                    )
-
-                VStack(spacing: 4) {
+        List {
+            Section {
+                VStack(spacing: 10) {
+                    Image(systemName: "building.columns")
+                        .font(.system(size: 52, weight: .light))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 120, height: 120)
+                        .background(Circle().fill(PortalPalette.surface))
+                        .clipShape(Circle())
                     Text("掌上教务")
-                        .font(.title2.bold())
-                    Text("iOS 原生版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.5")")
+                        .font(.largeTitle.weight(.bold))
+                        .multilineTextAlignment(.center)
+                    Text("PalmAcademic · \(appVersion)")
                         .font(.subheadline)
                         .foregroundStyle(PortalPalette.secondaryText)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .listRowBackground(Color.clear)
+            }
 
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("关于本应用").font(.headline)
-                        Text("本版本使用 SwiftUI 与 WKWebView 实现，与安卓端共用同一套学校配置和页面解析适配器，因此两端渲染结果保持一致。")
-                            .font(.subheadline)
-                            .foregroundStyle(PortalPalette.secondaryText)
-                        Text("应用不收集任何个人信息，仅在你主动登录后访问对应学校的教务系统。")
-                            .font(.subheadline)
-                            .foregroundStyle(PortalPalette.secondaryText)
-                    }
+            Section {
+                Link(destination: URL(string: "https://github.com/Genkaim")!) {
+                    AboutLinkRow(
+                        icon: "person.crop.circle",
+                        title: "作者",
+                        description: "Genkaim"
+                    )
                 }
+                Link(destination: URL(string: "https://github.com/Genkaim/palm-academic")!) {
+                    AboutLinkRow(
+                        icon: "chevron.left.forwardslash.chevron.right",
+                        title: "项目地址",
+                        description: "github.com/Genkaim/palm-academic"
+                    )
+                }
+            } header: {
+                Text("项目")
+            }
 
-                if let release {
-                    GlassCard {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("最新版本 \(release.tagName)").font(.headline)
-                            if let body = release.body, !body.isEmpty {
-                                Text(body)
+            Section {
+                ForEach(Self.openSourceReferences) { reference in
+                    Link(destination: URL(string: reference.url)!) {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(reference.name)
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(PortalPalette.onSurface)
+                                Text(reference.description)
                                     .font(.caption)
                                     .foregroundStyle(PortalPalette.secondaryText)
-                                    .lineLimit(12)
+                                Text(reference.license)
+                                    .font(.caption)
+                                    .foregroundStyle(Color.accentColor)
                             }
-                            if let url = URL(string: release.htmlUrl) {
-                                Link("在 GitHub 查看", destination: url)
-                                    .font(.subheadline)
-                            }
+                            Spacer(minLength: 8)
+                            Image(systemName: "arrow.up.right")
+                                .font(.footnote)
+                                .foregroundStyle(PortalPalette.outline)
                         }
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
                     }
                 }
+            } header: {
+                Text("开源引用")
             }
-            .padding(20)
+
+            if let release {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("最新版本 \(release.tagName)")
+                            .font(.subheadline.weight(.semibold))
+                        if let body = release.body, !body.isEmpty {
+                            Text(body)
+                                .font(.caption)
+                                .foregroundStyle(PortalPalette.secondaryText)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("版本")
+                }
+            }
         }
+        .listStyle(.insetGrouped)
         .background(PortalPalette.page)
         .navigationTitle("关于")
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear.frame(height: BottomClearance.height)
+        }
         .task { release = try? await GitHubRepository.latestRelease() }
     }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    /// The same rows as Android's `AboutLinkCard`, minus the avatar image, which is a drawable the
+    /// iOS bundle does not carry.
+    private func AboutLinkRow(icon: String, title: String, description: String) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 24))
+                .foregroundStyle(PortalPalette.onSurface)
+                .frame(width: 40, height: 40)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(PortalPalette.onSurface)
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(PortalPalette.secondaryText)
+            }
+            Spacer(minLength: 8)
+            Image(systemName: "arrow.up.right")
+                .font(.footnote)
+                .foregroundStyle(PortalPalette.outline)
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+
+    private struct OpenSourceReference: Identifiable {
+        let name: String
+        let description: String
+        let license: String
+        let url: String
+        var id: String { url }
+    }
+
+    /// Copied verbatim from `AboutActivity.kt`. The descriptions say what each dependency is
+    /// actually used for in the Android client, which is why two of them name libraries iOS does
+    /// not use at all: the notice covers the project, not the current platform's dependency list.
+    private static let openSourceReferences: [OpenSourceReference] = [
+        OpenSourceReference(
+            name: "AndroidX · Jetpack Compose",
+            description: "Activity、AppCompat、WebKit、Lifecycle、WorkManager 与 Material 3",
+            license: "Apache License 2.0",
+            url: "https://developer.android.com/jetpack/androidx"
+        ),
+        OpenSourceReference(
+            name: "OkHttp 4.12.0",
+            description: "网络请求与连接管理",
+            license: "Apache License 2.0",
+            url: "https://github.com/square/okhttp"
+        ),
+        OpenSourceReference(
+            name: "AndroidLiquidGlass · Backdrop 1.0.6",
+            description: "液态玻璃、模糊与折射效果",
+            license: "Apache License 2.0",
+            url: "https://github.com/Kyant0/AndroidLiquidGlass"
+        ),
+        OpenSourceReference(
+            name: "Shapes 1.2.0",
+            description: "Compose 图形与胶囊形状支持",
+            license: "Apache License 2.0",
+            url: "https://github.com/Kyant0/Shapes"
+        )
+    ]
 }

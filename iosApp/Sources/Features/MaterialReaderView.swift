@@ -18,6 +18,14 @@ struct MaterialReaderView: UIViewRepresentable {
     let onContent: (MaterialPage) -> Void
     let onError: (String) -> Void
     let onSessionExpired: () -> Void
+    /// Why the page produced nothing, in the page's own words.
+    ///
+    /// A reader that never publishes is otherwise indistinguishable from a slow one: the native
+    /// side sees a load finish and no payload, and all it can say is "still loading". Android has
+    /// the same blind spot, but it also has logcat, and iOS does not get an equivalent for free.
+    /// The injected bootstrap therefore reports the specific reason back through the same bridge,
+    /// so the screen can say *why* instead of spinning.
+    let onDiagnostic: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -28,15 +36,51 @@ struct MaterialReaderView: UIViewRepresentable {
         configuration.websiteDataStore = .default()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
 
-        // The host API mirrors the Android `PalmAcademicHost` object exactly.
+        // The host API mirrors the Android `PalmAcademicHost` object exactly, plus a `report`
+        // channel the Android host does not need because its failure modes are visible in logcat.
         let hostAPI = """
         window.PalmAcademicHost = {
           apiVersion: 1,
           schoolConfig: \(schoolConfigJSON),
           publish: function(payload) {
+            window.__portalPublished = true;
             window.webkit.messageHandlers.\(BridgeHandler.name).postMessage(JSON.stringify(payload));
+          },
+          report: function(reason) {
+            window.webkit.messageHandlers.\(BridgeHandler.name).postMessage(JSON.stringify({portalDiagnostic: String(reason)}));
           }
         };
+        """
+
+        // The watchdog. It runs before the adapter, so by the time it fires it can tell the three
+        // cases apart: the adapter never ran, the adapter threw, or the adapter ran and produced
+        // nothing. Each has a different fix, and guessing between them costs a build each time.
+        let watchdog = """
+        (function () {
+          var announced = false;
+          var report = function (reason) {
+            if (announced) return;
+            announced = true;
+            try {
+              if (window.PalmAcademicHost && window.PalmAcademicHost.report) window.PalmAcademicHost.report(reason);
+            } catch (_) {}
+          };
+          window.__portalWatchdog = report;
+          setTimeout(function () {
+            if (!window.PalmAcademicAdapter) {
+              report('适配器脚本未安装。host=' + (window.PalmAcademicHost ? 'ok' : 'missing')
+                + ' adapterLength=' + \(adapterScript.count));
+            } else if (window.__portalPublished !== true) {
+              report('适配器已加载但没有产出内容：URL=' + location.pathname
+                + ' bodyLength=' + (document.body ? document.body.innerText.length : -1));
+            }
+          }, 6000);
+          setTimeout(function () {
+            if (window.__portalPublished !== true) {
+              report('15 秒仍未收到数据：URL=' + location.pathname);
+            }
+          }, 15000);
+        })();
         """
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -58,19 +102,32 @@ struct MaterialReaderView: UIViewRepresentable {
         // just a spinner.
         let controller = webView.configuration.userContentController
         controller.add(scriptHandler, name: BridgeHandler.name)
+        // The watchdog wraps the adapter so a thrown bootstrap is reported instead of silently
+        // leaving `window.PalmAcademicAdapter` half-defined, which no retry can recover from.
+        let guardedAdapter = """
+        (function () {
+          try {
+        \(adapterScript.isEmpty ? "  // no adapter configured for this school" : adapterScript)
+          } catch (error) {
+            if (window.PalmAcademicHost && window.PalmAcademicHost.report) {
+              window.PalmAcademicHost.report('适配器执行出错：' + (error && error.message ? error.message : String(error)));
+            }
+          }
+        })();
+        """
         controller.addUserScript(
             WKUserScript(source: hostAPI, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
-        // The adapter is injected at document-end rather than through `evaluateJavaScript` alone.
-        // Its bootstrap calls `observer.observe(document.body, ...)`, which throws if the body does
-        // not exist yet; at didCommit it often does not, and a thrown bootstrap would leave
-        // `window.PalmAcademicAdapter` half-installed so no retry could recover.
-        let adapter = adapterScript
-        if !adapter.isEmpty {
-            controller.addUserScript(
-                WKUserScript(source: adapter, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
-            )
-        }
+        // The watchdog runs first, then the adapter. Both are document-end: the adapter's own
+        // bootstrap calls `observer.observe(document.body, ...)`, which throws if the body does not
+        // exist yet, and at didCommit it often does not -- a thrown bootstrap leaves
+        // `window.PalmAcademicAdapter` half-installed, so no retry could ever recover.
+        controller.addUserScript(
+            WKUserScript(source: watchdog, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+        )
+        controller.addUserScript(
+            WKUserScript(source: guardedAdapter, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+        )
 
         context.coordinator.applyAppearance(to: webView, isDark: isDark)
 
@@ -128,8 +185,16 @@ struct MaterialReaderView: UIViewRepresentable {
 
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
-            guard let json = message.body as? String,
-                  let page = MaterialPageParser.parse(json) else { return }
+            guard let json = message.body as? String else { return }
+            // The watchdog's report. It is shaped like a page payload so it travels the same
+            // channel, but it is recognised before parsing because there is nothing to render.
+            if let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+               let reason = object["portalDiagnostic"] as? String {
+                coordinator?.parent.onDiagnostic(reason)
+                return
+            }
+            guard let page = MaterialPageParser.parse(json) else { return }
+            coordinator?.markPublished()
             guard let url = message.webView?.url?.absoluteString else {
                 coordinator?.parent.onContent(page)
                 return
@@ -144,11 +209,19 @@ struct MaterialReaderView: UIViewRepresentable {
         var refreshToken: Int
         var actionToken: Int
         weak var bridgeHandler: BridgeHandler?
+        /// Tells the page that a payload has been delivered, so the injected watchdog can stop
+        /// reporting a failure that has in fact been resolved.
+        private var didPublish = false
 
         init(parent: MaterialReaderView) {
             self.parent = parent
             self.refreshToken = parent.refreshToken
             self.actionToken = parent.action?.token ?? -1
+        }
+
+        func markPublished() {
+            guard !didPublish else { return }
+            didPublish = true
         }
 
         func applyAppearance(to webView: WKWebView, isDark: Bool) {
@@ -160,10 +233,9 @@ struct MaterialReaderView: UIViewRepresentable {
         private func injectReader(_ webView: WKWebView) {
             let adapter = parent.adapterScript
             guard !adapter.isEmpty else { return }
-            // Re-inject only when the adapter is genuinely absent. The guard at the top of the
-            // script makes a second run a no-op, but running it on every commit still costs a
-            // round trip and, more importantly, would re-run against a page whose adapter is
-            // already watching -- so this asks first.
+            // The document-end user script already installed it on the first load. This is the
+            // back/forward-cache and mid-session-navigation path, where a restored document does
+            // not re-run document-end scripts, so the adapter has to be pushed in by hand.
             webView.evaluateJavaScript("!!window.PalmAcademicAdapter") { [weak self] result, _ in
                 guard let self else { return }
                 let installed = (result as? Bool) ?? false
@@ -182,18 +254,32 @@ struct MaterialReaderView: UIViewRepresentable {
                 apiVersion: 1,
                 schoolConfig: \(parent.schoolConfigJSON),
                 publish: function(payload) {
+                  window.__portalPublished = true;
                   window.webkit.messageHandlers.\(BridgeHandler.name).postMessage(JSON.stringify(payload));
+                },
+                report: function(reason) {
+                  window.webkit.messageHandlers.\(BridgeHandler.name).postMessage(JSON.stringify({portalDiagnostic: String(reason)}));
                 }
               };
             }
             """
-            webView.evaluateJavaScript(hostAPI) { [weak self] _, _ in
-                guard let self else { return }
-                webView.evaluateJavaScript(self.parent.adapterScript, completionHandler: nil)
+            let adapter = parent.adapterScript
+            let guarded = """
+            try {
+            \(adapter)
+            } catch (error) {
+              if (window.PalmAcademicHost && window.PalmAcademicHost.report) {
+                window.PalmAcademicHost.report('适配器执行出错：' + (error && error.message ? error.message : String(error)));
+              }
+            }
+            """
+            webView.evaluateJavaScript(hostAPI) { _, _ in
+                webView.evaluateJavaScript(guarded, completionHandler: nil)
             }
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            didPublish = false
             parent.onLoading(true)
         }
 

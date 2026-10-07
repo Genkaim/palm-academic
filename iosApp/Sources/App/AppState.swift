@@ -55,6 +55,7 @@ final class AppState: ObservableObject {
     var schools: [SchoolProfile] { SchoolCatalog.shared.options }
     var selectedSchool: SchoolProfile? { SchoolCatalog.shared.activeProfile }
     var definition: SchoolDefinition? { SchoolCatalog.shared.definition }
+    var isSignedIn: Bool { phase == .signedIn }
 
     func bootstrap() async {
         SchoolCatalog.shared.initialize()

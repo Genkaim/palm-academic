@@ -55,36 +55,29 @@ enum PortalPalette {
     /// token for it, so the system red is laid over the grouped surface instead of being mixed by
     /// hand, which keeps it correct in both appearances.
     static var errorContainer: Color { Color(uiColor: .systemRed).opacity(0.12) }
-
-    /// The tint behind a settings row's glyph. iOS draws these as a rounded square filled with the
-    /// colour rather than as a bare outline icon, so this is only the fill.
-    static func rowGlyph(_ color: Color) -> some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(color.opacity(0.18))
-    }
 }
 
-/// The glyph and colour a settings row uses, paired so a row cannot end up with an icon but no
-/// colour (which is what a bare `systemImage` string tends to become).
+/// The glyph a settings row uses, with its colour.
+///
+/// The glyph is drawn monochrome with no plate behind it. iOS's own Settings puts a coloured
+/// rounded plate behind each icon, but Android's `SettingsNavigationPanel` draws a bare 22pt
+/// outline icon in `onSurface`, and the brief is that content follows Android -- a plate would be
+/// iOS styling applied on top of Android content, which is exactly the thing to avoid.
 struct PortalRowIcon {
     let systemImage: String
     let tint: Color
 
-    init(_ systemImage: String, tint: Color) {
+    init(_ systemImage: String, tint: Color = .primary) {
         self.systemImage = systemImage
         self.tint = tint
     }
 
-    /// The system list glyph: a filled rounded square with the symbol centred in it, which is the
-    /// shape `Settings` uses on iOS since 13.
-    func glyph(size: CGFloat = 20, box: CGFloat = 29) -> some View {
-        ZStack {
-            PortalPalette.rowGlyph(tint)
-            Image(systemName: systemImage)
-                .font(.system(size: size * 0.62, weight: .medium))
-                .foregroundStyle(tint)
-        }
-        .frame(width: box, height: box)
+    func glyph(size: CGFloat = 20, box: CGFloat = 26) -> some View {
+        Image(systemName: systemImage)
+            .font(.system(size: size, weight: .regular))
+            .foregroundStyle(tint)
+            .frame(width: box, height: box)
+            .contentShape(Rectangle())
     }
 }
 

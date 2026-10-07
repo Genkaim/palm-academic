@@ -64,25 +64,37 @@ struct LoginView: View {
 
             ScrollView {
                 VStack(spacing: 18) {
-                    if brandVisible {
-                        brand.transition(.opacity)
-                    }
+                    // The brand block collapses by height rather than being removed from the tree.
+                    // Removing it -- which is what an `if` around the whole block does -- rebuilds
+                    // the fields' container the moment the keyboard appears, and `@FocusState`
+                    // cannot survive that: the field comes back unfocused, the keyboard is already
+                    // on its way down, and the next tap has to start over. That is the "tapping the
+                    // field twice" symptom.
+                    brand
+                        .frame(height: brandVisible ? Metric.brandHeight : 0)
+                        .clipped()
+                        .opacity(brandVisible ? 1 : 0)
                     if hasSchool {
-                        credentialForm.transition(.opacity)
+                        credentialForm
                     }
                 }
                 .padding(.horizontal, Metric.horizontal)
                 // The two Android content paddings, which are what make the unselected screen feel
-                // like a different screen rather than the same one with a hidden form.
+                // like a different screen rather than the same one with a hidden form. The selected
+                // padding shrinks while the keyboard is up so the fields stay reachable without the
+                // bottom area having to lift the whole page.
                 .padding(.top, hasSchool ? 24 : 64)
-                .padding(.bottom, hasSchool ? 218 : 112)
+                .padding(.bottom, hasSchool ? (keyboardHeight > 0 ? 24 : 218) : 112)
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
+            .scrollDisabled(keyboardHeight > 0)
         }
-        // The bottom area is a safe-area inset rather than an overlay so the keyboard lifts it the
-        // way it lifts everything else, with no frame maths.
-        .safeAreaInset(edge: .bottom, spacing: 0) { bottomArea }
+        // The bottom area is an overlay rather than a safe-area inset. An inset is lifted by the
+        // keyboard as a unit, which drags the school row and the web-login row up with it; Android
+        // only moves the primary action and fades the other two, and that is what happens here.
+        .overlay(alignment: .bottom) { bottomArea }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .sheet(isPresented: $showingSchools) {
             SchoolPickerView { school in
                 state.selectSchool(school)
@@ -94,6 +106,7 @@ struct LoginView: View {
                 .environmentObject(state)
         }
         .animation(.easeInOut(duration: 0.25), value: hasSchool)
+        .animation(.easeOut(duration: 0.22), value: keyboardHeight > 0)
         .onAppear {
             NotificationPreferences.shared.clearAuthenticationFailureMarker()
             observeKeyboard()
@@ -156,6 +169,9 @@ struct LoginView: View {
     private var bottomArea: some View {
         VStack(spacing: 0) {
             if hasSchool {
+                // Android's secondary actions fade as the keyboard arrives
+                // (`secondaryActionAlpha = 1 - imeProgress * 2`) and do not move. They stay pinned
+                // to the bottom while the primary button rides above the keyboard.
                 VStack(spacing: 10) {
                     secondaryButton(
                         systemImage: "building.columns",
@@ -169,15 +185,60 @@ struct LoginView: View {
                         state.showingWebLogin = true
                     }
                 }
+                .opacity(secondaryOpacity)
+                .allowsHitTesting(keyboardHeight == 0)
                 .padding(.bottom, 20 + Metric.primaryButtonHeight)
-                primaryButton
-                    .frame(height: Metric.primaryButtonHeight)
+
+                // Only this one follows the keyboard. It is a system prominent button tinted to
+                // Android's `primary` token, so it keeps the system's own corner radius, press
+                // animation and disabled appearance instead of a hand-drawn capsule.
+                Button {
+                    focusedField = nil
+                    Task { await state.login() }
+                } label: {
+                    HStack(spacing: 8) {
+                        if state.isLoading {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "lock")
+                        }
+                        Text(state.isLoading ? "登录中…" : "登录")
+                            .font(.body.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: Metric.primaryButtonHeight - 8)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(PortalPalette.primary)
+                .foregroundStyle(PortalPalette.plainSurface)
+                .controlSize(.large)
+                .disabled(!canSubmit || state.isLoading)
+                .offset(y: -primaryLift)
             } else {
                 schoolSelectionPrompt
+                    .padding(.bottom, 20)
             }
         }
         .padding(.horizontal, Metric.horizontal)
         .padding(.bottom, 20)
+    }
+
+    /// How far the keyboard has risen, 0...1. Android derives this the same way, from the IME inset
+    /// against the navigation bar inset.
+    private var keyboardProgress: CGFloat {
+        guard keyboardHeight > 0 else { return 0 }
+        let screenHeight = UIScreen.main.bounds.height
+        guard screenHeight > 0 else { return 1 }
+        return min(max(keyboardHeight / (screenHeight * 0.45), 0), 1)
+    }
+
+    /// The secondary actions are gone by the time the keyboard is half up.
+    private var secondaryOpacity: Double { max(0, 1 - Double(keyboardProgress) * 2) }
+
+    /// The primary button's travel. It clears the secondary block -- two 52pt rows, a 10pt gap and
+    /// the 20pt of padding -- and then follows the keyboard the rest of the way.
+    private var primaryLift: CGFloat {
+        keyboardProgress * (Metric.secondaryGap + Metric.secondaryButtonHeight * 2 + 24)
     }
 
     /// The unselected screen's only affordance: a line of copy and one full-width button.
@@ -189,48 +250,30 @@ struct LoginView: View {
             Button {
                 showingSchools = true
             } label: {
-                ZStack {
+                HStack(spacing: 12) {
                     Image(systemName: "building.columns")
-                        .foregroundStyle(PortalPalette.plainSurface)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     Text("选择学校")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(PortalPalette.plainSurface)
+                    Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 20)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Capsule().fill(PortalPalette.primary))
+                .frame(maxWidth: .infinity)
+                .frame(height: Metric.primaryButtonHeight - 8)
             }
-            .buttonStyle(TabPressStyle(scale: 0.98))
-            .frame(height: Metric.primaryButtonHeight)
+            // The system prominent button, tinted to Android's `primary` token so the page keeps
+            // the client's colour while the control itself is the platform's.
+            .buttonStyle(.borderedProminent)
+            .tint(PortalPalette.primary)
+            .foregroundStyle(PortalPalette.plainSurface)
+            .controlSize(.large)
             .disabled(state.isLoading)
         }
     }
 
-    private var primaryButton: some View {
-        Button {
-            focusedField = nil
-            Task { await state.login() }
-        } label: {
-            HStack(spacing: 8) {
-                if state.isLoading {
-                    ProgressView().tint(PortalPalette.plainSurface)
-                } else {
-                    Image(systemName: "lock")
-                }
-                Text(state.isLoading ? "登录中…" : "登录")
-                    .font(.body.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Capsule().fill(PortalPalette.primary))
-            .foregroundStyle(PortalPalette.plainSurface)
-        }
-        .buttonStyle(TabPressStyle(scale: 0.98))
-        .disabled(!canSubmit || state.isLoading)
-        .opacity(canSubmit ? 1 : 0.5)
-    }
-
     /// The outlined counterpart Android builds with `OutlinedButton` and a pill shape.
+    ///
+    /// Rendered with the system bordered style so the corner radius, the press state and the
+    /// disabled appearance are the platform's.
     private func secondaryButton(
         systemImage: String,
         title: String,
@@ -238,7 +281,7 @@ struct LoginView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Image(systemName: systemImage)
                 Text(title)
                     .lineLimit(1)
@@ -249,13 +292,14 @@ struct LoginView: View {
                 }
             }
             .font(.body)
-            .foregroundStyle(PortalPalette.onSurface)
             .padding(.horizontal, 20)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(Capsule().strokeBorder(PortalPalette.outline.opacity(0.6), lineWidth: 1))
+            .frame(maxWidth: .infinity)
+            .frame(height: Metric.secondaryButtonHeight - 6)
         }
-        .buttonStyle(TabPressStyle(scale: 0.98))
-        .frame(height: Metric.secondaryButtonHeight)
+        .buttonStyle(.bordered)
+        .tint(PortalPalette.outline.opacity(0.8))
+        .foregroundStyle(PortalPalette.onSurface)
+        .controlSize(.large)
         .disabled(state.isLoading)
     }
 
@@ -276,10 +320,11 @@ struct LoginView: View {
                     .labelsHidden()
             }
             .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
+            .frame(height: 46)
             .background(Capsule().fill(PortalPalette.surface))
         }
-        .buttonStyle(TabPressStyle(scale: 0.99))
+        .buttonStyle(.plain)
         .frame(height: 48)
         .disabled(state.isLoading)
     }
