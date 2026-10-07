@@ -109,17 +109,15 @@ struct MainShellView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
+            // The tab's own root view has to sit in the stack, not in an overlay. An overlay is
+            // proposed whatever size the ZStack ends up with, and a NavigationStack given no height
+            // collapses: its bar still draws, its content does not, and because the ZStack then
+            // measures zero the bottom-aligned tab bar rises into the middle of the screen. Each tab
+            // root is self-contained -- HomeView and QuickEntriesView each own a NavigationStack --
+            // so switching tabs legitimately rebuilds the stack.
             ZStack {
-                switch state.selectedTab {
-                case .notices:
-                    NoticeHistoryScreen()
-                case .settings:
-                    SettingsScreen()
-                default:
-                    EmptyView()
-                }
+                content(for: state.selectedTab)
             }
-            .opacity(state.selectedTab == .home || state.selectedTab == .quick ? 0 : 1)
 
             // The glass bar floats above the content so both tabs stay scrollable underneath.
             LiquidTabBar(
@@ -129,16 +127,21 @@ struct MainShellView: View {
             )
             .padding(.bottom, 4)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 0) }
-        .overlay(alignment: .top) {
-            if state.selectedTab == .home || state.selectedTab == .quick {
-                TabContentSwitcher(selectedTab: state.selectedTab)
-            }
-        }
         .overlay(alignment: .top) {
             if let notice = state.sessionNotice {
                 noticeBanner(notice)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func content(for tab: LiquidTabItem) -> some View {
+        switch tab.id {
+        case LiquidTabItem.home.id: HomeView()
+        case LiquidTabItem.quick.id: QuickEntriesView()
+        case LiquidTabItem.notices.id: NoticeHistoryScreen()
+        case LiquidTabItem.settings.id: SettingsScreen()
+        default: EmptyView()
         }
     }
 
@@ -162,22 +165,5 @@ struct MainShellView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .padding(.horizontal, 14)
         .padding(.top, 6)
-    }
-}
-
-/// Keeps the home and quick areas alive so switching tabs does not reload the WebView.
-private struct TabContentSwitcher: View {
-    @EnvironmentObject private var state: AppState
-    let selectedTab: LiquidTabItem
-
-    var body: some View {
-        ZStack {
-            HomeView()
-                .opacity(selectedTab == .home ? 1 : 0)
-                .allowsHitTesting(selectedTab == .home)
-            QuickEntriesView()
-                .opacity(selectedTab == .quick ? 1 : 0)
-                .allowsHitTesting(selectedTab == .quick)
-        }
     }
 }

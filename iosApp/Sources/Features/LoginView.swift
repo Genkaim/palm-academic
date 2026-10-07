@@ -325,28 +325,31 @@ struct LoginView: View {
 }
 
 /// Port of `SchoolSelectionUi.kt`.
+///
+/// Picking one value out of a set is what `List(selection:)` exists for: the selection is a piece
+/// of state the system renders, so the checkmark, the highlight and the current value can never
+/// drift apart. The previous version wrapped each row in a `Button` and drew the tick by hand,
+/// which meant the tick was whatever the code said at build time rather than what was selected.
 struct SchoolPickerView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var selection: String?
     let onSelect: (SchoolProfile) -> Void
+
+    @MainActor
+    init(onSelect: @escaping (SchoolProfile) -> Void) {
+        self.onSelect = onSelect
+        // Seed from the active profile so the row the user is on is already ticked on open.
+        _selection = State(initialValue: SchoolCatalog.shared.selectedSchoolID)
+    }
+
+    @MainActor
+    private var schools: [SchoolProfile] { SchoolCatalog.shared.options }
 
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(SchoolCatalog.shared.options) { school in
-                    Button {
-                        onSelect(school)
-                        dismiss()
-                    } label: {
-                        HStack {
-                            Text(school.name)
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            if school.id == SchoolCatalog.shared.selectedSchoolID {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.tint)
-                            }
-                        }
-                    }
+            List(selection: $selection) {
+                ForEach(schools) { school in
+                    Text(school.name).tag(school.id)
                 }
             }
             .navigationTitle("选择学校")
@@ -355,6 +358,11 @@ struct SchoolPickerView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("完成") { dismiss() }
                 }
+            }
+            .onChange(of: selection) { newValue in
+                guard let newValue, let school = schools.first(where: { $0.id == newValue }) else { return }
+                onSelect(school)
+                dismiss()
             }
         }
     }
