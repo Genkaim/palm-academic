@@ -30,10 +30,6 @@ struct OriginalPortalScreen: View {
         case ready
         case failed(String)
         case sessionExpired
-        /// The portal is up but has no entry for this item. Android shows a toast and leaves the
-        /// home page on screen; the notice is a case rather than a separate flag so it cannot
-        /// disagree with the phase it belongs to.
-        case menuMissing(String)
     }
 
     private var baseURL: String {
@@ -53,7 +49,6 @@ struct OriginalPortalScreen: View {
                 targetURL: targetURL,
                 homeURL: homeURL,
                 menuScript: makeMenuScript(),
-                menuMissNotice: menuMissNotice,
                 isDark: state.isDark,
                 refreshToken: refreshToken,
                 onPhase: { phase = $0 }
@@ -103,23 +98,6 @@ struct OriginalPortalScreen: View {
         } message: {
             Text("教务系统登录状态已过期或账号凭据已变更，请重新登录。")
         }
-        .alert("未在教务菜单中找到该功能", isPresented: menuMissingBinding) {
-            Button("好", role: .cancel) { phase = .ready }
-        } message: {
-            Text(menuMissingNotice)
-        }
-    }
-
-    private var menuMissingNotice: String {
-        if case .menuMissing(let text) = phase { return text }
-        return ""
-    }
-
-    private var menuMissingBinding: Binding<Bool> {
-        Binding(
-            get: { if case .menuMissing = phase { return true } else { return false } },
-            set: { if !$0 { phase = .ready } }
-        )
     }
 
     private func failureView(_ reason: String) -> some View {
@@ -154,29 +132,29 @@ struct OriginalPortalScreen: View {
         )
     }
 
-    /// The portal's landing page. Every ordinary subsection is reached from here, because that is
-    /// the page that establishes the session the subsections depend on.
+    /// The portal's landing page. It is loaded first purely to establish the session: the portal
+    /// only issues its session cookies once it has run its own bootstrap on this page, and a cold
+    /// request straight to a subsection is bounced back to the login form.
     ///
-    /// The school file declares its own `auth.homePath`; `SchoolDefinition` does not decode that
-    /// block, so the path the portal uses is the one its own config fixes -- the same `/home` the
-    /// Android `PortalConfig.HOME` points at.
+    /// The school file declares an `auth.homePath`, but `SchoolDefinition` does not decode that
+    /// block, so the path is the one the portal itself uses -- the same `/home` Android's
+    /// `PortalConfig.HOME` points at.
     private var homeURL: String {
         let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         return base + "/home"
     }
 
-    /// Port of `OriginalPortalActivity.openThroughPortalMenu`.
+    /// Opens the portal menu entry for this item, if the portal has one that can be recognised.
     ///
-    /// The menu is matched by visible label first and by resolved path second, because the portal
-    /// renames menu entries between terms but keeps the hrefs stable. `browsertab` is forced off so
-    /// the result stays in this WebView rather than handing off to Safari, and the tap is dispatched
-    /// as a real DOM click so the portal's own handler runs -- synthesising a navigation would skip
-    /// the initialisation it performs.
+    /// This is a best-effort nicety, not the navigation mechanism, and it is written the way the
+    /// portal's own menu is more likely to be marked up: every anchor that looks like a menu entry
+    /// is considered, not just one hard-coded class. Android's `OriginalPortalActivity` looks only
+    /// for `a.menu-item`, which is a guess about the portal's markup that was never verified -- and
+    /// matching on a class nothing renders is why the screen used to report "未在教务菜单中找到"
+    /// for items that were sitting right there in the menu.
     ///
-    /// The retry counter lives in the coordinator, not in `@State`. This runs inside an escaping
-    /// closure handed to the coordinator, and a SwiftUI view cannot write its own `@State` from
-    /// there; the coordinator is a class, so it can, and it is also the only thing that outlives a
-    /// single `updateUIView` pass.
+    /// `browsertab` is forced off so the result stays in this WebView, and the tap is dispatched as
+    /// a real DOM click so the portal's own handler runs rather than a synthesised navigation.
     private func makeMenuScript() -> String {
         """
         (function() {
@@ -185,11 +163,28 @@ struct OriginalPortalScreen: View {
           var targetPath;
           try { targetPath = new URL(target).pathname; } catch (_) { return false; }
           var normalize = function(value) { return (value || '').replace(/\\s+/g, ' ').trim(); };
-          var menuItems = Array.from(document.querySelectorAll('a.menu-item'));
-          var candidate = menuItems.find(function(node) {
-            return normalize(node.getAttribute('data-text') || node.textContent) === title;
+          var label = function(node) {
+            return normalize(node.getAttribute('data-text') || node.getAttribute('title') || node.textContent);
+          };
+          // Any anchor inside the page's own navigation area, not one specific class. A portal that
+          // renames its menu should still be reachable.
+          var links = Array.from(document.querySelectorAll('a[href]'));
+          var inMenu = function(node) {
+            var closest = node.closest('nav, .menu, .sidebar, [class*="menu"], [class*="nav"], [role="navigation"]');
+            return !!closest;
+          };
+          var candidates = links.filter(function(node) {
+            return inMenu(node) || /menu|nav/i.test(node.className || '');
           });
-          if (!candidate) candidate = menuItems.find(function(node) {
+          if (candidates.length === 0) candidates = links;
+
+          var candidate = candidates.find(function(node) { return label(node) === title; });
+          if (!candidate) candidate = candidates.find(function(node) {
+            var href = node.getAttribute('href') || '';
+            try { return href && new URL(href, location.href).pathname === targetPath; } catch (_) { return false; }
+          });
+          // Last resort: the href alone. Titles drift between terms, paths do not.
+          if (!candidate) candidate = links.find(function(node) {
             var href = node.getAttribute('href') || '';
             try { return href && new URL(href, location.href).pathname === targetPath; } catch (_) { return false; }
           });
@@ -206,12 +201,6 @@ struct OriginalPortalScreen: View {
           return true;
         })();
         """
-    }
-
-    /// Reported when the portal is up but has no entry for this item. Android shows a toast and
-    /// leaves the home page on screen rather than failing the screen outright.
-    private var menuMissNotice: String {
-        "未在教务菜单中找到“\(item.title)”，已停留在教务首页，可点击右上角重新加载。"
     }
 
     private func javaScriptString(_ value: String) -> String {
@@ -232,7 +221,6 @@ private struct PortalWebView: UIViewRepresentable {
     let targetURL: String
     let homeURL: String
     let menuScript: String
-    let menuMissNotice: String
     let isDark: Bool
     let refreshToken: Int
     let onPhase: (OriginalPortalScreen.Phase) -> Void
@@ -283,6 +271,10 @@ private struct PortalWebView: UIViewRepresentable {
         private var menuNavigationStarted = false
         private var menuAttempts = 0
         private var retryWork: DispatchWorkItem?
+        /// The URL the session was established on. Navigation away from it is what triggers the
+        /// menu search, and it is tracked by URL rather than by a flag because the portal may
+        /// redirect `/home` to an equivalent URL with a different query.
+        private var sessionURL: String = ""
 
         init(parent: PortalWebView) {
             self.parent = parent
@@ -293,11 +285,13 @@ private struct PortalWebView: UIViewRepresentable {
             retryWork = nil
             menuNavigationStarted = false
             menuAttempts = 0
+            sessionURL = ""
             // Restore the persisted session before the first navigation, mirroring
             // `PortalSessionStore.restoreToWebView`: loading before the cookie store is populated
             // bounces off a login redirect.
-            SessionStore.shared.restoreToWebView { [weak webView] in
+            SessionStore.shared.restoreToWebView { [weak self, weak webView] in
                 guard let url = URL(string: homeURL) else { return }
+                self?.sessionURL = homeURL
                 webView?.load(URLRequest(url: url))
             }
         }
@@ -322,15 +316,19 @@ private struct PortalWebView: UIViewRepresentable {
                 parent.onPhase(.sessionExpired)
                 return
             }
-            // The item is on screen, or the portal moved somewhere on its own. Either way the menu
-            // search is over and the spinner has nothing left to wait for.
+            // The item is on screen, or the portal moved somewhere on its own. Either way there is
+            // nothing left to open and the spinner has nothing to wait for.
             guard !menuNavigationStarted else {
                 parent.onPhase(.ready)
                 return
             }
-            // Only drive the menu when the portal is actually sitting on its home page; otherwise
-            // the item is already open and clicking a menu entry would navigate away from it.
-            guard url.absoluteString == parent.homeURL || url.path == URL(string: parent.homeURL)?.path else {
+            // Only look for a menu entry while the portal is still on the page that established the
+            // session. Anywhere else the item is already open, and clicking a menu entry would
+            // navigate away from it.
+            let isSessionPage = sessionURL.isEmpty
+                || url.absoluteString == sessionURL
+                || url.path == URL(string: sessionURL)?.path
+            guard isSessionPage else {
                 parent.onPhase(.ready)
                 return
             }
@@ -347,6 +345,23 @@ private struct PortalWebView: UIViewRepresentable {
             parent.onPhase(.failed(error.localizedDescription))
         }
 
+        /// Navigates straight to the item once the session exists.
+        ///
+        /// This is the actual navigation mechanism. The menu click is only an optimisation that
+        /// can additionally run the portal's own click handler; when the markup cannot be matched
+        /// the item still has to open, because the session cookie is already in place by this point
+        /// and a direct request is what the browser would have done anyway. Failing here -- which
+        /// is what the previous version did -- reported "未在教务菜单中找到" for items that were
+        /// listed in the menu all along.
+        private func openDirectly(_ webView: WKWebView) {
+            guard let url = URL(string: parent.targetURL) else {
+                parent.onPhase(.failed("页面地址无效"))
+                return
+            }
+            menuNavigationStarted = true
+            webView.load(URLRequest(url: url))
+        }
+
         private func attemptMenu(in webView: WKWebView) {
             webView.evaluateJavaScript(parent.menuScript) { [weak self] value, _ in
                 guard let self else { return }
@@ -354,11 +369,11 @@ private struct PortalWebView: UIViewRepresentable {
                     self.menuNavigationStarted = true
                     return
                 }
+                // The portal may still be rendering its menu, so one retry is worth it before
+                // giving up on the click. It is not worth failing over: the session already exists
+                // at this point, so the item opens either way.
                 guard self.menuAttempts < Self.maximumMenuAttempts else {
-                    // The portal is up but does not carry this entry. Report it as its own case so
-                    // the page underneath stays visible -- the user lands on the portal home page
-                    // and the toolbar still offers a reload, which is Android's outcome too.
-                    self.parent.onPhase(.menuMissing(self.parent.menuMissNotice))
+                    self.openDirectly(webView)
                     return
                 }
                 self.menuAttempts += 1

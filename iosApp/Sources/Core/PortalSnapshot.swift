@@ -331,10 +331,13 @@ enum QuickEntryBaseline {
 
     static func complete(schoolID: String, snapshots: [(item: PortalItem, json: String)]) {
         guard UserDefaults.standard.string(forKey: pendingSchoolKey) == schoolID else { return }
-        guard snapshots.count == 4 else { return }
+        // The caller's own count, not a fixed four. A school that declares a different number of
+        // quick entries still gets its baseline recorded, and the log line reports what was actually
+        // stored rather than a number that happens to match the usual four.
+        guard !snapshots.isEmpty else { return }
         PortalPollHistory.append(PortalPollHistoryEntry(
             timestamp: Date(),
-            status: "首次登录基线已建立（4 项）",
+            status: "首次登录基线已建立（\(snapshots.count) 项）",
             notificationTriggered: false,
             details: snapshots.map { snapshot in
                 PortalPollHistoryDetail(

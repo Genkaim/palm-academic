@@ -57,7 +57,6 @@ struct QuickEntryBaselinePrefetch: View {
     private var isActive: Bool {
         state.sessionStatus == .hidden && state.isSignedIn && QuickEntryBaseline.isPending(schoolID: schoolID)
     }
-
     var body: some View {
         // Android arms the prefetch three seconds after the home screen settles, so the first
         // paint is not competing with four page loads. The same delay is used here.
@@ -90,7 +89,7 @@ struct QuickEntryBaselinePrefetch: View {
     private func runIfNeeded() async {
         // Wait out the first paint before touching the network.
         try? await Task.sleep(nanoseconds: 3_000_000_000)
-        guard isActive, items.count == 4 else { return }
+        guard isActive, !items.isEmpty else { return }
         phase = .running(index: 0, failure: false)
         currentItem = items[0]
     }
@@ -103,7 +102,14 @@ struct QuickEntryBaselinePrefetch: View {
         let anyFailure = snapshot == nil || failedEarlier
         guard case .running(let index, _) = phase else { return }
         if index == items.count - 1 {
-            if !anyFailure && collected.count == 4 {
+            // Every quick entry has to have produced something. A partial baseline would make the
+            // next check compare against a mixture of real and missing data, and the missing ones
+            // would then read as "changed" forever.
+            //
+            // The count is the item list's own length rather than a fixed four: the earlier literal
+            // meant a school that declared a fifth quick entry never established a baseline at all,
+            // and the fetch looked like it simply did not happen.
+            if !anyFailure && collected.count == items.count {
                 QuickEntryBaseline.complete(
                     schoolID: schoolID,
                     snapshots: collected.map { ($0.item, $0.json) }

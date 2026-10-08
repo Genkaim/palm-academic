@@ -119,44 +119,55 @@ struct RootView: View {
 /// Search belongs to that bottom surface so the home list stays content-only and keeps its scroll
 /// position while a query is entered.
 ///
-/// Both destinations stay mounted and the visible one is brought forward with `zIndex` rather than
-/// drawn in a fixed order. Ordering by zIndex is what makes the switch real: a fixed ZStack order
-/// puts the home list on top of the settings page, so the settings page could fade in underneath it
-/// and stay invisible no matter what `selectedTab` said -- the tab animated, nothing changed.
+/// The two destinations live in a paging `TabView` rather than as two opacity-faded children of a
+/// `ZStack`. Both of the obvious alternatives fail here. Stacking them by opacity does not switch,
+/// because each page has its own `NavigationStack` and iOS backs those with a UIKit navigation
+/// controller whose z-order SwiftUI does not control -- `zIndex` is ignored for them, so the home
+/// page stays painted on top and the settings page fades in underneath it. Dropping to a plain
+/// `if/else` would switch, but it would destroy the home list's scroll position and its navigation
+/// stack on every trip to the settings. The paging container keeps both mounted, keeps the
+/// selection binding authoritative, and matches Android's `HorizontalPager` for the same two
+/// destinations.
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The cross-fade, scoped to the two pages. The navigation bar opts out of it (it is an overlay
-    /// now, so a transition written here would otherwise reach it through the modifier chain) and
-    /// drives its own search animation instead.
-    private var pageAnimation: Animation? {
-        reduceMotion ? nil : .easeInOut(duration: 0.24)
+    /// Bridges the tab bar's `LiquidTabItem` onto the container's page index. The pages are tagged
+    /// by index rather than by item so the selection type stays the primitive `Int` the container
+    /// expects.
+    private var pageSelection: Binding<Int> {
+        Binding(
+            get: { state.selectedTab == .settings ? 1 : 0 },
+            set: { state.selectedTab = $0 == 1 ? .settings : .home }
+        )
     }
 
     var body: some View {
-        ZStack {
+        TabView(selection: pageSelection) {
             HomeView()
-                .opacity(state.selectedTab == .home ? 1 : 0)
-                .allowsHitTesting(state.selectedTab == .home)
-                .zIndex(state.selectedTab == .home ? 1 : 0)
-
+                .tag(0)
             SettingsScreen()
-                .opacity(state.selectedTab == .settings ? 1 : 0)
-                .allowsHitTesting(state.selectedTab == .settings)
-                .zIndex(state.selectedTab == .settings ? 1 : 0)
+                .tag(1)
         }
-        .animation(pageAnimation, value: state.selectedTab)
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .overlay(alignment: .bottom) {
-            // An overlay rather than a third ZStack child: the bar is pinned to the bottom by the
-            // alignment instead of by a full-height `Spacer`, so it no longer covers the whole
-            // screen and cannot swallow touches meant for the page underneath it.
+            // An overlay rather than a third child: the bar is pinned by its own alignment instead
+            // of by a full-height `Spacer`, so it never covers the page or swallows its touches.
             FloatingHomeNavigation()
         }
         .overlay(alignment: .top) {
             if let notice = state.sessionNotice {
                 noticeBanner(notice)
             }
+        }
+        .background {
+            // The baseline fetch lives here rather than inside `HomeView`. It is what populates the
+            // cache every page reads on entry, so tying it to the home page meant the warm-up never
+            // happened for anyone who signed in and went straight to the settings tab -- and the
+            // pages then had nothing to show until they were opened one at a time. It is invisible,
+            // hit-testing is off, and it reads the same state either way.
+            QuickEntryBaselinePrefetch()
         }
     }
 

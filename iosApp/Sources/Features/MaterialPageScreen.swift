@@ -16,6 +16,9 @@ struct MaterialPageScreen: View {
     /// The reader's own account of a load that produced nothing, kept so the watchdog's failure
     /// text can name a cause instead of only reporting that there was one.
     @State private var diagnostic: String?
+    /// True while a refresh runs behind already-rendered content. Kept apart from `loadState` so the
+    /// cached page stays on screen instead of being replaced by a spinner.
+    @State private var isRefreshing = false
 
     /// The six states `MaterialPortalActivity` distinguishes. The previous version collapsed these
     /// into `isLoading` plus an optional error string, which could not tell "the portal is slow"
@@ -160,6 +163,7 @@ struct MaterialPageScreen: View {
 
     private func retry() {
         loadState = .loading
+        isRefreshing = renderedPage != nil
         refreshToken += 1
     }
 
@@ -188,11 +192,15 @@ struct MaterialPageScreen: View {
                 Task { @MainActor in
                     renderedPage = newPage
                     loadState = .loaded
+                    isRefreshing = false
                     prepareExports(for: newPage)
                 }
             },
             onError: { message in
                 Task { @MainActor in
+                    isRefreshing = false
+                    // A refresh that failed over content already on screen keeps it: stale data with
+                    // a visible timestamp beats an error page that throws away something usable.
                     if renderedPage == nil { loadState = .failed(message) }
                 }
             },
@@ -222,7 +230,7 @@ struct MaterialPageScreen: View {
     private func content(_ snapshot: MaterialPage) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if loadState == .loading {
+                if isRefreshing {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("正在刷新…")
@@ -649,11 +657,19 @@ struct MaterialPageScreen: View {
     // MARK: - Loading
 
     /// Renders the cached snapshot immediately, then lets the WebView refresh behind it.
+    ///
+    /// The cache is what makes a second visit feel instant, and the refresh is what keeps it honest
+    /// -- a page that only ever read the cache would show last term's timetable indefinitely. The
+    /// refresh is unconditional, so entering a page always re-reads the portal; the cache only
+    /// decides what is on screen while that request is in flight.
     private func loadCachedThenFetch() async {
         if let cached = MaterialPageCache.load(url: url) {
             renderedPage = cached
             loadState = .loaded
             prepareExports(for: cached)
+            // Distinguish "showing what we had" from "fetching", so a slow network does not look
+            // like a blank page and the refresh is visible rather than silent.
+            isRefreshing = true
         }
         loadState = .loading
         refreshToken += 1

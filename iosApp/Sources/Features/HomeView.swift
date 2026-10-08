@@ -129,9 +129,6 @@ struct HomeView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear.frame(height: BottomClearance.height)
             }
-            .overlay {
-                QuickEntryBaselinePrefetch()
-            }
             .onReceive(NotificationCenter.default.publisher(for: PortalPollHistory.didChangeNotification)) { _ in
                 historyVersion &+= 1
             }
