@@ -37,6 +37,7 @@ struct SettingsScreen: View {
             .listStyle(.insetGrouped)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.large)
+            .toolbarBackground(.hidden, for: .navigationBar)
             // The bar floats over the content rather than insetting the page, so the last row --
             // 退出登录 -- would otherwise sit under it and could not be tapped. An inset added
             // around the NavigationStack is swallowed by the stack's own inset handling, so the

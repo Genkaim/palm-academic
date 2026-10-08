@@ -340,28 +340,30 @@ struct LoginView: View {
     }
 
     private var rememberRow: some View {
-        Button {
-            state.rememberPassword.toggle()
-            if !state.rememberPassword {
-                CredentialStore.clear(schoolID: SchoolCatalog.shared.selectedSchoolID)
-            }
-        } label: {
-            HStack {
-                Text("记住密码")
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(PortalPalette.onSurface)
-                Spacer()
-                // The system's own switch, at the system's own size.
-                Toggle("", isOn: $state.rememberPassword)
-                    .labelsHidden()
-            }
-            .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity)
-            .frame(height: 46)
-            .background(Capsule().fill(PortalPalette.surface))
+        // A Toggle inside a Button is unreliable on iOS 16 -- with `.buttonStyle(.plain)`, the
+        // outer tap sometimes fires alongside the inner one, which toggled the state twice and
+        // left it where it started. Wrapping just the row text in a tap mirror keeps the whole
+        // row tappable while leaving the Toggle's tap to drive the binding.
+        HStack {
+            Text("记住密码")
+                .font(.body.weight(.medium))
+                .foregroundStyle(PortalPalette.onSurface)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    state.rememberPassword.toggle()
+                    if !state.rememberPassword {
+                        CredentialStore.clear(schoolID: SchoolCatalog.shared.selectedSchoolID)
+                    }
+                }
+            Spacer()
+            // The system's own switch, at the system's own size.
+            Toggle("", isOn: $state.rememberPassword)
+                .labelsHidden()
         }
-        .buttonStyle(.plain)
-        .frame(height: 48)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity)
+        .frame(height: 46)
+        .background(Capsule().fill(PortalPalette.surface))
         .disabled(state.isLoading)
     }
 

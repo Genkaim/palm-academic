@@ -55,18 +55,6 @@ struct OriginalPortalScreen: View {
             )
             .ignoresSafeArea(edges: .bottom)
 
-            if case .loading = phase {
-                // A plain hint, not a button, so it carries no glass/material capsule behind it.
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("正在加载…")
-                        .font(.caption)
-                        .foregroundStyle(PortalPalette.secondaryText)
-                }
-                .padding(.top, 8)
-                .transition(.opacity)
-            }
-
             // A load that failed gets a page of its own rather than a transient alert: the alert
             // would be dismissed by the first tap and leave a blank WebView behind it, with nothing
             // on screen to explain why. The reload in the toolbar re-runs the whole sequence.
@@ -77,6 +65,8 @@ struct OriginalPortalScreen: View {
         }
         .navigationTitle(item.title)
         .navigationBarTitleDisplayMode(.inline)
+        // Drop the nav bar's chrome so the portal page paints behind the status bar.
+        .toolbarBackground(.hidden, for: .navigationBar)
         // Before `.toolbar`, not after: a modifier written after the toolbar builder is parsed as a
         // trailing closure for the builder's own `Visibility` parameter, which is not what this is.
         .animation(.easeInOut(duration: 0.2), value: phase)
@@ -86,7 +76,15 @@ struct OriginalPortalScreen: View {
                     refreshToken &+= 1
                     phase = .loading
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    // Loading state rides the toolbar button instead of a top hint: the page is
+                    // already on screen behind a fresh navigation, so a glyph that rotates while
+                    // the portal answers reads as "this is where the loading lives".
+                    if case .loading = phase {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
                 }
                 .accessibilityLabel("重新加载")
             }

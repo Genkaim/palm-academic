@@ -48,6 +48,12 @@ final class AppState: ObservableObject {
     @Published var showingWebLogin = false
     @Published private(set) var sessionNotice: String?
     @Published private(set) var sessionStatus: SessionStatus = .hidden
+    /// True once the user has been seen to reach the home page with this session at least once.
+    /// A "网络超时" that arrives while we are already trusted is NOT a credential failure -- it is
+    /// just the campus network being slow -- so we keep the user where they are and quietly
+    /// revalidate in the background instead of throwing them back to the login form. Mirrors
+    /// Android's `SessionTrustStore`.
+    @Published private(set) var sessionTrusted: Bool = SessionTrustStore.shared.trusted
 
     private let auth = AuthRepository()
     private var credentialKey = ""
@@ -93,14 +99,70 @@ final class AppState: ObservableObject {
 
         switch await auth.validateSession() {
         case .expired:
-            signOut(message: "登录已过期，请重新登录")
+            // A previously-trusted session that no longer answers is almost always a slow campus
+            // network, not stolen credentials. Kick off a quiet retry loop instead of throwing the
+            // user back to the login form.
+            if sessionTrusted {
+                sessionNotice = "正在重新验证教务会话…"
+                sessionStatus = .checking
+                Task { await revalidateQuietly() }
+            } else {
+                signOut(message: "登录已过期，请重新登录")
+            }
         case .unavailable:
             // Keep the cached session: an unreachable campus network is not a credential failure.
             sessionNotice = "暂时无法连接教务系统，已保留当前会话"
             sessionStatus = .unavailable("网络较慢，或当前网络无法访问教务系统")
+            if sessionTrusted {
+                Task { await revalidateQuietly() }
+            }
         case .valid:
             onAuthenticationCompleted()
         }
+    }
+
+    /// Quietly revalidates without ever throwing the user back to the login page.
+///
+/// A retry is only worth doing while the user is still trusting this session. The badge stays
+/// hidden on success, so a healthy network reads as "nothing happened".
+func revalidateQuietlyPublic() async {
+        await revalidateQuietly()
+    }
+
+private func revalidateQuietly() async {
+        var attempt = 0
+        let maxAttempts = 6
+        while attempt < maxAttempts {
+            attempt += 1
+            // Backoff so we are not hammering the campus portal while it is having a bad moment.
+            let delay = UInt64(min(8, attempt)) * 1_000_000_000
+            try? await Task.sleep(nanoseconds: delay)
+            switch await auth.validateSession() {
+            case .valid:
+                sessionStatus = .hidden
+                sessionNotice = nil
+                onAuthenticationCompleted()
+                // Any mounted reader is showing a stale page right now (its WebView answered
+                // "session expired" before this revalidation succeeded). Bumping a global
+                // counter lets each open `MaterialPageScreen` reload against the restored
+                // session without the user having to tap anything.
+                await MainActor.run {
+                    SessionRefreshBus.shared.bump()
+                }
+                return
+            case .expired:
+                // Server says no. Stopping the loop is the right call here -- retrying will not
+                // change a real expired-session answer -- but a previously-trusted user still does
+                // not get kicked out: the badge stays visible with a retry action so they can
+                // re-authenticate at their pace.
+                sessionStatus = .unavailable("登录已过期，点击重试登录")
+                sessionNotice = "登录状态已失效"
+                return
+            case .unavailable:
+                continue
+            }
+        }
+        sessionStatus = .unavailable("网络较慢，或当前网络无法访问教务系统")
     }
 
     /// Asks once whether the portal is reachable, so a refused local-network connection is visible
@@ -111,6 +173,10 @@ final class AppState: ObservableObject {
 
     /// Re-runs the session check behind the home screen's status badge, which is the Android
     /// `onRetry` action on the "验证失败，点击重试" state.
+    ///
+    /// A trusted session that fails the validation is given a quiet retry loop instead of a sign
+    /// out: a "网络超时" right after the user was on the home page is the network, not the
+    /// credentials, and bouncing them back to the login form is the wrong answer.
     func revalidateSession() async {
         guard sessionStatus != .checking else { return }
         sessionStatus = .checking
@@ -118,10 +184,21 @@ final class AppState: ObservableObject {
         case .valid:
             sessionStatus = .hidden
             sessionNotice = nil
+            onAuthenticationCompleted()
         case .expired:
-            signOut(message: "登录状态已失效")
+            if sessionTrusted {
+                sessionNotice = "登录状态已失效"
+                sessionStatus = .unavailable("登录已过期，点击重试登录")
+            } else {
+                signOut(message: "登录状态已失效")
+            }
         case .unavailable:
-            sessionStatus = .unavailable("网络较慢，或当前网络无法访问教务系统")
+            if sessionTrusted {
+                // Quiet retry. The badge stays in "checking" while we try.
+                Task { await revalidateQuietly() }
+            } else {
+                sessionStatus = .unavailable("网络较慢，或当前网络无法访问教务系统")
+            }
         }
     }
 
@@ -139,13 +216,19 @@ final class AppState: ObservableObject {
         errorMessage = nil
         defer { isLoading = false }
 
+        // Persist the credentials the moment the user commits to logging in. The previous code only
+        // saved on success, which meant a network timeout on the very first login discarded the
+        // password even though 记住密码 was on -- the next launch opened with empty fields and the
+        // user had to type everything in again. Saving here lets the very next launch retry with
+        // the remembered credentials, even if THIS attempt never reaches the home page.
+        if rememberPassword {
+            CredentialStore.save(username: user, password: password, schoolID: school.id)
+        } else {
+            CredentialStore.clear(schoolID: school.id)
+        }
+
         do {
             try await auth.login(username: user, password: password)
-            if rememberPassword {
-                CredentialStore.save(username: user, password: password, schoolID: school.id)
-            } else {
-                CredentialStore.clear(schoolID: school.id)
-            }
             onAuthenticationCompleted()
         } catch {
             errorMessage = error.localizedDescription
@@ -168,6 +251,12 @@ final class AppState: ObservableObject {
         SessionStore.shared.clear()
         PortalMonitor.shared.cancel()
         CredentialStore.clear(schoolID: SchoolCatalog.shared.selectedSchoolID)
+        // The current school is no longer trusted: the user is on the login form with empty fields,
+        // so any "trusted session" retry logic would be operating on credentials they explicitly
+        // asked to forget. The flag is per-school, so the next time they pick a school and sign in
+        // it is set fresh.
+        SessionTrustStore.shared.trusted = false
+        sessionTrusted = false
         username = ""
         password = ""
         rememberPassword = false
@@ -220,6 +309,11 @@ final class AppState: ObservableObject {
     private func onAuthenticationCompleted() {
         NotificationPreferences.shared.clearAuthenticationFailureMarker()
         let schoolID = SchoolCatalog.shared.selectedSchoolID
+        // Once the home page has answered valid, the credential is "good" until the user signs out
+        // or switches school. Subsequent "网络超时" answers are treated as transient and do not
+        // kick the user back to the login form.
+        SessionTrustStore.shared.trusted = true
+        sessionTrusted = true
         QuickEntryBaseline.request(schoolID: schoolID)
         NotificationPreferences.shared.reschedule()
         loadRememberedCredential()
@@ -242,6 +336,10 @@ final class AppState: ObservableObject {
         hasSelectedSchool = SchoolCatalog.shared.hasSelectedSchool
         credentialKey = school.id
         loadRememberedCredential()
+        // The trust flag is read through a projection over the current school, so it flips
+        // automatically to "false" the moment `selectedSchoolID` changes. Mirror that into the
+        // published field so the home badge does not show a retry button on a brand-new school.
+        sessionTrusted = SessionTrustStore.shared.trusted
         if changed {
             PortalMonitor.shared.cancel()
             SessionStore.shared.clear()
@@ -349,4 +447,60 @@ final class ThemePreferences {
 
     /// Whether the app is currently painting dark, whichever mode got it there.
     var isDark: Bool { mode == .dark }
+}
+
+/// Port of `SessionTrustStore` from `SessionTrustStore.kt`.
+///
+/// One boolean per school, written when the home page has answered valid for that school and
+/// cleared when the user signs out or switches to a school that has not been validated yet.
+/// "Trusted" means "the password was good on a recent visit" -- not "the cookie is still alive",
+/// which is what `SessionStore` already owns -- so a network timeout after a trusted visit
+/// is treated as transient and does not kick the user back to the login form.
+final class SessionTrustStore {
+    static let shared = SessionTrustStore()
+    private static let key = "session_trust_school"
+    private init() {}
+
+    /// The school id this trust flag is keyed to. Reading and writing go through this projection so
+    /// a stale value from a previous school never leaks across a switch.
+    private var currentSchool: String {
+        SchoolCatalog.shared.selectedSchoolID
+    }
+
+    var trusted: Bool {
+        get {
+            let defaults = UserDefaults.standard
+            return defaults.string(forKey: Self.key) == currentSchool
+        }
+        set {
+            let defaults = UserDefaults.standard
+            if newValue {
+                defaults.set(currentSchool, forKey: Self.key)
+            } else if defaults.string(forKey: Self.key) == currentSchool {
+                defaults.removeObject(forKey: Self.key)
+            }
+        }
+    }
+}
+
+/// Broadcasts the moment a trusted session was restored after a quiet revalidation. Every open
+/// `MaterialPageScreen` listens for this and bumps its own `refreshToken`, so a WebView that was
+/// showing the portal's login redirect switches over to the real page without the user having
+/// to tap refresh themselves.
+@MainActor
+final class SessionRefreshBus {
+    static let shared = SessionRefreshBus()
+    /// Notification name used to forward a bump event to observers.
+    static let didRefreshNotification = Notification.Name("SessionRefreshBus.didRefresh")
+    private init() {}
+
+    /// Bumped count of background revalidations that have completed. Pages keep the latest value
+    /// they've seen and react to changes, so an observer set up after a bump simply receives the
+    /// next one -- no missed events.
+    private(set) var count: Int = 0
+
+    func bump() {
+        count &+= 1
+        NotificationCenter.default.post(name: Self.didRefreshNotification, object: nil)
+    }
 }

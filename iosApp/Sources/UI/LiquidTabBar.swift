@@ -90,14 +90,20 @@ struct FloatingHomeNavigation: View {
     @Namespace private var chrome
     @Namespace private var selection
 
-    private let morphSpring: Animation = .spring(response: 0.38, dampingFraction: 0.82)
+    /// Two springs, tuned to feel like a real app launch.
+    ///
+    /// `morphSpring` overshoots slightly so the circle "pops" into the capsule the way an app
+    /// icon springs into a window when launched; `selectionSpring` is tighter so the highlight
+    /// snap between tabs stays snappy and does not bleed into the morph.
+    private let morphSpring: Animation = .spring(response: 0.52, dampingFraction: 0.66)
     private let selectionSpring: Animation = .spring(response: 0.30, dampingFraction: 0.72)
 
     private var shape: Capsule { Capsule(style: .continuous) }
 
     var body: some View {
-        // Leading aligned, matching the previous free-sized bar: the 282pt chrome stays at the
-        // leading 16pt inset instead of drifting to the centre on wide screens.
+        // Centred horizontally inside the shell. The host fills the screen width, so a centred
+        // alignment puts the 282pt bar in the middle on every device rather than against the
+        // leading edge on iPad and large phones.
         HStack(spacing: 0) {
             Group {
                 if state.isSearchPresented {
@@ -109,23 +115,32 @@ struct FloatingHomeNavigation: View {
                 }
             }
             .frame(width: Self.barWidth, height: Self.barHeight)
-            Spacer(minLength: 0)
+            .scaleEffect(morphScale, anchor: .center)
+            .animation(reduceMotion ? nil : morphSpring, value: state.isSearchPresented)
+            .animation(reduceMotion ? nil : morphSpring, value: morphScale)
         }
-        .animation(reduceMotion ? nil : morphSpring, value: state.isSearchPresented)
-        // The shell lifts this host for the keyboard itself; SwiftUI must not ALSO shrink the bar
-        // for the keyboard safe area (that doubled the motion).
+        .frame(maxWidth: .infinity, alignment: .center)
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .padding(.horizontal, 16)
         .padding(.bottom, 10)
         .onChange(of: state.isSearchPresented) { presented in
             if presented {
-                // Waiting until the field is in the hierarchy lets the keyboard and the expanding
-                // pill start together, as they do in Android's floating navigation.
+                // Wait until the field is in the hierarchy so the keyboard and the expanding pill
+                // start together, as they do in Android's floating navigation.
                 DispatchQueue.main.async { searchFocused = true }
             } else {
                 searchFocused = false
             }
         }
+    }
+
+    /// A pulse that lifts the morph off its starting size and lets the spring settle into 1.0.
+    ///
+    /// The matched-geometry effect already animates bounds and position, but iOS does not visibly
+    /// "punch in" the destination the way an app launch icon does. Pairing a 0.78 -> 1.0 scale on
+    /// the morph value gives the open transition a tap of weight at the start, which is what makes
+    /// the bar feel like it is opening an app rather than stretching a rectangle.
+    private var morphScale: CGFloat {
+        state.isSearchPresented ? 1.0 : 0.78
     }
 
     private var compactNavigation: some View {

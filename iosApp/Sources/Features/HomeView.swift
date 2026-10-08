@@ -92,6 +92,11 @@ struct HomeView: View {
             .listStyle(.insetGrouped)
             .background(PortalPalette.page)
             .navigationBarTitleDisplayMode(.inline)
+            // The nav bar's own chrome is dropped so the list and its section headers extend under
+            // the status bar; the bar itself is drawn as transparent glass by the shell. Without
+            // this the page paints a thick white strip behind the time/battery area, which is the
+            // "状态栏没有沉浸" read -- the page looks inset where the system already is.
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 // Android's top bar carries a bold title with the school name on its second line.
                 // There is no leading item: the school is changed from Settings, which is where
@@ -108,8 +113,16 @@ struct HomeView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     sessionStatusBadge
+                        // The badge slides in from the trailing edge with a small scale, and the
+                        // principal title it pushes is re-centred by the system in the same pass,
+                        // so the title looks like it slides left to make room for the new control.
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
+            // Animating on the enum keeps the badge's appear/disappear transition (and the
+            // principal title's re-centring that the system performs alongside it) on the same
+            // spring as the rest of the chrome.
+            .animation(.spring(response: 0.42, dampingFraction: 0.82), value: state.sessionStatus)
             .navigationDestination(for: PortalRoute.self) { route in
                 switch route {
                 case .item(let item):
@@ -145,22 +158,40 @@ struct HomeView: View {
         case .hidden:
             EmptyView()
         case .checking:
-            HStack(spacing: 7) {
+            // A compact spinner without text. The whole row is small enough that adding words here
+            // would push the principal title off the centre of the bar, which is what the earlier
+            // "验证失败，点击重试" string was doing -- the title sat hard against the leading edge
+            // and the page read as "where did the title go".
+            HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
-                Text("尝试登录…")
-                    .font(.caption)
+                Text("登录中")
+                    .font(.caption2)
                     .foregroundStyle(PortalPalette.secondaryText)
             }
-        case .unavailable:
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                Capsule().fill(Color(uiColor: .tertiarySystemFill))
+            )
+        case .unavailable(let message):
             Button {
                 Task { await state.revalidateSession() }
             } label: {
-                Text("验证失败，点击重试")
-                    .font(.caption)
-                    .foregroundStyle(PortalPalette.error)
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .bold))
+                    Text("重试登录")
+                        .font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule().fill(PortalPalette.error.opacity(0.12))
+                )
+                .foregroundStyle(PortalPalette.error)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("验证失败，点击重试")
+            .accessibilityLabel(message.isEmpty ? "重试登录" : message)
         }
     }
 

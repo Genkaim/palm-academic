@@ -126,20 +126,25 @@ struct MainShellView: View {
 
     var body: some View {
         MainShellContainer(state: state, animated: !reduceMotion)
-        .ignoresSafeArea(.keyboard, edges: .bottom)
-        .overlay(alignment: .top) {
-            if let notice = state.sessionNotice {
-                noticeBanner(notice)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            // Fades the status bar out as the search pill takes over the bar, then back in when
+            // it closes. The system's own search experience behaves the same way: when the search
+            // surface opens, the chrome around it (including the status bar) recedes. Driving the
+            // fade off the same `isSearchPresented` flag the bar uses keeps the two in lockstep.
+            .statusBarHidden(state.isSearchPresented, animation: .easeInOut(duration: 0.28))
+            .overlay(alignment: .top) {
+                if let notice = state.sessionNotice {
+                    noticeBanner(notice)
+                }
             }
-        }
-        .background {
-            // The baseline fetch lives here rather than inside `HomeView`. It is what populates the
-            // cache every page reads on entry, so tying it to the home page meant the warm-up never
-            // happened for anyone who signed in and went straight to the settings tab -- and the
-            // pages then had nothing to show until they were opened one at a time. It is invisible,
-            // hit-testing is off, and it reads the same state either way.
-            QuickEntryBaselinePrefetch()
-        }
+            .background {
+                // The baseline fetch lives here rather than inside `HomeView`. It is what populates the
+                // cache every page reads on entry, so tying it to the home page meant the warm-up never
+                // happened for anyone who signed in and went straight to the settings tab -- and the
+                // pages then had nothing to show until they were opened one at a time. It is invisible,
+                // hit-testing is off, and it reads the same state either way.
+                QuickEntryBaselinePrefetch()
+            }
     }
 
     @ViewBuilder
@@ -350,22 +355,27 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
             if finished || !animated { currentIndex = index }
         }
         if animated {
-            // The pager's default curve is a straight linear slide. Wrap the imperative turn in a
-            // transaction with its own timing function so the move eases out -- fast off the tap,
-            // settling gently -- matching the spring the rest of the chrome uses. The interactive
-            // swipe gesture is unaffected (it is driven by the finger, not this transaction).
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0.4)
-            CATransaction.setAnimationTimingFunction(
-                CAMediaTimingFunction(controlPoints: 0.25, 0.8, 0.35, 1)
+            // The pager drives its own scroll-view content offset for the programmatic turn; that
+            // animation honours a `UIView.animate` wrapping the `setViewControllers` call, so the
+            // turn rides a spring the rest of the chrome uses. `CATransaction` was tried first and
+            // produced a straight linear slide -- the pager's internal scroll ignores it -- so the
+            // spring now lives in `UIView.animate` instead. The interactive swipe gesture is
+            // unaffected (it is finger-driven, not this call).
+            UIView.animate(
+                withDuration: 0.46,
+                delay: 0,
+                usingSpringWithDamping: 0.86,
+                initialSpringVelocity: 0.32,
+                options: [.curveEaseInOut, .allowUserInteraction],
+                animations: {
+                    self.pager.setViewControllers(
+                        [self.pageControllers[index]],
+                        direction: direction,
+                        animated: true
+                    )
+                },
+                completion: { _ in finish(true) }
             )
-            pager.setViewControllers(
-                [pageControllers[index]],
-                direction: direction,
-                animated: true,
-                completion: finish
-            )
-            CATransaction.commit()
         } else {
             pager.setViewControllers(
                 [pageControllers[index]],

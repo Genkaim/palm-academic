@@ -125,12 +125,18 @@ struct MaterialPageScreen: View {
                 }
             }
         }
-        .animation(.smooth(duration: 0.32), value: loadState)
+        // `.smooth` is an iOS 17+ factory; the deployment target is 16. A standard
+        // `easeInOut` curve is what the system's own view transitions use, so the load-state
+        // cross-fade reads the same way the rest of the system does.
+        .animation(.easeInOut(duration: 0.32), value: loadState)
         // Android titles the screen with the page's own heading, which the adapter sets from the
         // portal ("我的成绩", "课程表"). The catalogue name was a reasonable stand-in before the
         // page existed; once it does, using it means the title never matches the content.
         .navigationTitle(page?.title ?? item.title)
         .navigationBarTitleDisplayMode(.inline)
+        // Drops the nav bar's opaque chrome so the WebView surface extends behind the status bar
+        // and the title floats over the content rather than sitting inside a strip.
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 if !exports.isEmpty {
@@ -166,6 +172,13 @@ struct MaterialPageScreen: View {
         }
         .task {
             if renderedPage == nil { await loadCachedThenFetch() }
+        }
+        // A successful background revalidation (the trusted-session retry) lands here. The reader
+        // was stuck on a stale page or the portal's login redirect, so bump the refresh token to
+        // reload against the now-valid session -- without the user having to tap anything.
+        .onReceive(NotificationCenter.default.publisher(for: SessionRefreshBus.didRefreshNotification)) { _ in
+            loadState = .authenticating
+            retry()
         }
     }
 
@@ -275,8 +288,18 @@ struct MaterialPageScreen: View {
             },
             onSessionExpired: {
                 Task { @MainActor in
-                    loadState = .sessionExpired
-                    state.signOut(message: "登录已过期，请重新登录")
+                    // A trusted session that says "session expired" is almost always a cookie
+                    // timeout, not a stolen credential. The reader is dropped back into its
+                    // authenticating state and the app kicks off a quiet revalidation; only if
+                    // the server keeps saying no for a while does the user get a re-login screen.
+                    if state.sessionTrusted {
+                        loadState = .authenticating
+                        state.sessionNotice = "正在重新验证教务会话…"
+                        await state.revalidateQuietlyPublic()
+                    } else {
+                        loadState = .sessionExpired
+                        state.signOut(message: "登录已过期，请重新登录")
+                    }
                 }
             },
             onDiagnostic: { reason in
@@ -310,15 +333,10 @@ struct MaterialPageScreen: View {
         let visibleSections = snapshot.sections.filter(hasContent)
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if isRefreshing {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("正在刷新…")
-                            .font(.caption)
-                            .foregroundStyle(PortalPalette.secondaryText)
-                    }
-                }
-
+                // Loading is conveyed by the toolbar's rotating refresh glyph, not a strip here:
+                // a strip inside the content competes with the page data for attention and reads
+                // as "another loading screen" rather than "this page is fine, the fetch is still
+                // running".
                 controlsPanel(snapshot)
 
                 if visibleSections.isEmpty {
