@@ -195,12 +195,15 @@ struct MaterialReaderView: UIViewRepresentable {
             }
             guard let page = MaterialPageParser.parse(json) else { return }
             coordinator?.markPublished()
-            guard let url = message.webView?.url?.absoluteString else {
-                coordinator?.parent.onContent(page)
-                return
+            // Key the cache by the REQUESTED url (the reader's own `url`), not
+            // `message.webView.url`. The portal redirects the entry pages, so the post-redirect
+            // URL differs from the one the screen and the background prefetcher look the cache up
+            // with; keying on the redirected URL made every save unfindable, so every revisit --
+            // and the first-login baseline -- cold-loaded. Android keys its cache the same way.
+            if let parent = coordinator?.parent {
+                MaterialPageCache.save(url: parent.url, json: json)
+                parent.onContent(page)
             }
-            MaterialPageCache.save(url: url, json: json)
-            coordinator?.parent.onContent(page)
         }
     }
 

@@ -28,6 +28,12 @@ final class AppState: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
     @Published var selectedTab: LiquidTabItem = .home
+    /// Whether the user has ever explicitly chosen a school, port of Android's
+    /// `hasSelectedSchool`. The catalog always resolves an active profile (falling back to the
+    /// built-in default), so this persisted flag -- not the non-nil profile -- is what tells the
+    /// login screen to show the credential form with the LAST CHOSEN school rather than the
+    /// first-run "pick a school" landing.
+    @Published private(set) var hasSelectedSchool = SchoolCatalog.shared.hasSelectedSchool
     /// The Android client treats search as a transient state of the floating bottom navigation,
     /// rather than as a page. Keeping that state here lets the shell own focus and animation while
     /// `HomeView` owns only the filtering of its rows.
@@ -53,6 +59,9 @@ final class AppState: ObservableObject {
 
     func bootstrap() async {
         SchoolCatalog.shared.initialize()
+        // Restore the persisted "a school was chosen" state so the login form opens on the last
+        // selected school instead of the first-run landing.
+        hasSelectedSchool = SchoolCatalog.shared.hasSelectedSchool
         _ = SchoolCatalog.shared.loadDefinition()
         isDark = ThemePreferences.shared.mode == .dark
         SessionStore.shared.restoreToCookieStorage()
@@ -223,6 +232,9 @@ final class AppState: ObservableObject {
     func selectSchool(_ school: SchoolProfile) {
         errorMessage = nil
         let changed = SchoolCatalog.shared.select(schoolID: school.id)
+        // The pick persists the id, and this flag is what makes the next cold launch reopen the
+        // form on the same school.
+        hasSelectedSchool = SchoolCatalog.shared.hasSelectedSchool
         credentialKey = school.id
         loadRememberedCredential()
         if changed {

@@ -119,37 +119,46 @@ struct RootView: View {
 /// Search belongs to that bottom surface so the home list stays content-only and keeps its scroll
 /// position while a query is entered.
 ///
-/// The two destinations live in a paging `TabView` rather than as two opacity-faded children of a
-/// `ZStack`. Both of the obvious alternatives fail here. Stacking them by opacity does not switch,
-/// because each page has its own `NavigationStack` and iOS backs those with a UIKit navigation
-/// controller whose z-order SwiftUI does not control -- `zIndex` is ignored for them, so the home
-/// page stays painted on top and the settings page fades in underneath it. Dropping to a plain
-/// `if/else` would switch, but it would destroy the home list's scroll position and its navigation
-/// stack on every trip to the settings. The paging container keeps both mounted, keeps the
-/// selection binding authoritative, and matches Android's `HorizontalPager` for the same two
-/// destinations.
+/// The two destinations live in a `UIPageViewController` pager (see `PagingPageContainer`) rather
+/// than in SwiftUI's paging `TabView`. With `.page(indexDisplayMode: .never)` the TabView only
+/// honours a programmatic selection that is a direct `@State` binding; when the binding is derived
+/// from an `ObservableObject` -- which is what sharing the selection with the floating bar
+/// requires -- tapping the bar updated the value (the highlight slid, the press animation ran) but
+/// the page never turned, on iOS 17 and 18. UIKit's pager is turned imperatively with
+/// `setViewControllers`, so a bar tap always moves the page. Its data source keeps the horizontal
+/// swipe gesture, both hosting controllers stay mounted for the life of the shell, so neither
+/// page loses its scroll position or its navigation stack -- matching Android's `HorizontalPager`
+/// for the same two destinations.
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Bridges the tab bar's `LiquidTabItem` onto the container's page index. The pages are tagged
-    /// by index rather than by item so the selection type stays the primitive `Int` the container
-    /// expects.
+    /// Bridges the tab bar's `LiquidTabItem` onto the pager's page index. The pages are keyed by
+    /// index rather than by item so the selection type stays the primitive `Int` the pager takes.
     private var pageSelection: Binding<Int> {
         Binding(
             get: { state.selectedTab == .settings ? 1 : 0 },
-            set: { state.selectedTab = $0 == 1 ? .settings : .home }
+            set: {
+                state.selectedTab = $0 == 1 ? .settings : .home
+                // The setter only runs for a settled swipe (bar taps write `selectedTab` directly),
+                // mirroring Android closing the search surface once the settings page settles.
+                if $0 == 1 && state.isSearchPresented { state.dismissSearch() }
+            }
         )
     }
 
+    /// Built once per update of the shell. Each page has the app state injected explicitly:
+    /// a manually created `UIHostingController` does not inherit the SwiftUI environment of the
+    /// view that creates it, so without the injection the pages would find no `AppState`.
+    private var pagerPages: [AnyView] {
+        [
+            AnyView(HomeView().environmentObject(state)),
+            AnyView(SettingsScreen().environmentObject(state))
+        ]
+    }
+
     var body: some View {
-        TabView(selection: pageSelection) {
-            HomeView()
-                .tag(0)
-            SettingsScreen()
-                .tag(1)
-        }
-        .tabViewStyle(.page(indexDisplayMode: .never))
+        PagingPageContainer(selection: pageSelection, pages: pagerPages, animated: !reduceMotion)
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .overlay(alignment: .bottom) {
             // An overlay rather than a third child: the bar is pinned by its own alignment instead
@@ -191,5 +200,128 @@ struct MainShellView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .padding(.horizontal, 14)
         .padding(.top, 6)
+    }
+}
+
+/// A two-page horizontal pager backed by UIKit's `UIPageViewController`.
+///
+/// Why not SwiftUI's paging `TabView`: programmatic selection changes are unreliable when the
+/// binding is a custom `Binding` over shared (observable) state -- the binding updates but the
+/// visible page does not, which read as "the bottom bar only plays its press/highlight animation".
+/// `UIPageViewController.setViewControllers(_:direction:animated:)` is an imperative turn, so a
+/// floating-bar tap always changes the page. The data source supplies the same two hosting
+/// controllers on every request and keeps them retained for the whole life of the shell, which is
+/// what preserves each page's scroll position and navigation stack across trips between tabs.
+struct PagingPageContainer: UIViewControllerRepresentable {
+    @Binding var selection: Int
+    let pages: [AnyView]
+    /// Whether button-driven turns animate. Swipe gestures are always interactive; this only
+    /// covers the imperative turn, so the accessibility "reduce motion" setting can disable it.
+    var animated: Bool = true
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIViewController(context: Context) -> UIPageViewController {
+        let controller = UIPageViewController(
+            transitionStyle: .scroll,
+            navigationOrientation: .horizontal,
+            options: [.interPageSpacing: NSNumber(value: 0)]
+        )
+        controller.dataSource = context.coordinator
+        controller.delegate = context.coordinator
+        // The pages paint their own backgrounds (the grouped list surfaces); the pager itself
+        // must not add a white strip behind the slide between them.
+        controller.view.backgroundColor = .clear
+
+        context.coordinator.controllers = pages.map { UIHostingController(rootView: $0) }
+        context.coordinator.parent = self
+        let initialIndex = clamped(selection)
+        context.coordinator.currentIndex = initialIndex
+        controller.setViewControllers(
+            [context.coordinator.controllers[initialIndex]],
+            direction: .forward,
+            animated: false
+        )
+        return controller
+    }
+
+    func updateUIViewController(_ controller: UIPageViewController, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.parent = self
+        // Keep the hosted SwiftUI trees current without recreating the controllers, which is what
+        // preserves the pages' state.
+        for (index, page) in pages.enumerated() where index < coordinator.controllers.count {
+            coordinator.controllers[index].rootView = page
+        }
+
+        let target = clamped(selection)
+        // A turn already in flight (or already on the target page) must not start a second turn:
+        // two overlapping setViewControllers calls leave the pager and the binding disagreeing
+        // about which page is showing.
+        guard !coordinator.isProgrammaticTurn, target != coordinator.currentIndex else { return }
+        guard let visible = controller.viewControllers?.first,
+              let visibleIndex = coordinator.controllers.firstIndex(where: { $0 === visible }) else { return }
+        let direction: UIPageViewController.NavigationDirection =
+            target > visibleIndex ? .forward : .reverse
+        coordinator.isProgrammaticTurn = true
+        controller.setViewControllers(
+            [coordinator.controllers[target]],
+            direction: direction,
+            animated: animated
+        ) { finished in
+            coordinator.isProgrammaticTurn = false
+            // An non-animated turn reports finished == true immediately.
+            if finished || !animated { coordinator.currentIndex = target }
+        }
+    }
+
+    private func clamped(_ index: Int) -> Int {
+        min(max(index, 0), max(pages.count - 1, 0))
+    }
+
+    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+        var controllers: [UIHostingController<AnyView>] = []
+        /// The page the pager currently considers itself on. Drives both the data-source direction
+        /// and the guard against redundant turns.
+        var currentIndex = 0
+        /// True while a button-driven turn animates, so a SwiftUI update landing mid-turn does not
+        /// start another one.
+        var isProgrammaticTurn = false
+        fileprivate var parent: PagingPageContainer!
+
+        func pageViewController(
+            _ pageViewController: UIPageViewController,
+            viewControllerBefore viewController: UIViewController
+        ) -> UIViewController? {
+            guard let index = controllers.firstIndex(where: { $0 === viewController }),
+                  index > 0 else { return nil }
+            return controllers[index - 1]
+        }
+
+        func pageViewController(
+            _ pageViewController: UIPageViewController,
+            viewControllerAfter viewController: UIViewController
+        ) -> UIViewController? {
+            guard let index = controllers.firstIndex(where: { $0 === viewController }),
+                  index + 1 < controllers.count else { return nil }
+            return controllers[index + 1]
+        }
+
+        func pageViewController(
+            _ pageViewController: UIPageViewController,
+            didFinishAnimating finished: Bool,
+            previousViewControllers: [UIViewController],
+            transitionCompleted completed: Bool
+        ) {
+            // Only a settled swipe writes the binding; a swipe that was dragged and released back
+            // where it started reports completed == false.
+            guard completed,
+                  let visible = pageViewController.viewControllers?.first,
+                  let index = controllers.firstIndex(where: { $0 === visible }) else { return }
+            currentIndex = index
+            parent.selection = index
+        }
     }
 }

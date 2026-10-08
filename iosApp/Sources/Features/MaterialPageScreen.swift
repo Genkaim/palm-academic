@@ -135,21 +135,21 @@ struct MaterialPageScreen: View {
                 Button {
                     retry()
                 } label: {
-                    // Android's refresh control is a filled capsule carrying a word, not a bare
-                    // glyph: it says what it is doing and it stays tappable while a refresh runs,
-                    // which is the only way to cancel one that is stuck.
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 18, weight: .semibold))
+                    // A plain bar control -- icon plus a word, tinted, with NO filled background:
+                    // the toolbar already supplies the tap target and the chrome, and the filled
+                    // capsule read as a second navigation bar. A spinner replaces the glyph while
+                    // a refresh runs, which also keeps the control tappable to cancel a stuck one.
+                    HStack(spacing: 5) {
+                        if isRefreshing || loadState == .loading {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 15, weight: .semibold))
+                        }
                         Text(isRefreshing || loadState == .loading ? "刷新中" : "刷新")
                             .font(.subheadline.weight(.semibold))
                     }
-                    .foregroundStyle(PortalPalette.onPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(
-                        Capsule().fill(PortalPalette.primary)
-                    )
+                    .foregroundStyle(PortalPalette.primary)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isRefreshing ? "正在刷新" : "刷新")
@@ -190,8 +190,14 @@ struct MaterialPageScreen: View {
     }
 
     private func retry() {
-        loadState = .loading
-        isRefreshing = renderedPage != nil
+        // A refresh over rendered content must keep it on screen (the "刷新中" strip); only a cold
+        // retry with nothing rendered goes back to the full-screen loading state. Setting
+        // `loadState = .loading` unconditionally used to throw the cached page away on every tap.
+        if renderedPage != nil {
+            isRefreshing = true
+        } else {
+            loadState = .loading
+        }
         refreshToken += 1
     }
 
@@ -927,10 +933,15 @@ struct MaterialPageScreen: View {
             prepareExports(for: cached)
             prepareProgramExpansion(for: cached)
             // Distinguish "showing what we had" from "fetching", so a slow network does not look
-            // like a blank page and the refresh is visible rather than silent.
+            // like a blank page and the refresh is visible rather than silent. The fetch below
+            // runs behind this content; the loading state is only for a cache miss.
             isRefreshing = true
+        } else {
+            // Only a genuinely cold visit shows the full-screen loading state. This used to run
+            // unconditionally and immediately clobber the .loaded assignment above, so a cache hit
+            // still painted the spinner -- the "second visit is a full-screen load" symptom.
+            loadState = .loading
         }
-        loadState = .loading
         refreshToken += 1
         // A watchdog. A portal that answers with a login redirect, a JS error or an empty shell
         // never calls back, and a spinner that never resolves is indistinguishable from "still

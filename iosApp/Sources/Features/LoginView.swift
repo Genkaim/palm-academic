@@ -48,9 +48,11 @@ struct LoginView: View {
 
     private enum Metric {
         static let horizontal: CGFloat = 20
-        static let fieldHeight: CGFloat = 50
-        static let primaryButtonHeight: CGFloat = 54
-        static let secondaryButtonHeight: CGFloat = 52
+        /// Taller fields than the system default row: the group reads as a deliberate sign-in card
+        /// rather than two cramped table rows.
+        static let fieldHeight: CGFloat = 56
+        static let primaryButtonHeight: CGFloat = 56
+        static let secondaryButtonHeight: CGFloat = 54
         /// The gap between the adjacent rows of the bottom area: between the two secondary rows,
         /// and between them and the primary button below. One number for both, because they belong
         /// to one group of actions and a different gap between some of them than between others
@@ -58,10 +60,12 @@ struct LoginView: View {
         static let buttonSpacing: CGFloat = 10
         /// Clearance between the bottom area and the edge of the reserved region.
         static let bottomPadding: CGFloat = 16
-        static let brandHeight: CGFloat = 172
-        /// The outer radius of the joined field group, matching Android's 18pt at the system's
-        /// slightly tighter 14pt.
-        static let fieldGroupRadius: CGFloat = 14
+        /// The brand is now a compact logo-plus-title header row rather than a hero block, so its
+        /// height is just the row's.
+        static let brandHeight: CGFloat = 44
+        /// The outer radius of the joined field group, enlarged so the card reads rounded on all
+        /// four outer corners.
+        static let fieldGroupRadius: CGFloat = 20
         /// The radius where the two fields meet, which is zero. A positive value there -- 6pt was
         /// here -- rounds each field into its own shape, so the pair reads as two cards with a seam
         /// rather than as one group with a divider; rounding one end of each field and squaring the
@@ -69,7 +73,10 @@ struct LoginView: View {
         static let fieldGroupInnerRadius: CGFloat = 0
     }
 
-    private var hasSchool: Bool { state.selectedSchool != nil }
+    /// Mirrors Android's `hasSelectedSchool`: a school was explicitly chosen at some point, so the
+    /// persisted (last selected) school drives the form. The non-nil active profile cannot be used
+    /// here because the catalog falls back to the built-in default school even on first run.
+    private var hasSchool: Bool { state.hasSelectedSchool }
     private var brandVisible: Bool { keyboardHeight == 0 }
 
     var body: some View {
@@ -103,11 +110,11 @@ struct LoginView: View {
                     }
                 }
                 .padding(.horizontal, Metric.horizontal)
-                // The two Android content paddings, which are what make the unselected screen feel
-                // like a different screen rather than the same one with a hidden form. Nothing here
-                // depends on the keyboard: the area below reserves its own space, and the scroll
-                // view's content inset is adjusted by the system when the keyboard comes up.
-                .padding(.top, hasSchool ? 24 : 64)
+                // The compact header needs only a small gap from the status bar; the first-run
+                // landing keeps a little more air. Nothing here depends on the keyboard: the area
+                // below reserves its own space, and the scroll view's content inset is adjusted by
+                // the system when the keyboard comes up.
+                .padding(.top, hasSchool ? 16 : 28)
                 .padding(.bottom, hasSchool ? 16 : 40)
                 .frame(maxWidth: .infinity)
             }
@@ -119,11 +126,14 @@ struct LoginView: View {
             // own duration, including the hardware keyboard's toolbar and every shape the input
             // method takes. An overlay aligned to the further side of that ignores all of it, which
             // is why the button stayed put and disappeared under the keyboard.
+            //
+            // The area deliberately carries NO opaque background. The band is roughly the height of
+            // the two secondary rows plus the button, and while it rides up with the keyboard it
+            // crosses the lower input field; filling it with the page colour painted a rectangle
+            // over the fields for the whole rise. The reserved region is exclusive at rest, so
+            // nothing scrolls under the area and no fill is needed there.
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomArea
-                    // The reserved region is exclusive, so nothing scrolls through it. Painting it
-                    // with the page's own background costs nothing and keeps it opaque during bounce.
-                    .background(PortalPalette.page)
             }
         }
         .sheet(isPresented: $showingSchools) {
@@ -150,16 +160,21 @@ struct LoginView: View {
 
     // MARK: - Blocks
 
+    /// The compact page header: a small logo and a small title in one row, pinned to the leading
+    /// edge. It replaces the old centered hero block; the row still collapses by height while the
+    /// keyboard is up, so the focus-survival behaviour of the container below it is unchanged.
     private var brand: some View {
-        VStack(spacing: 12) {
+        HStack(spacing: 10) {
             Image(systemName: "building.columns")
-                .font(.system(size: 42, weight: .light))
-                .foregroundStyle(PortalPalette.onSurface)
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(PortalPalette.primary)
             Text("掌上教务")
-                .font(.largeTitle.weight(.bold))
+                .font(.headline.weight(.bold))
                 .foregroundStyle(PortalPalette.onSurface)
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
         .frame(height: Metric.brandHeight)
         .clipped()
     }
@@ -582,7 +597,11 @@ struct SchoolPickerView: View {
 
     var body: some View {
         NavigationStack {
-            List(selection: $selection) {
+            // Rows carry their own Button rather than relying on `List(selection:)`: outside edit
+            // mode a list does not reliably write a single-selection binding on iPhone, which
+            // meant a tap could highlight without ever calling `onSelect`, so the chosen school
+            // was never persisted. The button writes the selection, the checkmark reads it.
+            List {
                 ForEach(sections, id: \.key) { section in
                     Section {
                         ForEach(section.items) { school in
@@ -633,16 +652,31 @@ struct SchoolPickerView: View {
     }
 
     private func row(for school: SchoolProfile) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(school.name)
-                .font(.body.weight(school.id == selection ? .semibold : .regular))
-                .foregroundStyle(.primary)
-            Text(school.id)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        Button {
+            selection = school.id
+        } label: {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(school.name)
+                        .font(.body.weight(school.id == selection ? .semibold : .regular))
+                        .foregroundStyle(.primary)
+                    Text(school.id)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if school.id == selection {
+                    Image(systemName: "checkmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 2)
-        .tag(school.id)
+        .buttonStyle(.plain)
+        .accessibilityHint(school.id == selection ? "当前选择" : "")
     }
 
     private func refresh() async {
