@@ -57,6 +57,12 @@ final class AppState: ObservableObject {
 
     private let auth = AuthRepository()
     private var credentialKey = ""
+    /// Bumped on every explicit authentication success / content-arrived / sign-out. A quiet
+    /// revalidation loop captures the value at entry and stops the moment it changes, so a loop
+    /// that was started by a hidden reader's transient login-redirect can never surface a
+    /// "checking" badge after the user has actually reached the home page or a real page.
+    /// Mirrors Android cancelling `validationJob` in `markAuthenticated()`.
+    private var sessionRevision = 0
 
     var schools: [SchoolProfile] { SchoolCatalog.shared.options }
     var selectedSchool: SchoolProfile? { SchoolCatalog.shared.activeProfile }
@@ -130,15 +136,21 @@ func revalidateQuietlyPublic() async {
     }
 
 private func revalidateQuietly() async {
+        let revision = sessionRevision
         var attempt = 0
         let maxAttempts = 6
         while attempt < maxAttempts {
+            // A login completed (or real content arrived) while we were waiting: the answer is
+            // already in and this loop must not publish a stale badge afterwards.
+            guard revision == sessionRevision else { return }
             attempt += 1
             // Backoff so we are not hammering the campus portal while it is having a bad moment.
             let delay = UInt64(min(8, attempt)) * 1_000_000_000
             try? await Task.sleep(nanoseconds: delay)
+            guard revision == sessionRevision else { return }
             switch await auth.validateSession() {
             case .valid:
+                guard revision == sessionRevision else { return }
                 sessionStatus = .hidden
                 sessionNotice = nil
                 onAuthenticationCompleted()
@@ -151,6 +163,7 @@ private func revalidateQuietly() async {
                 }
                 return
             case .expired:
+                guard revision == sessionRevision else { return }
                 // Server says no. Stopping the loop is the right call here -- retrying will not
                 // change a real expired-session answer -- but a previously-trusted user still does
                 // not get kicked out: the badge stays visible with a retry action so they can
@@ -162,6 +175,7 @@ private func revalidateQuietly() async {
                 continue
             }
         }
+        guard revision == sessionRevision else { return }
         sessionStatus = .unavailable("网络较慢，或当前网络无法访问教务系统")
     }
 
@@ -236,7 +250,20 @@ private func revalidateQuietly() async {
     }
 
     func completeWebLogin() {
+        showingWebLogin = false
         onAuthenticationCompleted()
+    }
+
+    /// Port of Android's `PortalSessionCoordinator.markAuthenticated()`.
+    ///
+    /// Called the moment any reader renders real content: the session demonstrably works, so any
+    /// in-flight validation/quiet-retry is cancelled and the home badge is cleared. Without this,
+    /// a hidden prefetcher's transient redirect to the login page could leave the "登录中" badge
+    /// spinning on the home screen right after a successful login.
+    func markSessionReady() {
+        sessionRevision &+= 1
+        sessionStatus = .hidden
+        sessionNotice = nil
     }
 
     /// Returns from the web login screen without a usable session. The portal may well have
@@ -261,8 +288,9 @@ private func revalidateQuietly() async {
         password = ""
         rememberPassword = false
         errorMessage = message
-        sessionNotice = nil
-        sessionStatus = .hidden
+        showingWebLogin = false
+        // Retire any quiet-retry loop so it cannot republish a badge over the login form.
+        markSessionReady()
         isSearchPresented = false
         searchQuery = ""
         phase = .signedOut
@@ -318,6 +346,10 @@ private func revalidateQuietly() async {
         NotificationPreferences.shared.reschedule()
         loadRememberedCredential()
         errorMessage = nil
+        // Clear any badge/checking state left by a previous school's session or by a reader's
+        // redirect, and retire any quiet-retry loop. Android's `markAuthenticated()` does exactly
+        // this -- without it the home screen still flashed "尝试登录…" after a finished login.
+        markSessionReady()
         phase = .signedIn
     }
 

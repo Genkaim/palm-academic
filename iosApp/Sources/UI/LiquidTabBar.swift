@@ -98,90 +98,73 @@ struct LiquidTabItem: Identifiable, Hashable {
 
 /// iOS counterpart of Android's `FloatingHomeNavigation`.
 ///
-/// Layout follows Apple's iOS 26 floating tab bar: a single continuous glass capsule sized to
-/// its content, centred horizontally, floating 8pt above the bottom safe-area edge. There is
-/// deliberately NO full-width material strip behind it -- the earlier backdrop rectangle filled
-/// the home-indicator gutter with an opaque blur and read as a dead block of colour; the system
-/// bar lets the page show through around the capsule, including behind the home indicator.
+/// Layout follows Apple's iOS 26 floating tab bar: one continuous glass capsule for the two
+/// destinations plus a circular glass search control of the same height, the pair centred
+/// horizontally and floating just above the bottom safe-area edge. There is deliberately NO
+/// full-width material strip behind it -- a backdrop rectangle filled the home-indicator gutter
+/// with an opaque blur and read as a dead block of colour.
+///
+/// The search morph is a single continuous surface, not an if/else branch swap. The tab capsule
+/// collapses to zero width while the search circle's frame grows into the field along one spring,
+/// so the field visibly grows out of the search button (its trailing edge barely moves; the
+/// growth is leftward) instead of flashing in at its final position.
 struct FloatingHomeNavigation: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
 
-    /// Capsule geometry, matched to the iOS 26 system floating tab bar: ~60pt tall, two tab
-    /// slots plus a gap and a circular search control of the same diameter.
-    private static let barHeight: CGFloat = 60
-    private static let tabCapsuleWidth: CGFloat = 180
+    /// Capsule geometry: 66pt tall -- close to the iOS 26 floating bar -- with two generous tab
+    /// slots and a circular search control of the same diameter.
+    private static let barHeight: CGFloat = 66
+    private static let tabCapsuleWidth: CGFloat = 210
     private static let itemGap: CGFloat = 8
-    /// Compact width is exactly the two pieces + gap, so the expanded search capsule morphs from
-    /// the same footprint.
-    private static let compactWidth: CGFloat = tabCapsuleWidth + itemGap + barHeight
-    /// The open search field is given a touch more room for the placeholder and clear button,
-    /// but stays a floating capsule rather than stretching edge to edge.
-    private static let expandedWidth: CGFloat = 280
+    /// The open search field is roomy but stays a floating capsule rather than going edge to edge.
+    private static let expandedWidth: CGFloat = 308
     /// Gap between the capsule's bottom edge and the top of the bottom safe area, matching the
     /// system floating bar.
     private static let bottomGap: CGFloat = 8
 
-    /// Drives both morphs: the search circle -> search capsule, and the selected-tab highlight
-    /// sliding between the two destinations.
-    @Namespace private var chrome
+    /// Drives the selected-tab highlight sliding between the two destinations.
     @Namespace private var selection
 
-    /// Two springs, tuned to feel like a real app launch.
-    ///
-    /// `morphSpring` overshoots slightly so the circle "pops" into the capsule the way an app
-    /// icon springs into a window when launched; `selectionSpring` is tighter so the highlight
-    /// snap between tabs stays snappy and does not bleed into the morph.
-    private let morphSpring: Animation = .spring(response: 0.52, dampingFraction: 0.66)
+    /// One spring for the whole morph. The tab strip collapsing and the circle growing ride the
+    /// SAME curve, which is what makes the motion read as one surface reconfiguring itself.
+    private let morphSpring: Animation = .spring(response: 0.45, dampingFraction: 0.78)
     private let selectionSpring: Animation = .spring(response: 0.30, dampingFraction: 0.72)
 
     private var shape: Capsule { Capsule(style: .continuous) }
 
+    private var isSearchPresented: Bool { state.isSearchPresented }
+
     var body: some View {
-        // Just the floating capsule, centred. No backdrop: anything outside the capsule (the
-        // home-indicator gutter included) stays the page underneath, which is what makes the
-        // bar read as hovering the way Apple's does.
-        HStack(spacing: 0) {
-            Group {
-                if state.isSearchPresented {
-                    expandedSearch
-                        .transition(
-                            .asymmetric(
-                                insertion: .scale(scale: 0.55, anchor: .trailing)
-                                    .combined(with: .opacity),
-                                removal: .opacity
-                            )
-                        )
-                } else {
-                    compactNavigation
-                        .transition(
-                            .asymmetric(
-                                insertion: .scale(scale: 1.12, anchor: .leading)
-                                    .combined(with: .opacity),
-                                removal: .opacity
-                            )
-                        )
-                }
-            }
-            .frame(
-                width: state.isSearchPresented ? Self.expandedWidth : Self.compactWidth,
-                height: Self.barHeight
-            )
-            .scaleEffect(morphScale, anchor: .center)
-            .animation(reduceMotion ? nil : morphSpring, value: state.isSearchPresented)
-            .animation(reduceMotion ? nil : morphSpring, value: morphScale)
+        // The two pieces stay mounted for the lifetime of the bar; only their widths and the
+        // gap animate. Keeping the hierarchy stable is precisely what lets the search field
+        // grow out of the circle's own position: there is no inserted/removed view whose final
+        // frame could flash into place.
+        HStack(spacing: isSearchPresented ? 0 : Self.itemGap) {
+            tabCapsule
+                .frame(width: isSearchPresented ? 0 : Self.tabCapsuleWidth, height: Self.barHeight)
+                .opacity(isSearchPresented ? 0 : 1)
+                .allowsHitTesting(!isSearchPresented)
+                .clipped()
+
+            searchSurface
+                .frame(
+                    width: isSearchPresented ? Self.expandedWidth : Self.barHeight,
+                    height: Self.barHeight
+                )
         }
         .frame(maxWidth: .infinity, alignment: .center)
+        .animation(reduceMotion ? nil : morphSpring, value: isSearchPresented)
         // The host pins this view to the screen's bottom edge; SwiftUI's own safe-area inset
         // lifts the capsule to the top of the home-indicator gutter, and this small gap matches
         // the system floating bar's clearance.
         .padding(.bottom, Self.bottomGap)
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .onChange(of: state.isSearchPresented) { presented in
+        .onChange(of: isSearchPresented) { presented in
             if presented {
-                // Wait until the field is in the hierarchy so the keyboard and the expanding pill
-                // start together, as they do in Android's floating navigation.
+                // Wait until the field has expanded so the keyboard and the growing pill start
+                // together, as they do in Android's floating navigation.
                 DispatchQueue.main.async { searchFocused = true }
             } else {
                 searchFocused = false
@@ -189,31 +172,27 @@ struct FloatingHomeNavigation: View {
         }
     }
 
-    /// A pulse that lifts the morph off its starting size and lets the spring settle into 1.0.
-    ///
-    /// The matched-geometry effect already animates bounds and position, but iOS does not visibly
-    /// "punch in" the destination the way an app launch icon does. Pairing a 0.78 -> 1.0 scale on
-    /// the morph value gives the open transition a tap of weight at the start, which is what makes
-    /// the bar feel like it is opening an app rather than stretching a rectangle.
-    private var morphScale: CGFloat {
-        state.isSearchPresented ? 1.0 : 0.78
+    /// The two destinations on one glass capsule. The capsule itself never re-shapes; its outer
+    /// frame simply collapses to zero while the search surface takes the room.
+    private var tabCapsule: some View {
+        SystemGlassSurface(shape: shape, interactive: true) {
+            HStack(spacing: 2) {
+                tabButton(.home)
+                tabButton(.settings)
+            }
+            .padding(6)
+            .frame(width: Self.tabCapsuleWidth, height: Self.barHeight)
+        }
     }
 
-    private var compactNavigation: some View {
-        HStack(spacing: Self.itemGap) {
-            SystemGlassSurface(shape: shape, interactive: true) {
-                HStack(spacing: 2) {
-                    tabButton(.home)
-                    tabButton(.settings)
-                }
-                .padding(6)
-                .frame(width: Self.tabCapsuleWidth, height: Self.barHeight)
-            }
-            // Fades and shrinks away while the search circle grows into the field, so the open
-            // motion reads as the tab strip giving the search the room.
-            .opacity(state.isSearchPresented ? 0 : 1)
-
-            SystemGlassSurface(shape: Circle(), interactive: true) {
+    /// ONE continuous glass surface. A `Capsule` whose width equals its height renders as a
+    /// circle, so no shape swap is involved in the morph: the very same piece of glass grows
+    /// from 66pt (a circle) to 308pt (the field), with its trailing edge anchored where the
+    /// search button was.
+    private var searchSurface: some View {
+        SystemGlassSurface(shape: shape, interactive: true) {
+            ZStack {
+                // Compact: the whole circle is the search button.
                 Button {
                     // presentSearch also switches the pager back to home: search filters the home
                     // list, so opening it while the settings page is showing must not strand it.
@@ -221,50 +200,44 @@ struct FloatingHomeNavigation: View {
                 } label: {
                     Image(systemName: "magnifyingglass")
                         .font(.title3.weight(.semibold))
-                        .frame(width: Self.barHeight, height: Self.barHeight)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .buttonStyle(TabPressStyle(scale: 0.9))
+                .opacity(isSearchPresented ? 0 : 1)
+                .allowsHitTesting(!isSearchPresented)
                 .accessibilityLabel("搜索教务功能")
-            }
-            .frame(width: Self.barHeight, height: Self.barHeight)
-            // Grows this circle's frame straight into the expanded capsule's frame.
-            .matchedGeometryEffect(id: "searchSurface", in: chrome)
-        }
-    }
 
-    private var expandedSearch: some View {
-        SystemGlassSurface(shape: shape, interactive: true) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                TextField("搜索教务功能", text: $state.searchQuery)
-                    .font(.subheadline)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.search)
-                    .focused($searchFocused)
-                    .accessibilityLabel("搜索教务功能")
-                Button {
-                    state.dismissSearch()
-                } label: {
-                    Image(systemName: "xmark")
+                // Expanded: leading glyph + field + clear. It stays mounted the whole time (only
+                // its opacity/hit-testing flips), so focus can land on the field as soon as the
+                // surface has room for it without any view being inserted.
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
                         .font(.subheadline.weight(.semibold))
-                        .frame(width: 40, height: Self.barHeight)
+                        .foregroundStyle(PortalPalette.secondaryText)
+                        .accessibilityHidden(true)
+                    TextField("搜索教务功能", text: $state.searchQuery)
+                        .font(.subheadline)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.search)
+                        .focused($searchFocused)
+                        .accessibilityLabel("搜索教务功能")
+                    Button {
+                        state.dismissSearch()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(width: 40, height: Self.barHeight)
+                    }
+                    .buttonStyle(TabPressStyle())
+                    .accessibilityLabel("关闭搜索")
                 }
-                .buttonStyle(TabPressStyle())
-                .accessibilityLabel("关闭搜索")
+                .padding(.leading, 18)
+                .padding(.trailing, 4)
+                .opacity(isSearchPresented ? 1 : 0)
+                .allowsHitTesting(isSearchPresented)
             }
-            .padding(.leading, 18)
-            .padding(.trailing, 4)
-            .frame(width: Self.expandedWidth, height: Self.barHeight)
-            // The contents fade in across the morph; a glyph stretched by the frame interpolation
-            // would smear, so the contents ride the last third of the move instead.
-            .opacity(state.isSearchPresented ? 1 : 0)
         }
-        .frame(width: Self.expandedWidth, height: Self.barHeight)
-        .matchedGeometryEffect(id: "searchSurface", in: chrome)
     }
 
     private func tabButton(_ item: LiquidTabItem) -> some View {

@@ -5,7 +5,12 @@ struct MaterialPageScreen: View {
     @EnvironmentObject private var state: AppState
     let item: PortalItem
 
-    @State private var loadState: LoadState = .authenticating
+    /// Cold start is FETCHING, not AUTHENTICATING: the user only reaches this screen through the
+    /// signed-in shell, so claiming "尝试登录…" before a single request has even bounced was a
+    /// false alarm right after login (matching Android, which shows AUTHENTICATING only while a
+    /// central session CHECKING is actually running). `.authenticating` is entered later, and
+    /// only by an explicit login-redirect callback.
+    @State private var loadState: LoadState = .loading
     @State private var refreshToken = 0
     @State private var action: MaterialReaderAction?
     @State private var actionToken = 0
@@ -177,7 +182,8 @@ struct MaterialPageScreen: View {
         // was stuck on a stale page or the portal's login redirect, so bump the refresh token to
         // reload against the now-valid session -- without the user having to tap anything.
         .onReceive(NotificationCenter.default.publisher(for: SessionRefreshBus.didRefreshNotification)) { _ in
-            loadState = .authenticating
+            // A quiet revalidation just succeeded: this is a plain re-fetch, not a login attempt.
+            loadState = renderedPage == nil ? .loading : loadState
             retry()
         }
     }
@@ -247,6 +253,10 @@ struct MaterialPageScreen: View {
         loadState = .loaded
         isRefreshing = false
         allowsEmpty = false
+        // Real content rendering is the strongest possible proof the session is alive -- port of
+        // Android calling `PortalSessionCoordinator.markAuthenticated()` from `onContent`. Any
+        // "登录中" badge or quiet revalidation started by a transient redirect is retired now.
+        state.markSessionReady()
         prepareExports(for: newPage)
         prepareProgramExpansion(for: newPage)
     }
@@ -266,11 +276,14 @@ struct MaterialPageScreen: View {
                 Task { @MainActor in
                     if loading {
                         // A refresh over existing content keeps the page on screen; only a cold
-                        // load shows the spinner, which is what Android's `.loading` state means.
+                        // load shows the spinner, which is what Android's FETCHING state means.
                         if renderedPage == nil { loadState = .loading }
-                    } else if loadState == .loading {
-                        loadState = .authenticating
                     }
+                    // On `false` we deliberately stay put. The reader calls it both for a real
+                    // login redirect AND at the end of an ordinary commit on some portal pages;
+                    // flipping to AUTHENTICATING on the latter is what flashed "尝试登录…" right
+                    // after a successful login. The explicit session-expired callback owns that
+                    // transition; content/error callbacks own the others.
                 }
             },
             onContent: { newPage in

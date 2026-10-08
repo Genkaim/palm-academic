@@ -158,8 +158,11 @@ struct QuickEntryBaselinePrefetch: View {
             onError: { _ in finish(item, snapshot: latestSnapshot) },
             onSessionExpired: {
                 // A hidden reader can briefly see a redirect. Confirm centrally rather than
-                // dropping the user to the login screen from a page they never opened.
-                Task { await state.revalidateSession() }
+                // dropping the user to the login screen from a page they never opened -- and do
+                // it QUIETLY: a loud check here flashed the "登录中" badge on the home screen
+                // right after a perfectly good login. On success the refresh bus reloads every
+                // visible reader; only a hard "expired" answer surfaces the retry badge.
+                Task { await state.revalidateQuietlyPublic() }
             },
             onDiagnostic: { _ in }
         )

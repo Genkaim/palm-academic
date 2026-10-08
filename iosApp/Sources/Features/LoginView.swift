@@ -48,9 +48,9 @@ struct LoginView: View {
 
     private enum Metric {
         static let horizontal: CGFloat = 20
-        /// Taller fields than the system default row: the group reads as a deliberate sign-in card
-        /// rather than two cramped table rows.
-        static let fieldHeight: CGFloat = 56
+        /// Tall fields: the group reads as a deliberate sign-in card rather than two cramped
+        /// table rows.
+        static let fieldHeight: CGFloat = 62
         static let primaryButtonHeight: CGFloat = 56
         static let secondaryButtonHeight: CGFloat = 54
         /// The gap between the adjacent rows of the bottom area: between the two secondary rows,
@@ -63,9 +63,9 @@ struct LoginView: View {
         /// The brand is now a compact logo-plus-title header row rather than a hero block, so its
         /// height is just the row's.
         static let brandHeight: CGFloat = 44
-        /// The outer radius of the joined field group, enlarged so the card reads rounded on all
-        /// four outer corners.
-        static let fieldGroupRadius: CGFloat = 20
+        /// The outer radius of the joined field group -- generously rounded so the card reads as
+        /// one continuous, soft-edged sign-in surface.
+        static let fieldGroupRadius: CGFloat = 26
         /// The radius where the two fields meet, which is zero. A positive value there -- 6pt was
         /// here -- rounds each field into its own shape, so the pair reads as two cards with a seam
         /// rather than as one group with a divider; rounding one end of each field and squaring the

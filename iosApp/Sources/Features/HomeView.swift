@@ -106,22 +106,24 @@ struct HomeView: View {
                 // Android's top bar carries a bold title with the school name on its second line.
                 // There is no leading item: the school is changed from Settings, which is where
                 // Android puts it too.
+                //
+                // The session badge lives in the SAME principal cluster as the title rather than
+                // in a trailing bar button: a trailing item is laid out at the screen edge, which
+                // put a wide gap between it and the centred title. Grouping them keeps the badge
+                // right next to the title and lets the whole cluster re-centre as one.
                 ToolbarItem(placement: .principal) {
-                    VStack(spacing: 1) {
-                        Text("掌上教务")
-                            .font(.headline.weight(.bold))
-                        Text(state.selectedSchool?.name ?? "未选择学校")
-                            .font(.caption)
-                            .foregroundStyle(PortalPalette.secondaryText)
-                            .lineLimit(1)
+                    HStack(spacing: 7) {
+                        VStack(spacing: 1) {
+                            Text("掌上教务")
+                                .font(.headline.weight(.bold))
+                            Text(state.selectedSchool?.name ?? "未选择学校")
+                                .font(.caption)
+                                .foregroundStyle(PortalPalette.secondaryText)
+                                .lineLimit(1)
+                        }
+                        sessionStatusBadge
+                            .transition(.opacity)
                     }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    sessionStatusBadge
-                        // The badge slides in from the trailing edge with a small scale, and the
-                        // principal title it pushes is re-centred by the system in the same pass,
-                        // so the title looks like it slides left to make room for the new control.
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
             // Animating on the enum keeps the badge's appear/disappear transition (and the
@@ -157,42 +159,32 @@ struct HomeView: View {
 
     /// Port of `PortalSessionStatus`: nothing for a healthy session, a spinner while checking, and
     /// a tappable failure otherwise.
+    ///
+    /// Both states are plain inline text with NO capsule fill: the badge sits directly beside the
+    /// principal title inside one cluster, so a background plate there read as a coloured chip
+    /// bolted onto the title. Android's status row is likewise text-only.
     @ViewBuilder
     private var sessionStatusBadge: some View {
         switch state.sessionStatus {
         case .hidden:
             EmptyView()
         case .checking:
-            // A compact spinner without text. The whole row is small enough that adding words here
-            // would push the principal title off the centre of the bar, which is what the earlier
-            // "验证失败，点击重试" string was doing -- the title sat hard against the leading edge
-            // and the page read as "where did the title go".
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)
                 Text("登录中")
                     .font(.caption2)
                     .foregroundStyle(PortalPalette.secondaryText)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-                Capsule().fill(Color(uiColor: .tertiarySystemFill))
-            )
         case .unavailable(let message):
             Button {
                 Task { await state.revalidateSession() }
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .bold))
                     Text("重试登录")
                         .font(.caption.weight(.semibold))
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    Capsule().fill(PortalPalette.error.opacity(0.12))
-                )
                 .foregroundStyle(PortalPalette.error)
             }
             .buttonStyle(.plain)
@@ -313,9 +305,9 @@ enum PortalRoute: Hashable {
 }
 
 /// How much room every scrolling page has to leave below its content so the floating bar never
-/// covers the last row. The capsule is 60pt tall with an 8pt gap above the bottom safe area;
+/// covers the last row. The capsule is 66pt tall with an 8pt gap above the bottom safe area;
 /// the list's own bottom inset already accounts for the home indicator, so this just clears
 /// the capsule plus a little air.
 enum BottomClearance {
-    static let height: CGFloat = 76
+    static let height: CGFloat = 82
 }

@@ -106,21 +106,31 @@ final class SessionStore {
     /// Mirrors `PortalSessionStore.captureFromWebView`. The reading path is `WKHTTPCookieStore`,
     /// not `HTTPCookieStorage`: a real EAMS WebView populates the WebKit store, and that copy is
     /// what the server will accept on the next request.
-    func captureFromWebView() async {
+    /// Captures the WebKit cookie jar after a successful web login.
+    ///
+    /// - Returns: `false` when no school-domain cookies -- in particular no SESSION cookie --
+    ///   were available, so callers can distinguish "login really finished" from "the portal
+    ///   rendered a non-login page without issuing a session".
+    @discardableResult
+    func captureFromWebView() async -> Bool {
         let store = WKWebsiteDataStore.default().httpCookieStore
         let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
             store.getAllCookies { cookies in
                 continuation.resume(returning: cookies)
             }
         }
-        guard !cookies.isEmpty else { return }
+        guard !cookies.isEmpty else { return false }
         let host = URL(string: SchoolCatalog.shared.origin)?.host ?? ""
         let filtered = cookies.filter { cookie in
             let cookieDomain = cookie.domain
             let normalised = cookieDomain.hasPrefix(".") ? String(cookieDomain.dropFirst()) : cookieDomain
             return normalised == host || normalised == "." + host || host.hasSuffix("." + normalised)
         }
-        guard !filtered.isEmpty else { return }
+        guard !filtered.isEmpty else { return false }
+        // A session has to actually carry SESSION; a page of public marketing markup served from
+        // the same host would otherwise be captured as "logged in".
+        let hasSession = filtered.contains { $0.name.uppercased() == "SESSION" && !$0.value.isEmpty }
+        guard hasSession else { return false }
         let header = filtered
             .sorted(by: { $0.name < $1.name })
             .map { "\($0.name)=\($0.value)" }
@@ -129,6 +139,7 @@ final class SessionStore {
         // Make URLSession requests see the same cookies immediately, mirroring
         // `WebViewCookieJar.loadForRequest` which merges persisted and live cookies per request.
         restoreToCookieStorage()
+        return true
     }
 
     /// Installs the persisted cookies into the WebView's own cookie store, mirroring

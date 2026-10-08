@@ -42,7 +42,11 @@ struct OriginalPortalScreen: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            PortalPalette.page.ignoresSafeArea()
+            // Match the web view's OWN opaque background rather than the grouped page colour:
+            // the surface here is the portal document (white/black), and painting the grouped
+            // grey behind the status bar left a visible seam -- a solid colour block -- between
+            // the transparent nav bar and the page.
+            PortalPalette.plainSurface.ignoresSafeArea()
 
             PortalWebView(
                 title: item.title,
@@ -53,7 +57,10 @@ struct OriginalPortalScreen: View {
                 refreshToken: refreshToken,
                 onPhase: { phase = $0 }
             )
-            .ignoresSafeArea(edges: .bottom)
+            // Full bleed on every edge: the document background paints under the status bar and
+            // behind the home indicator. The scroll view's own inset adjustment keeps the page
+            // CONTENT clear of the bars, so nothing is hidden -- only the dead strip is gone.
+            .ignoresSafeArea()
 
             // A load that failed gets a page of its own rather than a transient alert: the alert
             // would be dismissed by the first tap and leave a blank WebView behind it, with nothing
@@ -120,7 +127,7 @@ struct OriginalPortalScreen: View {
         }
         .padding(.horizontal, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(PortalPalette.page)
+        .background(PortalPalette.plainSurface.ignoresSafeArea())
     }
 
     private var sessionExpiredBinding: Binding<Bool> {
@@ -237,8 +244,10 @@ private struct PortalWebView: UIViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
-        // The portal sets its own viewport; forcing a fixed native width would squash it.
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        // The view is laid out edge to edge, and this lets the scroll view inset the document's
+        // CONTENT for the status bar / nav bar itself while its background still paints under
+        // them (the immersive effect). `.never` left the page's top row hidden under the bar.
+        webView.scrollView.contentInsetAdjustmentBehavior = .always
         context.coordinator.applyAppearance(to: webView, isDark: isDark)
         context.coordinator.load(webView, homeURL: homeURL)
         return webView

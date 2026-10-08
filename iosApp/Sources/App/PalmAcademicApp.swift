@@ -1,5 +1,4 @@
 import Combine
-import QuartzCore
 import SwiftUI
 import UIKit
 import UserNotifications
@@ -272,13 +271,17 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
         pager.dataSource = self
         pager.delegate = self
         // The pages paint their own backgrounds (the grouped list surfaces); the pager itself must
-        // not add a white strip behind the slide between them.
+        // not add a white strip behind the slide between them. `isOpaque = false` is set as well:
+        // a clear `backgroundColor` on a view still flagged opaque can still composite a black
+        // gutter during the slide between pages.
         pager.view.backgroundColor = .clear
+        pager.view.isOpaque = false
         // Hosting views otherwise default to an opaque system background, which paints a solid
         // block behind the status bar and the home indicator even though the SwiftUI content is
         // transparent there.
         for controller in pageControllers {
             controller.view.backgroundColor = .clear
+            controller.view.isOpaque = false
         }
         addChild(pager)
         pager.view.translatesAutoresizingMaskIntoConstraints = false
@@ -293,6 +296,7 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
         pager.setViewControllers([pageControllers[currentIndex]], direction: .forward, animated: false)
 
         barHost.view.backgroundColor = .clear
+        barHost.view.isOpaque = false
         // The bar sizes itself to its content height and stays pinned to the shell's bottom edge;
         // the keyboard handler moves that constraint when the search field is focused.
         barHost.sizingOptions = [.intrinsicContentSize]
@@ -340,49 +344,17 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
             isTurning = false
             currentIndex = index
         }
-        if animated {
-            // UIPageViewController's internal linear scroll animation ignores every
-            // `UIView.animate` spring we wrap around `setViewControllers`. The only reliable way
-            // to make a button-driven turn ride a spring is to step outside the pager for the
-            // visible motion: snapshot the current pager surface, swap pages underneath via
-            // animated:false, then slide the snapshot off on a curve we control while the new
-            // page comes through. The swipe gesture is unaffected -- it is finger-driven and
-            // does not go through this code path.
-            let snapshot = pager.view.snapshotView(afterScreenUpdates: false)
-            view.addSubview(snapshot ?? UIView())
-            snapshot?.frame = view.bounds
-            snapshot?.clipsToBounds = true
-            // The pager's view itself clips its own children; the snapshot sits on top, so the
-            // sliding page does not see neighbouring pages leaking through.
-            pager.setViewControllers(
-                [pageControllers[index]],
-                direction: direction,
-                animated: false
-            )
-            let offset = direction == .forward ? -view.bounds.width : view.bounds.width
-            UIView.animate(
-                withDuration: 0.55,
-                delay: 0,
-                usingSpringWithDamping: 0.82,
-                initialSpringVelocity: 0.45,
-                options: [.curveEaseInOut, .allowUserInteraction],
-                animations: {
-                    snapshot?.transform = CGAffineTransform(translationX: offset, y: 0)
-                },
-                completion: { _ in
-                    snapshot?.transform = .identity
-                    snapshot?.removeFromSuperview()
-                    finish()
-                }
-            )
-        } else {
-            pager.setViewControllers(
-                [pageControllers[index]],
-                direction: direction,
-                animated: false,
-                completion: { _ in finish() }
-            )
-        }
+        // The pager's own scroll transition. An earlier version swapped the page underneath a
+        // snapshot and slid the snapshot off by hand, which read like an Android activity
+        // transition (the old screen slid away over a page that was already static). The
+        // built-in transition is the exact same motion a finger swipe drives -- both pages move
+        // together as one surface -- so bar taps and swipes feel like the same gesture.
+        pager.setViewControllers(
+            [pageControllers[index]],
+            direction: direction,
+            animated: animated,
+            completion: { _ in finish() }
+        )
     }
 
     /// Lifts the bar exactly as far as the keyboard overlaps the shell, along the keyboard's own
