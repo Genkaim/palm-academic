@@ -292,9 +292,10 @@ struct MaterialPageScreen: View {
                     // timeout, not a stolen credential. The reader is dropped back into its
                     // authenticating state and the app kicks off a quiet revalidation; only if
                     // the server keeps saying no for a while does the user get a re-login screen.
+                    // The revalidation itself publishes the badge text, so the page only needs to
+                    // hand off the trigger and reset its own surface.
                     if state.sessionTrusted {
                         loadState = .authenticating
-                        state.sessionNotice = "正在重新验证教务会话…"
                         await state.revalidateQuietlyPublic()
                     } else {
                         loadState = .sessionExpired

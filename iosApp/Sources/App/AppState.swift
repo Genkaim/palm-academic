@@ -456,6 +456,11 @@ final class ThemePreferences {
 /// "Trusted" means "the password was good on a recent visit" -- not "the cookie is still alive",
 /// which is what `SessionStore` already owns -- so a network timeout after a trusted visit
 /// is treated as transient and does not kick the user back to the login form.
+/// `MainActor` because its `currentSchool` projection reads a `SchoolCatalog` value, and the
+/// catalog is itself main-actor isolated. The trust flag is only ever poked from `AppState`
+/// during a sign-in, sign-out or school switch, which are already main-actor entry points, so
+/// the isolation lines up with the call sites without any extra hops.
+@MainActor
 final class SessionTrustStore {
     static let shared = SessionTrustStore()
     private static let key = "session_trust_school"

@@ -131,7 +131,11 @@ struct MainShellView: View {
             // it closes. The system's own search experience behaves the same way: when the search
             // surface opens, the chrome around it (including the status bar) recedes. Driving the
             // fade off the same `isSearchPresented` flag the bar uses keeps the two in lockstep.
-            .statusBarHidden(state.isSearchPresented, animation: .easeInOut(duration: 0.28))
+            //
+            // The animation parameter to `statusBarHidden` is iOS 17+, and the deployment target is
+            // 16.0; the system already cross-fades the bar on value change, so the absence is purely
+            // cosmetic and matches what the spring backdrop on the search pill already provides.
+            .statusBarHidden(state.isSearchPresented)
             .overlay(alignment: .top) {
                 if let notice = state.sessionNotice {
                     noticeBanner(notice)
