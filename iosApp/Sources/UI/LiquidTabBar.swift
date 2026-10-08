@@ -98,29 +98,30 @@ struct LiquidTabItem: Identifiable, Hashable {
 
 /// iOS counterpart of Android's `FloatingHomeNavigation`.
 ///
-/// The compact state exposes the two destinations and a 72pt search target. Tapping search
-/// morphs that glass target IN PLACE into a full-width search capsule as wide as the whole bar
-/// (rather than sliding a new surface in from the trailing edge): a matched-geometry move
-/// grows the circle's frame to the bar's width on a spring, while the field contents fade in
-/// and the search glyph rides a scale-out -> scale-in transition so the open motion reads as
-/// a real surface lift, not a layout swap. The bar is lifted above the keyboard by its UIKit
-/// shell (`MainShellViewController`).
-///
-/// A backdrop strip fills the area between the pill and the screen's bottom edge: the bar
-/// used to leave that region as the host's clear colour, which against the home indicator read
-/// as a dead stripe. The strip is a thin material layer that extends into the safe area so the
-/// home indicator overlays it and the bottom of the bar feels continuous with the rest of the
-/// surface.
+/// Layout follows Apple's iOS 26 floating tab bar: a single continuous glass capsule sized to
+/// its content, centred horizontally, floating 8pt above the bottom safe-area edge. There is
+/// deliberately NO full-width material strip behind it -- the earlier backdrop rectangle filled
+/// the home-indicator gutter with an opaque blur and read as a dead block of colour; the system
+/// bar lets the page show through around the capsule, including behind the home indicator.
 struct FloatingHomeNavigation: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
 
-    /// Footprint of the floating bar. The compact tab capsule + gap + search circle must
-    /// total this exactly so the open and closed states occupy the same horizontal slot.
-    private static let barWidth: CGFloat = 320
-    private static let barHeight: CGFloat = 72
-    private static let tabCapsuleWidth: CGFloat = 232
+    /// Capsule geometry, matched to the iOS 26 system floating tab bar: ~60pt tall, two tab
+    /// slots plus a gap and a circular search control of the same diameter.
+    private static let barHeight: CGFloat = 60
+    private static let tabCapsuleWidth: CGFloat = 180
+    private static let itemGap: CGFloat = 8
+    /// Compact width is exactly the two pieces + gap, so the expanded search capsule morphs from
+    /// the same footprint.
+    private static let compactWidth: CGFloat = tabCapsuleWidth + itemGap + barHeight
+    /// The open search field is given a touch more room for the placeholder and clear button,
+    /// but stays a floating capsule rather than stretching edge to edge.
+    private static let expandedWidth: CGFloat = 280
+    /// Gap between the capsule's bottom edge and the top of the bottom safe area, matching the
+    /// system floating bar.
+    private static let bottomGap: CGFloat = 8
 
     /// Drives both morphs: the search circle -> search capsule, and the selected-tab highlight
     /// sliding between the two destinations.
@@ -138,53 +139,44 @@ struct FloatingHomeNavigation: View {
     private var shape: Capsule { Capsule(style: .continuous) }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // Backdrop strip: a thin glass layer that runs from above the pill down to the
-            // bottom of the screen. Without it the area between the pill and the home indicator
-            // is the shell's clear colour, which on top of any opaque page reads as a stripe of
-            // dead pixels. The strip extends into the safe area so the indicator overlays glass
-            // instead of an opaque backdrop.
-            SystemGlassSurface(shape: Rectangle(), interactive: false, strength: .ultraThinMaterial) {
-                Color.clear
-            }
-            .frame(height: Self.barHeight + 24)
-            .frame(maxWidth: .infinity)
-            .ignoresSafeArea(edges: .bottom)
-
-            // The pills ride on top of the strip, centred. The matched-geometry effect hands
-            // the open transition to SwiftUI; explicit transitions on the two children below
-            // layer the field contents and the tab strip fade on the same spring so the
-            // appearance has weight, not a flat cross-fade.
-            HStack(spacing: 0) {
-                Group {
-                    if state.isSearchPresented {
-                        expandedSearch
-                            .transition(
-                                .asymmetric(
-                                    insertion: .scale(scale: 0.55, anchor: .trailing)
-                                        .combined(with: .opacity),
-                                    removal: .opacity
-                                )
+        // Just the floating capsule, centred. No backdrop: anything outside the capsule (the
+        // home-indicator gutter included) stays the page underneath, which is what makes the
+        // bar read as hovering the way Apple's does.
+        HStack(spacing: 0) {
+            Group {
+                if state.isSearchPresented {
+                    expandedSearch
+                        .transition(
+                            .asymmetric(
+                                insertion: .scale(scale: 0.55, anchor: .trailing)
+                                    .combined(with: .opacity),
+                                removal: .opacity
                             )
-                    } else {
-                        compactNavigation
-                            .transition(
-                                .asymmetric(
-                                    insertion: .scale(scale: 1.12, anchor: .leading)
-                                        .combined(with: .opacity),
-                                    removal: .opacity
-                                )
+                        )
+                } else {
+                    compactNavigation
+                        .transition(
+                            .asymmetric(
+                                insertion: .scale(scale: 1.12, anchor: .leading)
+                                    .combined(with: .opacity),
+                                removal: .opacity
                             )
-                    }
+                        )
                 }
-                .frame(width: Self.barWidth, height: Self.barHeight)
-                .scaleEffect(morphScale, anchor: .center)
-                .animation(reduceMotion ? nil : morphSpring, value: state.isSearchPresented)
-                .animation(reduceMotion ? nil : morphSpring, value: morphScale)
             }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.bottom, 18)
+            .frame(
+                width: state.isSearchPresented ? Self.expandedWidth : Self.compactWidth,
+                height: Self.barHeight
+            )
+            .scaleEffect(morphScale, anchor: .center)
+            .animation(reduceMotion ? nil : morphSpring, value: state.isSearchPresented)
+            .animation(reduceMotion ? nil : morphSpring, value: morphScale)
         }
+        .frame(maxWidth: .infinity, alignment: .center)
+        // The host pins this view to the screen's bottom edge; SwiftUI's own safe-area inset
+        // lifts the capsule to the top of the home-indicator gutter, and this small gap matches
+        // the system floating bar's clearance.
+        .padding(.bottom, Self.bottomGap)
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .onChange(of: state.isSearchPresented) { presented in
             if presented {
@@ -208,7 +200,7 @@ struct FloatingHomeNavigation: View {
     }
 
     private var compactNavigation: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Self.itemGap) {
             SystemGlassSurface(shape: shape, interactive: true) {
                 HStack(spacing: 2) {
                     tabButton(.home)
@@ -228,7 +220,7 @@ struct FloatingHomeNavigation: View {
                     state.presentSearch()
                 } label: {
                     Image(systemName: "magnifyingglass")
-                        .font(.title2.weight(.semibold))
+                        .font(.title3.weight(.semibold))
                         .frame(width: Self.barHeight, height: Self.barHeight)
                 }
                 .buttonStyle(TabPressStyle(scale: 0.9))
@@ -244,10 +236,11 @@ struct FloatingHomeNavigation: View {
         SystemGlassSurface(shape: shape, interactive: true) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
-                    .font(.title3.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 TextField("搜索教务功能", text: $state.searchQuery)
+                    .font(.subheadline)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
@@ -257,20 +250,20 @@ struct FloatingHomeNavigation: View {
                     state.dismissSearch()
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 48, height: Self.barHeight)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 40, height: Self.barHeight)
                 }
                 .buttonStyle(TabPressStyle())
                 .accessibilityLabel("关闭搜索")
             }
-            .padding(.leading, 20)
-            .padding(.trailing, 6)
-            .frame(width: Self.barWidth, height: Self.barHeight)
+            .padding(.leading, 18)
+            .padding(.trailing, 4)
+            .frame(width: Self.expandedWidth, height: Self.barHeight)
             // The contents fade in across the morph; a glyph stretched by the frame interpolation
             // would smear, so the contents ride the last third of the move instead.
             .opacity(state.isSearchPresented ? 1 : 0)
         }
-        .frame(width: Self.barWidth, height: Self.barHeight)
+        .frame(width: Self.expandedWidth, height: Self.barHeight)
         .matchedGeometryEffect(id: "searchSurface", in: chrome)
     }
 

@@ -35,6 +35,11 @@ struct SettingsScreen: View {
                 accountSection
             }
             .listStyle(.insetGrouped)
+            // One continuous page surface under the status bar and behind the floating bar,
+            // matching HomeView: hide the table's opaque background and paint the grouped
+            // colour across every safe-area edge ourselves.
+            .scrollContentBackground(.hidden)
+            .background(PortalPalette.page.ignoresSafeArea())
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.large)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -431,7 +436,7 @@ struct NoticeHistoryScreen: View {
                 }
                 .disabled(entries.isEmpty)
             }
-            .background(PortalPalette.page.ignoresSafeArea(edges: .top))
+            .background(PortalPalette.page.ignoresSafeArea(edges: .bottom))
         }
         .onAppear(perform: refreshExport)
         .onReceive(NotificationCenter.default.publisher(for: PortalPollHistory.didChangeNotification)) { _ in
@@ -752,7 +757,8 @@ struct AboutScreen: View {
             }
         }
         .listStyle(.insetGrouped)
-        .background(PortalPalette.page.ignoresSafeArea(edges: .top))
+        .scrollContentBackground(.hidden)
+        .background(PortalPalette.page.ignoresSafeArea())
         .navigationTitle("关于")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) {

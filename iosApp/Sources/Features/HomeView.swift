@@ -90,12 +90,12 @@ struct HomeView: View {
                 }
             }
             .listStyle(.insetGrouped)
-            // The background colour is anchored to the view and clipped to safe area by default,
-            // which left the status bar area as the host's clear colour against the page
-            // underneath and read as a strip of dead pixels. Extending it past the top safe
-            // edge lets the page colour reach the very top of the screen while the rest of the
-            // List continues to respect insets for its rows.
-            .background(PortalPalette.page.ignoresSafeArea(edges: .top))
+            // Hide the table view's own opaque background so the explicit page colour below is
+            // the single surface: it ignores EVERY safe-area edge, which carries it under the
+            // status bar at the top and under the floating tab bar / home indicator at the
+            // bottom. The inset-grouped section cards keep their own row backgrounds.
+            .scrollContentBackground(.hidden)
+            .background(PortalPalette.page.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             // The nav bar's own chrome is dropped so the list and its section headers extend under
             // the status bar; the bar itself is drawn as transparent glass by the shell. Without
@@ -313,8 +313,9 @@ enum PortalRoute: Hashable {
 }
 
 /// How much room every scrolling page has to leave below its content so the floating bar never
-/// covers the last row. The bar is 64pt tall with 8pt below it, and the list's own bottom inset
-/// already accounts for the home indicator, so this is the bar's height plus a little air.
+/// covers the last row. The capsule is 60pt tall with an 8pt gap above the bottom safe area;
+/// the list's own bottom inset already accounts for the home indicator, so this just clears
+/// the capsule plus a little air.
 enum BottomClearance {
-    static let height: CGFloat = 84
+    static let height: CGFloat = 76
 }

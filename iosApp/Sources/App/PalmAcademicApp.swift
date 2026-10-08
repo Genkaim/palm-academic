@@ -136,11 +136,6 @@ struct MainShellView: View {
             // 16.0; the system already cross-fades the bar on value change, so the absence is purely
             // cosmetic and matches what the spring backdrop on the search pill already provides.
             .statusBarHidden(state.isSearchPresented)
-            .overlay(alignment: .top) {
-                if let notice = state.sessionNotice {
-                    noticeBanner(notice)
-                }
-            }
             .background {
                 // The baseline fetch lives here rather than inside `HomeView`. It is what populates the
                 // cache every page reads on entry, so tying it to the home page meant the warm-up never
@@ -149,28 +144,6 @@ struct MainShellView: View {
                 // hit-testing is off, and it reads the same state either way.
                 QuickEntryBaselinePrefetch()
             }
-    }
-
-    @ViewBuilder
-    private func noticeBanner(_ text: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "info.circle.fill")
-            Text(text)
-                .font(.footnote)
-                .lineLimit(2)
-            Spacer()
-            Button {
-                state.dismissSessionNotice()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .padding(.horizontal, 14)
-        .padding(.top, 6)
     }
 }
 
@@ -290,13 +263,23 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .clear
+        // The shell owns the one continuous page colour behind every translucent layer. The
+        // pager, each hosted page and the bar host all stay clear, so this colour reaches the
+        // status-bar gutter and the home-indicator gutter without an opaque UIKit stripe cutting
+        // either one off. `systemGroupedBackground` is dynamic, so it tracks light/dark mode.
+        view.backgroundColor = UIColor.systemGroupedBackground
 
         pager.dataSource = self
         pager.delegate = self
         // The pages paint their own backgrounds (the grouped list surfaces); the pager itself must
         // not add a white strip behind the slide between them.
         pager.view.backgroundColor = .clear
+        // Hosting views otherwise default to an opaque system background, which paints a solid
+        // block behind the status bar and the home indicator even though the SwiftUI content is
+        // transparent there.
+        for controller in pageControllers {
+            controller.view.backgroundColor = .clear
+        }
         addChild(pager)
         pager.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pager.view)

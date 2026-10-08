@@ -321,11 +321,6 @@ private func revalidateQuietly() async {
         phase = .signedIn
     }
 
-    /// Dismisses the banner shown after a session was kept despite the portal being unreachable.
-    func dismissSessionNotice() {
-        sessionNotice = nil
-    }
-
     /// Port of `LoginViewModel.selectSchool`: switching clears the session because the previous
     /// cookie belongs to the old university origin.
     func selectSchool(_ school: SchoolProfile) {
