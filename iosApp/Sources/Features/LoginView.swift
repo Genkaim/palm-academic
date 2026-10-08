@@ -576,8 +576,14 @@ struct SchoolPickerView: View {
     @MainActor
     init(onSelect: @escaping (SchoolProfile) -> Void) {
         self.onSelect = onSelect
-        // Seed from the active profile so the row the user is on is already ticked on open.
-        _selection = State(initialValue: SchoolCatalog.shared.selectedSchoolID)
+        // Seed from the active profile so the row the user is on is already ticked on open -- but
+        // only when a school was explicitly chosen at some point. `selectedSchoolID` alone cannot
+        // be used here: the catalog falls back to the built-in default ("cupk") on first run, so
+        // seeding from it unconditionally opens the picker with a school ticked that the user
+        // never chose.
+        _selection = State(initialValue: SchoolCatalog.shared.hasSelectedSchool
+            ? SchoolCatalog.shared.selectedSchoolID
+            : nil)
     }
 
     @MainActor

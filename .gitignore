@@ -29,3 +29,7 @@ Thumbs.db
 # Device screenshots captured by tools/burst_shot.py during on-device comparison runs.
 /ios-shots/
 artifacts/
+
+# Local Python venv with pymobiledevice3, used to push builds to the iPhone
+# LocalSend container over USB. Not part of the project.
+/.venv-ios/

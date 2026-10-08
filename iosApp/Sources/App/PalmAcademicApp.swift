@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import UserNotifications
@@ -115,56 +116,16 @@ struct RootView: View {
     }
 }
 
-/// Host for the home/settings content and the Android-parity floating bottom navigation.
-/// Search belongs to that bottom surface so the home list stays content-only and keeps its scroll
-/// position while a query is entered.
-///
-/// The two destinations live in a `UIPageViewController` pager (see `PagingPageContainer`) rather
-/// than in SwiftUI's paging `TabView`. With `.page(indexDisplayMode: .never)` the TabView only
-/// honours a programmatic selection that is a direct `@State` binding; when the binding is derived
-/// from an `ObservableObject` -- which is what sharing the selection with the floating bar
-/// requires -- tapping the bar updated the value (the highlight slid, the press animation ran) but
-/// the page never turned, on iOS 17 and 18. UIKit's pager is turned imperatively with
-/// `setViewControllers`, so a bar tap always moves the page. Its data source keeps the horizontal
-/// swipe gesture, both hosting controllers stay mounted for the life of the shell, so neither
-/// page loses its scroll position or its navigation stack -- matching Android's `HorizontalPager`
-/// for the same two destinations.
+/// Host for the signed-in content: the home/settings pager plus the floating bottom navigation
+/// both live inside `MainShellContainer` (see `MainShellViewController` for why UIKit owns them),
+/// while the transient banner and the hidden baseline warmer stay SwiftUI-side.
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Bridges the tab bar's `LiquidTabItem` onto the pager's page index. The pages are keyed by
-    /// index rather than by item so the selection type stays the primitive `Int` the pager takes.
-    private var pageSelection: Binding<Int> {
-        Binding(
-            get: { state.selectedTab == .settings ? 1 : 0 },
-            set: {
-                state.selectedTab = $0 == 1 ? .settings : .home
-                // The setter only runs for a settled swipe (bar taps write `selectedTab` directly),
-                // mirroring Android closing the search surface once the settings page settles.
-                if $0 == 1 && state.isSearchPresented { state.dismissSearch() }
-            }
-        )
-    }
-
-    /// Built once per update of the shell. Each page has the app state injected explicitly:
-    /// a manually created `UIHostingController` does not inherit the SwiftUI environment of the
-    /// view that creates it, so without the injection the pages would find no `AppState`.
-    private var pagerPages: [AnyView] {
-        [
-            AnyView(HomeView().environmentObject(state)),
-            AnyView(SettingsScreen().environmentObject(state))
-        ]
-    }
-
     var body: some View {
-        PagingPageContainer(selection: pageSelection, pages: pagerPages, animated: !reduceMotion)
+        MainShellContainer(state: state, animated: !reduceMotion)
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .overlay(alignment: .bottom) {
-            // An overlay rather than a third child: the bar is pinned by its own alignment instead
-            // of by a full-height `Spacer`, so it never covers the page or swallows its touches.
-            FloatingHomeNavigation()
-        }
         .overlay(alignment: .top) {
             if let notice = state.sessionNotice {
                 noticeBanner(notice)
@@ -203,125 +164,222 @@ struct MainShellView: View {
     }
 }
 
-/// A two-page horizontal pager backed by UIKit's `UIPageViewController`.
-///
-/// Why not SwiftUI's paging `TabView`: programmatic selection changes are unreliable when the
-/// binding is a custom `Binding` over shared (observable) state -- the binding updates but the
-/// visible page does not, which read as "the bottom bar only plays its press/highlight animation".
-/// `UIPageViewController.setViewControllers(_:direction:animated:)` is an imperative turn, so a
-/// floating-bar tap always changes the page. The data source supplies the same two hosting
-/// controllers on every request and keeps them retained for the whole life of the shell, which is
-/// what preserves each page's scroll position and navigation stack across trips between tabs.
-struct PagingPageContainer: UIViewControllerRepresentable {
-    @Binding var selection: Int
-    let pages: [AnyView]
+/// Carries `AppState` into the shell and keeps its motion preference current. All of the
+/// interesting behaviour lives in `MainShellViewController`.
+struct MainShellContainer: UIViewControllerRepresentable {
+    let state: AppState
     /// Whether button-driven turns animate. Swipe gestures are always interactive; this only
     /// covers the imperative turn, so the accessibility "reduce motion" setting can disable it.
     var animated: Bool = true
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
+    func makeUIViewController(context: Context) -> MainShellViewController {
+        MainShellViewController(state: state, animated: animated)
     }
 
-    func makeUIViewController(context: Context) -> UIPageViewController {
-        let controller = UIPageViewController(
+    func updateUIViewController(_ controller: MainShellViewController, context: Context) {
+        controller.animated = animated
+    }
+}
+
+/// A two-page horizontal pager plus the floating bottom navigation, owned by one UIKit view
+/// controller.
+///
+/// Two arrangements were tried and rejected. SwiftUI's paging `TabView` only honours a
+/// programmatic selection that is a direct `@State` binding; with the selection derived from an
+/// `ObservableObject` -- which sharing it with the floating bar requires -- a bar tap updated the
+/// value but never turned the page on iOS 17/18. And a SwiftUI `.overlay` holding the bar above a
+/// `UIPageViewController` stopped delivering taps to the bar at all on device: the pager's scroll
+/// view wins the touch before the overlay sees it.
+///
+/// This shell sidesteps both. The pager is a child view controller; the bar lives in a second
+/// hosting controller whose view is added LAST, making it the topmost subview. Taps are then
+/// decided by ordinary UIKit hit-testing: a `_UIHostingView` returns nil where SwiftUI reports no
+/// hit, so touches beside the pills fall through to the pager and the pills themselves always
+/// receive theirs. Page turns are driven by a Combine subscription to `selectedTab`, delivered on
+/// a later runloop pass than the tap -- an imperative `setViewControllers` outside any SwiftUI
+/// update transaction -- while the data source keeps the horizontal swipe gesture. Both page
+/// hosting controllers stay mounted for the life of the shell, so neither page loses its scroll
+/// position or its navigation stack, matching Android's `HorizontalPager`.
+@MainActor
+final class MainShellViewController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+    private let state: AppState
+    /// Button-driven turns only; swipe gestures are always interactive. Reduce-motion flips this
+    /// off.
+    var animated: Bool
+
+    private let pager: UIPageViewController
+    private let pageControllers: [UIHostingController<AnyView>]
+    private let barHost: UIHostingController<AnyView>
+    private var barBottomConstraint: NSLayoutConstraint!
+
+    private var selectionCancellable: AnyCancellable?
+    private var keyboardObserver: NSObjectProtocol?
+
+    /// The page the pager currently considers itself on. Drives the guard against redundant turns.
+    private var currentIndex: Int
+    /// True while a button-driven turn animates, so a second tap landing mid-turn does not start
+    /// another one.
+    private var isTurning = false
+
+    init(state: AppState, animated: Bool) {
+        self.state = state
+        self.animated = animated
+        pager = UIPageViewController(
             transitionStyle: .scroll,
             navigationOrientation: .horizontal,
             options: [.interPageSpacing: NSNumber(value: 0)]
         )
-        controller.dataSource = context.coordinator
-        controller.delegate = context.coordinator
-        // The pages paint their own backgrounds (the grouped list surfaces); the pager itself
-        // must not add a white strip behind the slide between them.
-        controller.view.backgroundColor = .clear
-
-        context.coordinator.controllers = pages.map { UIHostingController(rootView: $0) }
-        context.coordinator.parent = self
-        let initialIndex = clamped(selection)
-        context.coordinator.currentIndex = initialIndex
-        controller.setViewControllers(
-            [context.coordinator.controllers[initialIndex]],
-            direction: .forward,
-            animated: false
-        )
-        return controller
+        // Each page -- and the bar -- gets the app state injected explicitly: a manually created
+        // `UIHostingController` does not inherit the SwiftUI environment of whatever presented the
+        // shell, so without the injection these trees would find no `AppState`.
+        pageControllers = [
+            UIHostingController(rootView: AnyView(HomeView().environmentObject(state))),
+            UIHostingController(rootView: AnyView(SettingsScreen().environmentObject(state)))
+        ]
+        barHost = UIHostingController(rootView: AnyView(FloatingHomeNavigation().environmentObject(state)))
+        currentIndex = state.selectedTab == .settings ? 1 : 0
+        super.init(nibName: nil, bundle: nil)
     }
 
-    func updateUIViewController(_ controller: UIPageViewController, context: Context) {
-        let coordinator = context.coordinator
-        coordinator.parent = self
-        // Keep the hosted SwiftUI trees current without recreating the controllers, which is what
-        // preserves the pages' state.
-        for (index, page) in pages.enumerated() where index < coordinator.controllers.count {
-            coordinator.controllers[index].rootView = page
-        }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("MainShellViewController is created in code")
+    }
 
-        let target = clamped(selection)
-        // A turn already in flight (or already on the target page) must not start a second turn:
-        // two overlapping setViewControllers calls leave the pager and the binding disagreeing
-        // about which page is showing.
-        guard !coordinator.isProgrammaticTurn, target != coordinator.currentIndex else { return }
-        guard let visible = controller.viewControllers?.first,
-              let visibleIndex = coordinator.controllers.firstIndex(where: { $0 === visible }) else { return }
-        let direction: UIPageViewController.NavigationDirection =
-            target > visibleIndex ? .forward : .reverse
-        coordinator.isProgrammaticTurn = true
-        controller.setViewControllers(
-            [coordinator.controllers[target]],
-            direction: direction,
-            animated: animated
-        ) { finished in
-            coordinator.isProgrammaticTurn = false
-            // An non-animated turn reports finished == true immediately.
-            if finished || !animated { coordinator.currentIndex = target }
+    deinit {
+        if let keyboardObserver {
+            NotificationCenter.default.removeObserver(keyboardObserver)
         }
     }
 
-    private func clamped(_ index: Int) -> Int {
-        min(max(index, 0), max(pages.count - 1, 0))
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+
+        pager.dataSource = self
+        pager.delegate = self
+        // The pages paint their own backgrounds (the grouped list surfaces); the pager itself must
+        // not add a white strip behind the slide between them.
+        pager.view.backgroundColor = .clear
+        addChild(pager)
+        pager.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(pager.view)
+        NSLayoutConstraint.activate([
+            pager.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pager.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            pager.view.topAnchor.constraint(equalTo: view.topAnchor),
+            pager.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        pager.didMove(toParent: self)
+        pager.setViewControllers([pageControllers[currentIndex]], direction: .forward, animated: false)
+
+        barHost.view.backgroundColor = .clear
+        // The bar sizes itself to its content height and stays pinned to the shell's bottom edge;
+        // the keyboard handler moves that constraint when the search field is focused.
+        barHost.sizingOptions = [.intrinsicContentSize]
+        addChild(barHost)
+        barHost.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(barHost.view)
+        barBottomConstraint = barHost.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        NSLayoutConstraint.activate([
+            barHost.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            barHost.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            barBottomConstraint
+        ])
+        barHost.view.setContentHuggingPriority(.required, for: .vertical)
+        barHost.view.setContentCompressionResistancePriority(.required, for: .vertical)
+        barHost.didMove(toParent: self)
+
+        // `receive(on:)` defers the turn out of the runloop pass that committed the tap, so the
+        // imperative `setViewControllers` is never nested inside a SwiftUI animation transaction.
+        selectionCancellable = state.$selectedTab
+            .receive(on: RunLoop.main)
+            .sink { [weak self] tab in
+                self?.turn(to: tab == .settings ? 1 : 0)
+            }
+
+        // The bar host is a plain sibling view, so SwiftUI's keyboard safe area never reaches it;
+        // it is lifted by hand, tracking the keyboard's own frame notifications. Hiding reports an
+        // off-screen end frame through the same notification, which collapses the overlap to zero.
+        keyboardObserver = NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            self?.applyKeyboardFrame(notification)
+        }
     }
 
-    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
-        var controllers: [UIHostingController<AnyView>] = []
-        /// The page the pager currently considers itself on. Drives both the data-source direction
-        /// and the guard against redundant turns.
-        var currentIndex = 0
-        /// True while a button-driven turn animates, so a SwiftUI update landing mid-turn does not
-        /// start another one.
-        var isProgrammaticTurn = false
-        fileprivate var parent: PagingPageContainer!
+    // MARK: - Turning
 
-        func pageViewController(
-            _ pageViewController: UIPageViewController,
-            viewControllerBefore viewController: UIViewController
-        ) -> UIViewController? {
-            guard let index = controllers.firstIndex(where: { $0 === viewController }),
-                  index > 0 else { return nil }
-            return controllers[index - 1]
+    private func turn(to index: Int) {
+        guard !isTurning, index != currentIndex, pageControllers.indices.contains(index) else { return }
+        let direction: UIPageViewController.NavigationDirection = index > currentIndex ? .forward : .reverse
+        isTurning = true
+        pager.setViewControllers([pageControllers[index]], direction: direction, animated: animated) { [weak self] finished in
+            guard let self else { return }
+            isTurning = false
+            // A non-animated turn reports finished == true immediately.
+            if finished || !animated { currentIndex = index }
         }
+    }
 
-        func pageViewController(
-            _ pageViewController: UIPageViewController,
-            viewControllerAfter viewController: UIViewController
-        ) -> UIViewController? {
-            guard let index = controllers.firstIndex(where: { $0 === viewController }),
-                  index + 1 < controllers.count else { return nil }
-            return controllers[index + 1]
-        }
-
-        func pageViewController(
-            _ pageViewController: UIPageViewController,
-            didFinishAnimating finished: Bool,
-            previousViewControllers: [UIViewController],
-            transitionCompleted completed: Bool
+    /// Lifts the bar exactly as far as the keyboard overlaps the shell, along the keyboard's own
+    /// curve, so the search pill rides the keyboard the way the overlay arrangement did.
+    private func applyKeyboardFrame(_ notification: Notification) {
+        guard isViewLoaded, view.window != nil else { return }
+        let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect ?? .zero
+        let frameInView = view.convert(endFrame, from: nil)
+        let overlap = max(0, view.bounds.maxY - frameInView.minY)
+        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+        let curve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt ?? 7
+        barBottomConstraint.constant = -overlap
+        UIView.animate(
+            withDuration: duration,
+            delay: 0,
+            options: UIView.AnimationOptions(rawValue: curve << 16)
         ) {
-            // Only a settled swipe writes the binding; a swipe that was dragged and released back
-            // where it started reports completed == false.
-            guard completed,
-                  let visible = pageViewController.viewControllers?.first,
-                  let index = controllers.firstIndex(where: { $0 === visible }) else { return }
-            currentIndex = index
-            parent.selection = index
+            self.view.layoutIfNeeded()
         }
+    }
+
+    // MARK: - UIPageViewControllerDataSource
+
+    func pageViewController(
+        _ pageViewController: UIPageViewController,
+        viewControllerBefore viewController: UIViewController
+    ) -> UIViewController? {
+        guard let index = pageControllers.firstIndex(where: { $0 === viewController }),
+              index > 0 else { return nil }
+        return pageControllers[index - 1]
+    }
+
+    func pageViewController(
+        _ pageViewController: UIPageViewController,
+        viewControllerAfter viewController: UIViewController
+    ) -> UIViewController? {
+        guard let index = pageControllers.firstIndex(where: { $0 === viewController }),
+              index + 1 < pageControllers.count else { return nil }
+        return pageControllers[index + 1]
+    }
+
+    // MARK: - UIPageViewControllerDelegate
+
+    func pageViewController(
+        _ pageViewController: UIPageViewController,
+        didFinishAnimating finished: Bool,
+        previousViewControllers: [UIViewController],
+        transitionCompleted completed: Bool
+    ) {
+        // Only a settled swipe writes the state; a swipe that was dragged and released back where
+        // it started reports completed == false.
+        guard completed,
+              let visible = pageViewController.viewControllers?.first,
+              let index = pageControllers.firstIndex(where: { $0 === visible }) else { return }
+        currentIndex = index
+        let tab: LiquidTabItem = index == 1 ? .settings : .home
+        if state.selectedTab != tab { state.selectedTab = tab }
+        // Mirrors Android closing the search surface once the settings page settles.
+        if index == 1 && state.isSearchPresented { state.dismissSearch() }
     }
 }
