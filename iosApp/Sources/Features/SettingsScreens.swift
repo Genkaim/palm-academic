@@ -333,14 +333,15 @@ struct NoticeHistoryScreen: View {
     /// The list's editing environment, driven by the toolbar's delete button so the platform draws
     /// the red delete control on each row.
     ///
-    /// Read through the binding rather than the value: `\.editMode` is a `Binding<EditMode>`
-    /// environment, so comparing or assigning the projected value directly would be comparing a
-    /// binding against an enum and would not type-check.
+    /// Read through the binding rather than the value, and unwrapped: `\.editMode` is declared as
+    /// an optional `Binding<EditMode>?`, so both the comparison and the assignment have to go
+    /// through the projection. Reading the value directly fails to type-check, and the resulting
+    /// overload-resolution failure is reported several lines away at the `.toolbar` call.
     @Environment(\.editMode) private var editModeBinding
     @State private var expandedEntryIDs: Set<UUID> = []
     @State private var exportURL: URL?
 
-    private var isEditing: Bool { editModeBinding.wrappedValue == .active }
+    private var isEditing: Bool { editModeBinding?.wrappedValue == .active }
 
     var body: some View {
         List {
@@ -391,7 +392,7 @@ struct NoticeHistoryScreen: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     withAnimation {
-                        editModeBinding.wrappedValue = isEditing ? .inactive : .active
+                        editModeBinding?.wrappedValue = isEditing ? .inactive : .active
                     }
                 } label: {
                     Image(systemName: isEditing ? "checkmark" : "trash")
