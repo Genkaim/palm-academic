@@ -27,6 +27,8 @@ struct PortalPollHistoryDetail: Codable, Identifiable {
     var notificationTriggered: Bool
     var difference: String
     var technicalDetails: String?
+    var notificationEnabled: Bool?
+    var responseCode: Int?
 
     init(
         id: UUID = UUID(),
@@ -35,7 +37,9 @@ struct PortalPollHistoryDetail: Codable, Identifiable {
         changed: Bool = false,
         notificationTriggered: Bool = false,
         difference: String = "",
-        technicalDetails: String? = nil
+        technicalDetails: String? = nil,
+        notificationEnabled: Bool? = nil,
+        responseCode: Int? = nil
     ) {
         self.id = id
         self.category = category
@@ -44,12 +48,22 @@ struct PortalPollHistoryDetail: Codable, Identifiable {
         self.notificationTriggered = notificationTriggered
         self.difference = difference
         self.technicalDetails = technicalDetails
+        self.notificationEnabled = notificationEnabled
+        self.responseCode = responseCode
     }
 }
 
 enum PortalPollHistory {
     private static let entriesKey = "poll_history_entries"
     private static let limit = 60
+    private static let lastAcknowledgedChangeKey = "poll_history_last_acknowledged_change"
+    static let didChangeNotification = Notification.Name("portalPollHistoryDidChange")
+
+    struct UnreadChange: Equatable {
+        let entryID: UUID
+        let nativeType: String
+        let category: String
+    }
 
     static func load() -> [PortalPollHistoryEntry] {
         guard let data = UserDefaults.standard.data(forKey: entriesKey) else { return [] }
@@ -63,10 +77,106 @@ enum PortalPollHistory {
         if let data = try? JSONEncoder().encode(entries) {
             UserDefaults.standard.set(data, forKey: entriesKey)
         }
+        publishChange()
     }
 
     static func clear() {
         UserDefaults.standard.removeObject(forKey: entriesKey)
+        UserDefaults.standard.removeObject(forKey: lastAcknowledgedChangeKey)
+        publishChange()
+    }
+
+    static func replace(_ entries: [PortalPollHistoryEntry]) {
+        if let data = try? JSONEncoder().encode(entries) {
+            UserDefaults.standard.set(data, forKey: entriesKey)
+        }
+        publishChange()
+    }
+
+    /// The same text representation Android writes through its CreateDocument contract. Keeping
+    /// the file in the temporary directory makes it a normal iOS share-sheet item and avoids
+    /// asking for broad Files access.
+    static func exportURL(for entries: [PortalPollHistoryEntry]) -> URL? {
+        guard !entries.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("掌上教务检查日志-\(formatter.string(from: Date())).txt")
+        do {
+            try exportText(entries).write(to: file, atomically: true, encoding: .utf8)
+            return file
+        } catch {
+            return nil
+        }
+    }
+
+    static func latestUnreadChange() -> UnreadChange? {
+        let acknowledgedAt = UserDefaults.standard.object(forKey: lastAcknowledgedChangeKey) as? Date ?? .distantPast
+        for entry in load() where entry.timestamp > acknowledgedAt {
+            if let detail = entry.details.first(where: { $0.changed }) {
+                return UnreadChange(
+                    entryID: entry.id,
+                    nativeType: nativeType(for: detail.category),
+                    category: detail.category
+                )
+            }
+        }
+        return nil
+    }
+
+    static func acknowledge(changeID _: UUID) {
+        // Mark every earlier entry as read too. A single UUID would make the next oldest changed
+        // record reappear immediately after the newest notice is opened.
+        UserDefaults.standard.set(Date(), forKey: lastAcknowledgedChangeKey)
+        publishChange()
+    }
+
+    private static func nativeType(for category: String) -> String {
+        switch category {
+        case "课表": return "schedule"
+        case "成绩": return "grade"
+        case "考试": return "exam"
+        case "培养方案": return "program"
+        default: return ""
+        }
+    }
+
+    private static func publishChange() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: didChangeNotification, object: nil)
+        }
+    }
+
+    private static func exportText(_ entries: [PortalPollHistoryEntry]) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        var output = ["掌上教务后台检查日志"]
+        for entry in entries {
+            output += ["", "检查时间：\(formatter.string(from: entry.timestamp))", "检查状态：\(entry.status)"]
+            for detail in entry.details {
+                output += [
+                    "", "项目：\(detail.category)", "结果：\(detail.summary)",
+                    "检测到变化：\(detail.changed ? "是" : "否")",
+                    "通知触发：\(detail.notificationTriggered ? "已成功发出" : "未发出")"
+                ]
+                if let enabled = detail.notificationEnabled {
+                    output.append("该项提醒：\(enabled ? "已开启" : "未开启")")
+                }
+                if let code = detail.responseCode, !(200...299).contains(code) {
+                    output.append("HTTP 状态：\(code)")
+                }
+                if !detail.difference.isEmpty {
+                    output += ["数据明细：", detail.difference]
+                }
+                if let technical = detail.technicalDetails, !technical.isEmpty {
+                    output += ["技术详情：", technical]
+                }
+            }
+            output.append("---")
+        }
+        return output.joined(separator: "\n")
     }
 }
 

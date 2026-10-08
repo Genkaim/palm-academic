@@ -16,6 +16,7 @@ struct HomeView: View {
     /// Value-based navigation so the status panel can push the page a pending change belongs to,
     /// the way Android acknowledges the notice and then opens the matching quick entry.
     @State private var path: [PortalRoute] = []
+    @State private var historyVersion = 0
 
     private var definition: SchoolDefinition? { state.definition }
 
@@ -45,13 +46,9 @@ struct HomeView: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                // The page's own search box, first and always visible: search is a filter on what
-                // is below it, not a destination of its own, so the field belongs with the content
-                // it filters rather than on a bar that persists across every screen.
-                searchField
                 // Android's status panel leads the page and is hidden while a search is
-                // actually filtering something.
-                if !state.isSearching {
+                // surface is open, including before the first character is entered.
+                if !state.isSearchPresented {
                     statusPanel
                 }
 
@@ -66,7 +63,7 @@ struct HomeView: View {
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
                     } header: {
-                        Text(state.isSearching ? "搜索结果" : "常用功能")
+                        Text(state.isSearchPresented ? "搜索结果" : "常用功能")
                     }
                 }
 
@@ -82,7 +79,7 @@ struct HomeView: View {
                     }
                 }
 
-                if state.isSearching && !hasSearchResults {
+                if state.isSearchPresented && state.isSearching && !hasSearchResults {
                     searchEmptyState
                         .listRowSeparator(.hidden)
                 }
@@ -120,6 +117,9 @@ struct HomeView: View {
             .overlay {
                 QuickEntryBaselinePrefetch()
             }
+            .onReceive(NotificationCenter.default.publisher(for: PortalPollHistory.didChangeNotification)) { _ in
+                historyVersion &+= 1
+            }
         }
     }
 
@@ -150,56 +150,6 @@ struct HomeView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("验证失败，点击重试")
         }
-    }
-
-    // MARK: - Search
-
-    /// The home page's search box.
-    ///
-    /// A `TextField` in the system's own search-field shape (a rounded tertiary-fill container with
-    /// a leading glyph) rather than `.searchable`. The modifier would put the same field in the
-    /// navigation bar, which is fine in itself but leaves search looking like a separate screen:
-    /// the bar stays put when the list is replaced by its own results, and the field reads as
-    /// something owned by the navigation stack rather than by this page. Here the field sits above
-    /// the content it filters and moves with it.
-    ///
-    /// The clear button is drawn rather than taken from `.searchable`, whose clear button comes
-    /// with the modifier. It appears only while there is a query, matching what the system does.
-    @ViewBuilder
-    private var searchField: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(PortalPalette.secondaryText)
-            TextField("搜索教务功能", text: $state.searchQuery)
-                .font(.body)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.search)
-            if state.isSearching {
-                Button {
-                    state.clearSearch()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(PortalPalette.secondaryText)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("清空搜索")
-            }
-        }
-        .padding(.horizontal, 11)
-        .frame(height: 38)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(uiColor: .tertiarySystemFill))
-        )
-        // A helper row has no background or separator of its own: the group's own edges are drawn
-        // by the section below it, and a separator under the field would suggest it is one of the
-        // entries rather than the control that filters them.
-        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
     }
 
     // MARK: - Sections
@@ -256,12 +206,15 @@ struct HomeView: View {
     }
 
     private var statusTitle: String {
-        if let notice = state.sessionNotice { return "\(notice)有新变化" }
+        _ = historyVersion
+        if let notice = PortalPollHistory.latestUnreadChange() { return "\(notice.category)有新变化" }
         return "变动通知"
     }
 
     private var statusSubtitle: String {
-        if let notice = state.sessionNotice { return "点击查看最新\(notice)信息" }
+        _ = historyVersion
+        if let notice = PortalPollHistory.latestUnreadChange() { return "点击查看最新\(notice.category)信息" }
+        if let notice = state.sessionNotice { return notice }
         return enabledNotificationCount == 0 ? "课表、成绩与考试提醒均已关闭" : "后台检测运行中"
     }
 
@@ -270,16 +223,16 @@ struct HomeView: View {
     }
 
     private func openStatusPanel() {
-        guard let notice = state.sessionNotice, let definition else {
+        guard let notice = PortalPollHistory.latestUnreadChange(), let definition else {
             // No pending change: Android opens the notification settings page itself
             // (`onNormalClick = onOpenNotifications`), not the settings tab.
             path.append(.notifications)
             return
         }
         let quick = QuickEntryBaseline.orderedQuickBaselineItems(definition.quickItems)
-        let target = quick.first { $0.title.contains(notice) }
-            ?? definition.groups.flatMap(\.items).first { $0.title.contains(notice) }
-        state.dismissSessionNotice()
+        let target = quick.first { $0.nativeType == notice.nativeType }
+            ?? definition.groups.flatMap(\.items).first { $0.nativeType == notice.nativeType }
+        PortalPollHistory.acknowledge(changeID: notice.entryID)
         if let target {
             path = [.item(target)]
         } else {

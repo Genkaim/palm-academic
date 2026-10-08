@@ -310,6 +310,9 @@ struct NotificationSettingsScreen: View {
             Color.clear.frame(height: BottomClearance.height)
         }
         .onAppear { entries = PortalPollHistory.load() }
+        .onReceive(NotificationCenter.default.publisher(for: PortalPollHistory.didChangeNotification)) { _ in
+            entries = PortalPollHistory.load()
+        }
     }
 
     /// The background worker only runs when the system grants it a slot, which on iOS can be
@@ -319,7 +322,7 @@ struct NotificationSettingsScreen: View {
     private func runCheckNow() async {
         isChecking = true
         defer { isChecking = false }
-        _ = await PortalPollWorker.shared.run()
+        _ = await PortalPollWorker.shared.run(manual: true)
         entries = PortalPollHistory.load()
     }
 }
@@ -327,6 +330,8 @@ struct NotificationSettingsScreen: View {
 /// Port of `NotificationHistoryActivity.kt`.
 struct NoticeHistoryScreen: View {
     @Binding var entries: [PortalPollHistoryEntry]
+    @State private var expandedEntryIDs: Set<UUID> = []
+    @State private var exportURL: URL?
 
     var body: some View {
         List {
@@ -348,51 +353,14 @@ struct NoticeHistoryScreen: View {
                 .listRowSeparator(.hidden)
             }
             ForEach(entries) { entry in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(entry.status)
-                            .font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Text(entry.timestamp, format: .dateTime.month().day().hour().minute())
-                            .font(.caption)
-                            .foregroundStyle(PortalPalette.secondaryText)
-                    }
-                    ForEach(entry.details) { detail in
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Text(detail.category)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(Color.accentColor)
-                                Text(detail.summary)
-                                    .font(.caption)
-                                if detail.changed {
-                                    Image(systemName: "arrow.up.circle.fill")
-                                        .font(.caption2)
-                                        .foregroundStyle(PortalPalette.error)
-                                }
-                            }
-                            if !detail.difference.isEmpty {
-                                Text(detail.difference)
-                                    .font(.caption2)
-                                    .foregroundStyle(PortalPalette.secondaryText)
-                            }
-                            if let technical = detail.technicalDetails, !technical.isEmpty {
-                                Text(technical)
-                                    .font(.caption2)
-                                    .foregroundStyle(PortalPalette.outline)
-                            }
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
+                historyRow(entry)
             }
             .onDelete { indexSet in
                 var updated = entries
                 updated.remove(atOffsets: indexSet)
                 entries = updated
-                if let data = try? JSONEncoder().encode(updated) {
-                    UserDefaults.standard.set(data, forKey: "poll_history_entries")
-                }
+                PortalPollHistory.replace(updated)
+                refreshExport()
             }
         }
         .listStyle(.insetGrouped)
@@ -413,6 +381,14 @@ struct NoticeHistoryScreen: View {
                 EditButton()
                     .disabled(entries.isEmpty)
             }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if let exportURL {
+                    ShareLink(item: exportURL) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("导出 TXT 日志")
+                }
+            }
         }
         // Clearing lives here rather than on the parent page: it is an operation *on* the log, so
         // it belongs where the log is read. The clearance for the floating bar and the button share
@@ -423,6 +399,7 @@ struct NoticeHistoryScreen: View {
                 Button(role: .destructive) {
                     entries = []
                     PortalPollHistory.clear()
+                    exportURL = nil
                 } label: {
                     Text("清空日志")
                         .frame(maxWidth: .infinity)
@@ -432,6 +409,72 @@ struct NoticeHistoryScreen: View {
             }
             .background(PortalPalette.page)
         }
+        .onAppear(perform: refreshExport)
+        .onReceive(NotificationCenter.default.publisher(for: PortalPollHistory.didChangeNotification)) { _ in
+            entries = PortalPollHistory.load()
+            refreshExport()
+        }
+    }
+
+    private func historyRow(_ entry: PortalPollHistoryEntry) -> some View {
+        let expanded = expandedEntryIDs.contains(entry.id)
+        return Button {
+            if expanded { expandedEntryIDs.remove(entry.id) } else { expandedEntryIDs.insert(entry.id) }
+        } label: {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.timestamp, format: .dateTime.year().month().day().hour().minute())
+                            .font(.subheadline.weight(.semibold))
+                        Text(entry.status)
+                            .font(.caption)
+                            .foregroundStyle(PortalPalette.secondaryText)
+                    }
+                    Spacer(minLength: 8)
+                    Text(entry.notificationTriggered ? "已触发通知" : "未触发通知")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(entry.notificationTriggered ? Color.accentColor : PortalPalette.secondaryText)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(PortalPalette.secondaryText)
+                }
+                if expanded {
+                    Divider()
+                    ForEach(entry.details) { detail in
+                        detailRow(detail)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(expanded ? "双击收起详情" : "双击展开详情")
+    }
+
+    private func detailRow(_ detail: PortalPollHistoryDetail) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(detail.category).font(.caption.weight(.semibold))
+                Spacer()
+                if detail.notificationTriggered { Text("已通知").font(.caption2).foregroundStyle(Color.accentColor) }
+            }
+            Text("结果：\(detail.summary)").font(.caption)
+            Text("检测到变化：\(detail.changed ? "是" : "否")").font(.caption)
+            if let enabled = detail.notificationEnabled {
+                Text("该项提醒：\(enabled ? "已开启" : "未开启")").font(.caption)
+            }
+            if let code = detail.responseCode, !(200...299).contains(code) {
+                Text("HTTP 状态：\(code)").font(.caption)
+            }
+            if !detail.difference.isEmpty { Text(detail.difference).font(.caption).foregroundStyle(PortalPalette.secondaryText) }
+            if let technical = detail.technicalDetails, !technical.isEmpty { Text(technical).font(.caption2).foregroundStyle(PortalPalette.outline) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func refreshExport() {
+        exportURL = PortalPollHistory.exportURL(for: entries)
     }
 }
 

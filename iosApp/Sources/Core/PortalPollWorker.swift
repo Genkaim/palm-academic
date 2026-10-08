@@ -21,9 +21,9 @@ final class PortalPollWorker {
 
     /// Port of `PortalPollWorker.doWork`.
     @discardableResult
-    func run() async -> Bool {
+    func run(manual: Bool = false) async -> Bool {
         let preferences = NotificationPreferences.shared
-        guard preferences.monitorEnabled, preferences.anyEnabled else { return false }
+        guard (manual || preferences.monitorEnabled), preferences.anyEnabled else { return false }
 
         let checkedAt = Date()
         var details: [PortalPollHistoryDetail] = []
@@ -132,7 +132,7 @@ final class PortalPollWorker {
                 return false
             }
             let canonical = PortalSnapshot.courseDataJSON(payload: response.body, semesterId: semester)
-            let comparison = compareAndStore(canonical: canonical, nativeType: "schedule")
+            let comparison = compareAndStore(canonical: canonical, nativeType: "schedule", responseCode: response.statusCode)
             details.append(comparison.detail)
             notifiedAny = notifiedAny || comparison.detail.notificationTriggered
         }
@@ -142,7 +142,7 @@ final class PortalPollWorker {
             let response = await get(url)
             if response.isSuccessful {
                 let canonical = gradeOrExamSnapshot(body: response.body, type: "grade")
-                let comparison = compareAndStore(canonical: canonical, nativeType: "grade")
+                let comparison = compareAndStore(canonical: canonical, nativeType: "grade", responseCode: response.statusCode)
                 details.append(comparison.detail)
                 notifiedAny = notifiedAny || comparison.detail.notificationTriggered
             } else {
@@ -155,7 +155,7 @@ final class PortalPollWorker {
             let response = await get(url)
             if response.isSuccessful {
                 let canonical = gradeOrExamSnapshot(body: response.body, type: "exam")
-                let comparison = compareAndStore(canonical: canonical, nativeType: "exam")
+                let comparison = compareAndStore(canonical: canonical, nativeType: "exam", responseCode: response.statusCode)
                 details.append(comparison.detail)
                 notifiedAny = notifiedAny || comparison.detail.notificationTriggered
             } else {
@@ -192,7 +192,7 @@ final class PortalPollWorker {
 
     /// Compares the canonical payload against the stored snapshot and raises a notification only
     /// when the student-visible content actually changed.
-    private func compareAndStore(canonical: String, nativeType: String) -> ComparisonResult {
+    private func compareAndStore(canonical: String, nativeType: String, responseCode: Int) -> ComparisonResult {
         let preferences = NotificationPreferences.shared
         let previous = preferences.snapshot(for: nativeType)
 
@@ -201,7 +201,9 @@ final class PortalPollWorker {
             preferences.storeSnapshot(canonical, for: nativeType)
             return ComparisonResult(detail: PortalPollHistoryDetail(
                 category: QuickEntryBaseline.category(for: nativeType),
-                summary: "已建立初始基线"
+                summary: "已建立初始基线",
+                notificationEnabled: true,
+                responseCode: responseCode
             ))
         }
 
@@ -210,7 +212,9 @@ final class PortalPollWorker {
         guard previousHash != currentHash else {
             return ComparisonResult(detail: PortalPollHistoryDetail(
                 category: QuickEntryBaseline.category(for: nativeType),
-                summary: "无变化"
+                summary: "无变化",
+                notificationEnabled: true,
+                responseCode: responseCode
             ))
         }
 
@@ -230,7 +234,9 @@ final class PortalPollWorker {
                 category: QuickEntryBaseline.category(for: nativeType),
                 summary: "内容为空，未推送",
                 changed: false,
-                difference: difference
+                difference: difference,
+                notificationEnabled: true,
+                responseCode: responseCode
             ))
         }
 
@@ -243,7 +249,9 @@ final class PortalPollWorker {
             summary: changed ? "内容有更新" : "响应内容变化",
             changed: changed,
             notificationTriggered: notified,
-            difference: difference
+            difference: difference,
+            notificationEnabled: true,
+            responseCode: responseCode
         ))
     }
 
@@ -309,7 +317,8 @@ final class PortalPollWorker {
                 category: category,
                 summary: summary,
                 notificationTriggered: notificationTriggered,
-                technicalDetails: technicalDetails ?? "HTTP \(statusCode) · \(finalURL)"
+                technicalDetails: technicalDetails ?? "HTTP \(statusCode) · \(finalURL)",
+                responseCode: statusCode
             )
         }
     }

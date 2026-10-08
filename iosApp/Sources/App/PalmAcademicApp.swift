@@ -115,32 +115,24 @@ struct RootView: View {
     }
 }
 
-/// Host for the tab bar and the home/settings content areas.
-///
-/// The destinations live in a system `TabView`. That is what produces the platform's own bottom
-/// bar: on iOS 26 it is drawn with the system's Liquid Glass material, and the press, long-press and
-/// destination-change animations come with it. A hand-built bar can copy the material but has to
-/// reimplement all three behaviours, and they are what makes a bar feel like a bar.
-///
-/// Search has no tab. It filters the home page from a field at the top of it, which is where it
-/// belongs: it is not a destination you travel to, and putting it on a bar that persists across
-/// every screen would make it one.
+/// Host for the home/settings content and the Android-parity floating bottom navigation.
+/// Search belongs to that bottom surface so the home list stays content-only and keeps its scroll
+/// position while a query is entered.
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        TabView(selection: $state.selectedTab) {
+        ZStack {
             HomeView()
-                .tag(LiquidTabItem.home)
-                .tabItem {
-                    Label(LiquidTabItem.home.title, systemImage: LiquidTabItem.home.systemImage)
-                }
+                .opacity(state.selectedTab == .home ? 1 : 0)
+                .allowsHitTesting(state.selectedTab == .home)
             SettingsScreen()
-                .tag(LiquidTabItem.settings)
-                .tabItem {
-                    Label(LiquidTabItem.settings.title, systemImage: LiquidTabItem.settings.systemImage)
-                }
+                .opacity(state.selectedTab == .settings ? 1 : 0)
+                .allowsHitTesting(state.selectedTab == .settings)
+
+            FloatingHomeNavigation()
         }
+        .animation(.easeInOut(duration: 0.24), value: state.selectedTab)
         .overlay(alignment: .top) {
             if let notice = state.sessionNotice {
                 noticeBanner(notice)

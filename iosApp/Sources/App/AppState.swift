@@ -28,9 +28,10 @@ final class AppState: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
     @Published var selectedTab: LiquidTabItem = .home
-    /// Backs the home screen's search box. The page owns the field and everything about it --
-    /// placement, the clear button, when it filters -- so there is no expanded/collapsed state to
-    /// track here.
+    /// The Android client treats search as a transient state of the floating bottom navigation,
+    /// rather than as a page. Keeping that state here lets the shell own focus and animation while
+    /// `HomeView` owns only the filtering of its rows.
+    @Published var isSearchPresented = false
     @Published var searchQuery = ""
     @Published private(set) var isDark = false
     /// The user's display-mode choice. `isDark` is derived from this and the current system
@@ -159,6 +160,7 @@ final class AppState: ObservableObject {
         errorMessage = message
         sessionNotice = nil
         sessionStatus = .hidden
+        isSearchPresented = false
         searchQuery = ""
         phase = .signedOut
     }
@@ -188,6 +190,16 @@ final class AppState: ObservableObject {
     }
 
     func clearSearch() {
+        searchQuery = ""
+    }
+
+    func presentSearch() {
+        selectedTab = .home
+        isSearchPresented = true
+    }
+
+    func dismissSearch() {
+        isSearchPresented = false
         searchQuery = ""
     }
 
