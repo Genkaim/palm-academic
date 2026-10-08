@@ -41,8 +41,13 @@ struct SystemGlassSurface<Content: View, S: Shape>: View {
     /// The material stack used when the native glass is unavailable. Three layers stacked on
     /// the same shape give the visual depth that the real API gives for free: the material
     /// shows the surface below with a slight blur; the highlight adds a top-of-pill sheen;
-    /// the stroke and the shadow define the silhouette so the pill reads as a physical piece
-    /// of glass rather than a tint behind the buttons.
+    /// the shadow defines the silhouette so the pill reads as a physical piece of glass
+    /// rather than a tint behind the buttons.
+    ///
+    /// A `strokeBorder` overlay would add a thin glass edge, but `Shape.strokeBorder`'s
+    /// generic overloads are not resolvable through `S: Shape` (the generic context here is
+    /// the public surface of `SystemGlassSurface`), so the edge is skipped on the fallback
+    /// path -- the top highlight plus the drop shadow carry enough definition on their own.
     private var fallback: some View {
         content
             .background(strength, in: shape)
@@ -54,14 +59,6 @@ struct SystemGlassSurface<Content: View, S: Shape>: View {
                 )
                 .clipShape(shape)
             )
-            // The stroke gets an explicit `ViewBuilder` overlay so the generic Shape's
-            // `strokeBorder` overload resolves at the call site. A bare `.overlay(shape.strokeBorder(...))`
-            // failed to pick the right overload with the generic `S`, because `Shape.strokeBorder`
-            // has both `ShapeStyle` and `_ShapeStyle` overloads and the generic context cannot
-            // disambiguate them.
-            .overlay {
-                shape.strokeBorder(.white.opacity(0.45), lineWidth: 0.5)
-            }
             .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 5)
     }
 }
