@@ -332,9 +332,15 @@ struct NoticeHistoryScreen: View {
     @Binding var entries: [PortalPollHistoryEntry]
     /// The list's editing environment, driven by the toolbar's delete button so the platform draws
     /// the red delete control on each row.
-    @Environment(\.editMode) private var editMode
+    ///
+    /// Read through the binding rather than the value: `\.editMode` is a `Binding<EditMode>`
+    /// environment, so comparing or assigning the projected value directly would be comparing a
+    /// binding against an enum and would not type-check.
+    @Environment(\.editMode) private var editModeBinding
     @State private var expandedEntryIDs: Set<UUID> = []
     @State private var exportURL: URL?
+
+    private var isEditing: Bool { editModeBinding.wrappedValue == .active }
 
     var body: some View {
         List {
@@ -384,12 +390,14 @@ struct NoticeHistoryScreen: View {
             // and deserves to stay separate from deleting one row.
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
-                    withAnimation { editMode = editMode == .active ? .inactive : .active }
+                    withAnimation {
+                        editModeBinding.wrappedValue = isEditing ? .inactive : .active
+                    }
                 } label: {
-                    Image(systemName: editMode == .active ? "checkmark" : "trash")
+                    Image(systemName: isEditing ? "checkmark" : "trash")
                 }
                 .disabled(entries.isEmpty)
-                .accessibilityLabel(editMode == .active ? "完成删除" : "删除记录")
+                .accessibilityLabel(isEditing ? "完成删除" : "删除记录")
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 if let exportURL {

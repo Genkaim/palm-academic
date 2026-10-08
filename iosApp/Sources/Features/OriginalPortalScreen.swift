@@ -19,11 +19,7 @@ struct OriginalPortalScreen: View {
     let item: PortalItem
 
     @State private var phase: Phase = .loading
-    @State private var message: String?
     @State private var refreshToken = 0
-    /// How many times the menu script has been retried. The portal renders its menu asynchronously,
-    /// so the first couple of attempts routinely land before the item exists.
-    @State private var menuAttempts = 0
 
     /// `fileprivate` rather than `private`: the sibling `PortalWebView` below reports into it, and
     /// `private` at type scope would not be visible there.
@@ -34,6 +30,10 @@ struct OriginalPortalScreen: View {
         case ready
         case failed(String)
         case sessionExpired
+        /// The portal is up but has no entry for this item. Android shows a toast and leaves the
+        /// home page on screen; the notice is a case rather than a separate flag so it cannot
+        /// disagree with the phase it belongs to.
+        case menuMissing(String)
     }
 
     private var baseURL: String {
@@ -52,10 +52,11 @@ struct OriginalPortalScreen: View {
                 title: item.title,
                 targetURL: targetURL,
                 homeURL: homeURL,
+                menuScript: makeMenuScript(),
+                menuMissNotice: menuMissNotice,
                 isDark: state.isDark,
                 refreshToken: refreshToken,
-                onPhase: { phase = $0 },
-                onOpenMenuItem: openThroughPortalMenu
+                onPhase: { phase = $0 }
             )
             .ignoresSafeArea(edges: .bottom)
 
@@ -79,21 +80,22 @@ struct OriginalPortalScreen: View {
         }
         .navigationTitle(item.title)
         .navigationBarTitleDisplayMode(.inline)
+        // Before `.toolbar`, not after: a modifier written after the toolbar builder is parsed as a
+        // trailing closure for the builder's own `Visibility` parameter, which is not what this is.
+        .animation(.easeInOut(duration: 0.2), value: phase)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     refreshToken &+= 1
                     phase = .loading
-                    message = nil
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .accessibilityLabel("重新加载")
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: phase)
         // The session prompt is the one alert that needs a decision, so it is asked for separately
-        // from the load-failure notice rather than folded into one dialog whose buttons would change
+        // from the menu-miss notice rather than folded into one dialog whose buttons would change
         // meaning.
         .alert("登录状态已失效", isPresented: sessionExpiredBinding) {
             Button("重新登录", role: .destructive) { state.signOut() }
@@ -101,14 +103,23 @@ struct OriginalPortalScreen: View {
         } message: {
             Text("教务系统登录状态已过期或账号凭据已变更，请重新登录。")
         }
-        .alert("无法打开页面", isPresented: Binding(
-            get: { message != nil },
-            set: { if !$0 { message = nil } }
-        )) {
-            Button("好", role: .cancel) { message = nil }
+        .alert("未在教务菜单中找到该功能", isPresented: menuMissingBinding) {
+            Button("好", role: .cancel) { phase = .ready }
         } message: {
-            Text(message ?? "")
+            Text(menuMissingNotice)
         }
+    }
+
+    private var menuMissingNotice: String {
+        if case .menuMissing(let text) = phase { return text }
+        return ""
+    }
+
+    private var menuMissingBinding: Binding<Bool> {
+        Binding(
+            get: { if case .menuMissing = phase { return true } else { return false } },
+            set: { if !$0 { phase = .ready } }
+        )
     }
 
     private func failureView(_ reason: String) -> some View {
@@ -137,7 +148,9 @@ struct OriginalPortalScreen: View {
     private var sessionExpiredBinding: Binding<Bool> {
         Binding(
             get: { phase == .sessionExpired },
-            set: { if !$0 { phase = .loading } }
+            // Dismissing the prompt does not resume a load that is not going to succeed: the stored
+            // session is gone, so the page is left as it is until the user re-logs in or reloads.
+            set: { if !$0 { phase = .ready } }
         )
     }
 
@@ -159,8 +172,13 @@ struct OriginalPortalScreen: View {
     /// the result stays in this WebView rather than handing off to Safari, and the tap is dispatched
     /// as a real DOM click so the portal's own handler runs -- synthesising a navigation would skip
     /// the initialisation it performs.
-    private func openThroughPortalMenu(_ evaluate: @escaping (String, @escaping (Bool) -> Void) -> Void) {
-        let script = """
+    ///
+    /// The retry counter lives in the coordinator, not in `@State`. This runs inside an escaping
+    /// closure handed to the coordinator, and a SwiftUI view cannot write its own `@State` from
+    /// there; the coordinator is a class, so it can, and it is also the only thing that outlives a
+    /// single `updateUIView` pass.
+    private func makeMenuScript() -> String {
+        """
         (function() {
           var title = \(javaScriptString(item.title));
           var target = \(javaScriptString(targetURL));
@@ -188,21 +206,12 @@ struct OriginalPortalScreen: View {
           return true;
         })();
         """
-        evaluate(script) { [weak self] matched in
-            guard let self else { return }
-            if matched { return }
-            if self.menuAttempts < 3 {
-                self.menuAttempts += 1
-                let delay = self.menuAttempts == 1 ? 0.3 : 0.65
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    self.openThroughPortalMenu(evaluate)
-                }
-            } else {
-                // Android leaves the user on the portal home page with a toast rather than a dead
-                // screen, and the toolbar still offers a reload, so this is recoverable in place.
-                self.message = "未在教务菜单中找到“\(self.item.title)”，已停留在教务首页，可点击右上角重新加载。"
-            }
-        }
+    }
+
+    /// Reported when the portal is up but has no entry for this item. Android shows a toast and
+    /// leaves the home page on screen rather than failing the screen outright.
+    private var menuMissNotice: String {
+        "未在教务菜单中找到“\(item.title)”，已停留在教务首页，可点击右上角重新加载。"
     }
 
     private func javaScriptString(_ value: String) -> String {
@@ -222,10 +231,11 @@ private struct PortalWebView: UIViewRepresentable {
     let title: String
     let targetURL: String
     let homeURL: String
+    let menuScript: String
+    let menuMissNotice: String
     let isDark: Bool
     let refreshToken: Int
     let onPhase: (OriginalPortalScreen.Phase) -> Void
-    let onOpenMenuItem: (@escaping (String, @escaping (Bool) -> Void) -> Void) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -242,7 +252,7 @@ private struct PortalWebView: UIViewRepresentable {
         // The portal sets its own viewport; forcing a fixed native width would squash it.
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         context.coordinator.applyAppearance(to: webView, isDark: isDark)
-        context.coordinator.load(webView, homeURL: homeURL, targetURL: targetURL)
+        context.coordinator.load(webView, homeURL: homeURL)
         return webView
     }
 
@@ -251,7 +261,7 @@ private struct PortalWebView: UIViewRepresentable {
         context.coordinator.applyAppearance(to: webView, isDark: isDark)
         if context.coordinator.loadedRefreshToken != refreshToken {
             context.coordinator.loadedRefreshToken = refreshToken
-            context.coordinator.load(webView, homeURL: homeURL, targetURL: targetURL)
+            context.coordinator.load(webView, homeURL: homeURL)
         }
     }
 
@@ -261,19 +271,28 @@ private struct PortalWebView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
+        /// The portal builds its menu asynchronously, so the first attempts routinely land before
+        /// the item exists. Android retries three times on the same escalating delay.
+        private static let maximumMenuAttempts = 3
+
         var parent: PortalWebView
         var loadedRefreshToken = 0
         /// Set once the menu has successfully driven the navigation. Without it every later page
         /// finish -- including the portal navigating on its own afterwards -- would look like the
         /// home page again and start the menu search over, yanking the user back.
         private var menuNavigationStarted = false
+        private var menuAttempts = 0
+        private var retryWork: DispatchWorkItem?
 
         init(parent: PortalWebView) {
             self.parent = parent
         }
 
-        func load(_ webView: WKWebView, homeURL: String, targetURL: String) {
+        func load(_ webView: WKWebView, homeURL: String) {
+            retryWork?.cancel()
+            retryWork = nil
             menuNavigationStarted = false
+            menuAttempts = 0
             // Restore the persisted session before the first navigation, mirroring
             // `PortalSessionStore.restoreToWebView`: loading before the cookie store is populated
             // bounces off a login redirect.
@@ -315,20 +334,43 @@ private struct PortalWebView: UIViewRepresentable {
                 parent.onPhase(.ready)
                 return
             }
-            parent.onOpenMenuItem { [weak self] script, completion in
-                webView.evaluateJavaScript(script) { [weak self] value, _ in
-                    if (value as? Bool) == true { self?.menuNavigationStarted = true }
-                    completion((value as? Bool) == true)
-                }
-            }
+            attemptMenu(in: webView)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            retryWork?.cancel()
             parent.onPhase(.failed(error.localizedDescription))
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            retryWork?.cancel()
             parent.onPhase(.failed(error.localizedDescription))
+        }
+
+        private func attemptMenu(in webView: WKWebView) {
+            webView.evaluateJavaScript(parent.menuScript) { [weak self] value, _ in
+                guard let self else { return }
+                if (value as? Bool) == true {
+                    self.menuNavigationStarted = true
+                    return
+                }
+                guard self.menuAttempts < Self.maximumMenuAttempts else {
+                    // The portal is up but does not carry this entry. Report it as its own case so
+                    // the page underneath stays visible -- the user lands on the portal home page
+                    // and the toolbar still offers a reload, which is Android's outcome too.
+                    self.parent.onPhase(.menuMissing(self.parent.menuMissNotice))
+                    return
+                }
+                self.menuAttempts += 1
+                let delay = self.menuAttempts == 1 ? 0.3 : 0.65
+                let work = DispatchWorkItem { [weak self, weak webView] in
+                    guard let self, let webView else { return }
+                    self.retryWork = nil
+                    self.attemptMenu(in: webView)
+                }
+                self.retryWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+            }
         }
     }
 }
