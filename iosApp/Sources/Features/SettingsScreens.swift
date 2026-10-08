@@ -89,8 +89,12 @@ struct SettingsScreen: View {
             // The earlier Button carried a hand-drawn one and the row had none at all, which is why
             // 学校 looked like the only entry that did something.
             NavigationLink {
-                SchoolPickerView { school in state.selectSchool(school) }
-                    .environmentObject(state)
+                // Pushed inside settings' own stack, so the picker must NOT build another one or
+                // show a 取消 button -- the outer stack's back control is the way out.
+                SchoolPickerView(embeddedInOwnStack: false) { school in
+                    state.selectSchool(school)
+                }
+                .environmentObject(state)
             } label: {
                 PortalSettingsRow(
                     icon: PortalRowIcon("building.columns"),

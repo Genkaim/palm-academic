@@ -19,6 +19,11 @@ struct MaterialPageScreen: View {
     /// True while a refresh runs behind already-rendered content. Kept apart from `loadState` so the
     /// cached page stays on screen instead of being replaced by a spinner.
     @State private var isRefreshing = false
+    /// Set when the USER explicitly changes a control (semester, rank type). Only such a turn is
+    /// allowed to replace rendered data with a genuinely empty page; interim empty publications
+    /// during a cold load or a plain refresh are ignored so a DOM skeleton can never flash over
+    /// real data.
+    @State private var allowsEmpty = false
     /// Which curriculum modules are unfolded. Android keys the default off `depth == 1`, so the
     /// first level opens and everything nested inside it stays shut; a user opening or closing one
     /// is remembered here rather than recomputed from the data on every redraw.
@@ -89,6 +94,7 @@ struct MaterialPageScreen: View {
             switch loadState {
             case .authenticating:
                 statusView(icon: "hourglass", title: "尝试登录…", detail: "正在验证教务登录状态")
+                    .transition(statusTransition)
             case .unavailable:
                 statusView(
                     icon: "wifi.exclamationmark",
@@ -97,20 +103,29 @@ struct MaterialPageScreen: View {
                     actionTitle: "重试",
                     action: { Task { await state.revalidateSession() }; loadState = .authenticating }
                 )
+                .transition(statusTransition)
             case .loading:
                 statusView(icon: "arrow.down.doc", title: "正在获取…", detail: item.title)
+                    .transition(statusTransition)
             case .failed(let message):
                 statusView(icon: "exclamationmark.triangle", title: "加载失败", detail: message) {
                     retry()
                 }
+                .transition(statusTransition)
             case .sessionExpired:
                 statusView(icon: "person.crop.circle.badge.exclamationmark", title: "登录状态已失效", detail: "请重新登录后继续")
+                    .transition(statusTransition)
             case .loaded:
                 if let loaded = renderedPage {
                     content(loaded)
+                        // The first time data exists it rises/fades in over the loading state; the
+                        // animation is driven by the load-state change below rather than per body,
+                        // so refreshes do not re-run the entrance.
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
         }
+        .animation(.smooth(duration: 0.32), value: loadState)
         // Android titles the screen with the page's own heading, which the adapter sets from the
         // portal ("我的成绩", "课程表"). The catalogue name was a reasonable stand-in before the
         // page existed; once it does, using it means the title never matches the content.
@@ -135,21 +150,15 @@ struct MaterialPageScreen: View {
                 Button {
                     retry()
                 } label: {
-                    // A plain bar control -- icon plus a word, tinted, with NO filled background:
-                    // the toolbar already supplies the tap target and the chrome, and the filled
-                    // capsule read as a second navigation bar. A spinner replaces the glyph while
-                    // a refresh runs, which also keeps the control tappable to cancel a stuck one.
-                    HStack(spacing: 5) {
-                        if isRefreshing || loadState == .loading {
-                            ProgressView().controlSize(.mini)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 15, weight: .semibold))
-                        }
-                        Text(isRefreshing || loadState == .loading ? "刷新中" : "刷新")
-                            .font(.subheadline.weight(.semibold))
+                    // Icon-only, like every other in-app refresh control: a plain bar glyph with no
+                    // word and no filled background. A spinner replaces the glyph while a refresh
+                    // runs, which also keeps the control tappable to cancel a stuck one.
+                    if isRefreshing || loadState == .loading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 16, weight: .semibold))
                     }
-                    .foregroundStyle(PortalPalette.primary)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isRefreshing ? "正在刷新" : "刷新")
@@ -189,6 +198,8 @@ struct MaterialPageScreen: View {
         .padding(.vertical, 40)
     }
 
+    private var statusTransition: AnyTransition { .opacity }
+
     private func retry() {
         // A refresh over rendered content must keep it on screen (the "刷新中" strip); only a cold
         // retry with nothing rendered goes back to the full-screen loading state. Setting
@@ -201,6 +212,32 @@ struct MaterialPageScreen: View {
         refreshToken += 1
     }
 
+    /// The single gate every adapter publication passes through.
+    ///
+    /// The adapter publishes continuously while the page builds itself: an empty "暂无…" skeleton
+    /// for the grade/exam pages can arrive BEFORE the entry's own XHR has returned the rows. Every
+    /// such publication used to replace the screen (and, via the bridge, the cache), which is how a
+    /// refresh "把数据刷没" -- the skeleton landed after the real rows. The rules:
+    ///
+    /// - Cold load with nothing rendered: ignore empties, keep the loading state until real data
+    ///   arrives (the watchdog turns a genuinely empty page into a failure/hint).
+    /// - Refresh over rendered content: ignore empties, keep the prior data on screen.
+    /// - After an explicit user action (semester/排名 control), a genuinely empty result is
+    ///   allowed through so picking a semester with nothing in it reads correctly.
+    private func accept(_ newPage: MaterialPage) {
+        let meaningful = QuickEntryBaseline.hasData(page: newPage, nativeType: item.nativeType)
+        if !meaningful {
+            if renderedPage == nil { return }
+            if !allowsEmpty { return }
+        }
+        renderedPage = newPage
+        loadState = .loaded
+        isRefreshing = false
+        allowsEmpty = false
+        prepareExports(for: newPage)
+        prepareProgramExpansion(for: newPage)
+    }
+
     /// The hidden reader. It stays mounted for the life of the screen and drives the refresh
     /// token; the rendered page is only a projection of what it publishes.
     private var reader: some View {
@@ -208,6 +245,7 @@ struct MaterialPageScreen: View {
             url: url,
             adapterScript: adapterScript,
             schoolConfigJSON: SchoolCatalog.shared.readerConfigJSON(),
+            nativeType: item.nativeType,
             refreshToken: refreshToken,
             action: action,
             isDark: state.isDark,
@@ -224,11 +262,7 @@ struct MaterialPageScreen: View {
             },
             onContent: { newPage in
                 Task { @MainActor in
-                    renderedPage = newPage
-                    loadState = .loaded
-                    isRefreshing = false
-                    prepareExports(for: newPage)
-                    prepareProgramExpansion(for: newPage)
+                    accept(newPage)
                 }
             },
             onError: { message in
@@ -270,6 +304,10 @@ struct MaterialPageScreen: View {
     // The parameter is deliberately not named `page`: it would shadow the @State
     // property for the whole view body, and the WebView callback assigns to it.
     private func content(_ snapshot: MaterialPage) -> some View {
+        // Sections with no data of their own are dropped rather than rendered as empty cards:
+        // an element must mean there is data behind it. The functional controls panel (choices /
+        // day filter / rank buttons) is not data and still shows.
+        let visibleSections = snapshot.sections.filter(hasContent)
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 if isRefreshing {
@@ -283,15 +321,15 @@ struct MaterialPageScreen: View {
 
                 controlsPanel(snapshot)
 
-                if snapshot.sections.isEmpty {
-                    Text("页面没有可显示的结构化内容")
+                if visibleSections.isEmpty {
+                    Text("暂无数据")
                         .font(.callout)
                         .foregroundStyle(PortalPalette.secondaryText)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 30)
+                        .padding(.top, 56)
                 }
 
-                ForEach(snapshot.sections) { section in
+                ForEach(visibleSections) { section in
                     sectionView(section)
                 }
             }
@@ -299,8 +337,31 @@ struct MaterialPageScreen: View {
             .padding(.vertical, 16)
         }
         .refreshable {
-            refreshToken += 1
+            retry()
             try? await Task.sleep(nanoseconds: 600_000_000)
+        }
+    }
+
+    /// Whether a section carries actual data. Used to keep empty shells off screen entirely; an
+    /// empty group is not information.
+    private func hasContent(_ section: MaterialSection) -> Bool {
+        switch section {
+        case .schedule(_, _, let days):
+            return days.contains { !$0.lessons.isEmpty }
+        case .cards(_, let cards):
+            return !cards.isEmpty
+        case .table(_, let headers, let rows):
+            return !headers.isEmpty && !rows.isEmpty
+        case .stats(_, let items):
+            return items.contains { !$0.value.trimmingCharacters(in: .whitespaces).isEmpty && $0.value != "--" }
+        case .fields(_, let fields):
+            return fields.contains { !$0.value.trimmingCharacters(in: .whitespaces).isEmpty }
+        case .text(_, let paragraphs):
+            return paragraphs.contains { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        case .links(_, let links):
+            return !links.isEmpty
+        case .program(_, let completed, let required, let modules):
+            return !completed.isEmpty || !required.isEmpty || modules.contains { $0.hasData() }
         }
     }
 
@@ -360,6 +421,10 @@ struct MaterialPageScreen: View {
                                         ForEach(page.actions, id: \.id) { pageAction in
                                             Button {
                                                 actionToken += 1
+                                                // A user-driven result may legitimately be empty,
+                                                // so that publication is allowed to replace the
+                                                // rows already on screen.
+                                                allowsEmpty = true
                                                 action = MaterialReaderAction(id: pageAction.id, value: pageAction.value, token: actionToken)
                                             } label: {
                                                 Text(pageAction.label)
@@ -419,6 +484,9 @@ struct MaterialPageScreen: View {
             set: { newValue in
                 choiceValues[choice.id] = newValue
                 actionToken += 1
+                // A user-driven semester may legitimately be empty; allow that publication through
+                // instead of holding the old semester's rows on screen.
+                allowsEmpty = true
                 action = MaterialReaderAction(id: choice.id, value: newValue, token: actionToken)
             }
         )) {
@@ -927,29 +995,43 @@ struct MaterialPageScreen: View {
     /// refresh is unconditional, so entering a page always re-reads the portal; the cache only
     /// decides what is on screen while that request is in flight.
     private func loadCachedThenFetch() async {
-        if let cached = MaterialPageCache.load(url: url) {
+        // Only a genuinely meaningful snapshot is shown instantly. Older builds cached interim
+        // "暂无…" skeletons; reviving those would reopen the page on empty chrome.
+        if let cached = MaterialPageCache.load(url: url),
+           QuickEntryBaseline.hasData(page: cached, nativeType: item.nativeType) {
             renderedPage = cached
             loadState = .loaded
             prepareExports(for: cached)
             prepareProgramExpansion(for: cached)
             // Distinguish "showing what we had" from "fetching", so a slow network does not look
-            // like a blank page and the refresh is visible rather than silent. The fetch below
-            // runs behind this content; the loading state is only for a cache miss.
+            // like a blank page and the refresh is visible rather than silent. The fetch below is
+            // the reader's own mount-time load; it runs behind this content.
             isRefreshing = true
         } else {
-            // Only a genuinely cold visit shows the full-screen loading state. This used to run
-            // unconditionally and immediately clobber the .loaded assignment above, so a cache hit
-            // still painted the spinner -- the "second visit is a full-screen load" symptom.
+            // Only a genuinely cold visit shows the full-screen loading state.
             loadState = .loading
         }
-        refreshToken += 1
+        // NO `refreshToken += 1` here. Mounting the reader already performs one fresh network load
+        // (MaterialReaderView starts it after the cookie restore), so a bump here immediately
+        // reloaded the entry document and cancelled its follow-up XHR -- the grade and exam pages
+        // render their rows from that XHR, so the bump is exactly what emptied them.
         // A watchdog. A portal that answers with a login redirect, a JS error or an empty shell
         // never calls back, and a spinner that never resolves is indistinguishable from "still
         // working". After this long without content the page says so and offers a retry, which is
         // what turns an undebuggable hang into a reportable state.
         try? await Task.sleep(nanoseconds: 20_000_000_000)
         guard !Task.isCancelled else { return }
-        guard renderedPage == nil, loadState == .loading else { return }
+        if renderedPage != nil {
+            // A cached snapshot is on screen and the fresh fetch never produced data: end the
+            // refresh strip but keep the cached content -- and, since only meaningful pages are
+            // cached, what stays is real data rather than a skeleton.
+            isRefreshing = false
+            return
+        }
+        // The load's own finish flips .loading into .authenticating, so a watchdog that only
+        // checked .loading never fired and a data-less page sat on "尝试登录…" forever. Both are
+        // unresolved states; either must be able to reach the failure screen.
+        guard loadState == .loading || loadState == .authenticating else { return }
         // The page's own account of what went wrong comes first; the local-network answer comes
         // next, because a refused private-address connection is invisible from the load's own
         // report and would otherwise be indistinguishable from a broken reader.

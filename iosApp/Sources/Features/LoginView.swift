@@ -77,7 +77,6 @@ struct LoginView: View {
     /// persisted (last selected) school drives the form. The non-nil active profile cannot be used
     /// here because the catalog falls back to the built-in default school even on first run.
     private var hasSchool: Bool { state.hasSelectedSchool }
-    private var brandVisible: Bool { keyboardHeight == 0 }
 
     var body: some View {
         ZStack {
@@ -90,21 +89,10 @@ struct LoginView: View {
 
             ScrollView {
                 VStack(spacing: 18) {
-                    // The brand block collapses by height rather than being removed from the tree.
-                    // Removing it -- which is what an `if` around the whole block does -- rebuilds
-                    // the fields' container the moment the keyboard appears, and `@FocusState`
-                    // cannot survive that: the field comes back unfocused, the keyboard is already
-                    // on its way down, and the next tap has to start over. That is the "tapping the
-                    // field twice" symptom.
+                    // The brand stays put while the keyboard is up. Collapsing it rebuilt the
+                    // motion the form did not ask for and hid the one thing the user is using to
+                    // orient themselves; the bottom area still rides the keyboard on its own.
                     brand
-                        .frame(height: brandVisible ? Metric.brandHeight : 0)
-                        .clipped()
-                        .opacity(brandVisible ? 1 : 0)
-                        // The animation belongs on this one leaf. On the page it also animates the
-                        // bottom area's own movement, which the system is already animating, so the
-                        // two curves run together and the area arrives at a different time from the
-                        // keyboard it is supposed to be riding.
-                        .animation(keyboardAnimation, value: keyboardHeight)
                     if hasSchool {
                         credentialForm
                     }
@@ -288,21 +276,6 @@ struct LoginView: View {
 
     /// The secondary actions are gone by the time the keyboard is half up.
     private var secondaryOpacity: Double { max(0, 1 - Double(keyboardProgress) * 2) }
-
-    /// The keyboard's own curve, or as close to it as SwiftUI can be given.
-    ///
-    /// `UIView.AnimationCurve` is what the system publishes alongside its keyboard frame, and it
-    /// has no counterpart here -- the value it reports for a keyboard is one of its reserved ones,
-    /// not a public member -- so the curve is written as its control points instead of being read.
-    /// Linear is what made this read wrong before: an element that travels at a constant speed for
-    /// a constant time looks dragged, because every real thing that has been pushed accelerates out
-    /// and settles in. This curve leaves at once and spends most of its time approaching the end.
-    ///
-    /// The duration *is* read from the system, because that one it does report and getting it wrong
-    /// leaves the page and the keyboard arriving separately.
-    private var keyboardAnimation: Animation {
-        .timingCurve(0.25, 1, 0.5, 1, duration: max(keyboardDuration, 0.2))
-    }
 
     /// The unselected screen's only affordance: a line of copy and one full-width button.
     private var schoolSelectionPrompt: some View {
@@ -572,9 +545,15 @@ struct SchoolPickerView: View {
     @State private var isRefreshing = false
     @State private var statusMessage: String?
     let onSelect: (SchoolProfile) -> Void
+    /// Whether the picker provides its own `NavigationStack` and a 取消 button. The login sheet
+    /// presents it standalone and needs both; the settings screen pushes it inside its own stack,
+    /// where a second stack and a cancel button would both be wrong -- the outer stack's back
+    /// control is the way out there.
+    var embeddedInOwnStack: Bool = true
 
     @MainActor
-    init(onSelect: @escaping (SchoolProfile) -> Void) {
+    init(embeddedInOwnStack: Bool = true, onSelect: @escaping (SchoolProfile) -> Void) {
+        self.embeddedInOwnStack = embeddedInOwnStack
         self.onSelect = onSelect
         // Seed from the active profile so the row the user is on is already ticked on open -- but
         // only when a school was explicitly chosen at some point. `selectedSchoolID` alone cannot
@@ -602,59 +581,68 @@ struct SchoolPickerView: View {
     private static let guideURL = URL(string: "https://github.com/Genkaim/palm-academic/blob/main/docs/ADAPTER_GUIDE.md")!
 
     var body: some View {
-        NavigationStack {
-            // Rows carry their own Button rather than relying on `List(selection:)`: outside edit
-            // mode a list does not reliably write a single-selection binding on iPhone, which
-            // meant a tap could highlight without ever calling `onSelect`, so the chosen school
-            // was never persisted. The button writes the selection, the checkmark reads it.
-            List {
-                ForEach(sections, id: \.key) { section in
-                    Section {
-                        ForEach(section.items) { school in
-                            row(for: school)
-                        }
-                    } header: {
-                        Text(section.key)
-                    }
-                }
+        pickerContent
+            .modifier(PickerStackWrapping(embed: embeddedInOwnStack))
+            .environmentObject(state)
+    }
 
+    private var pickerContent: some View {
+        // Rows carry their own Button rather than relying on `List(selection:)`: outside edit
+        // mode a list does not reliably write a single-selection binding on iPhone, which
+        // meant a tap could highlight without ever calling `onSelect`, so the chosen school
+        // was never persisted. The button writes the selection, the checkmark reads it.
+        List {
+            ForEach(sections, id: \.key) { section in
                 Section {
-                    Link(destination: Self.guideURL) {
-                        Text("没有找到你的学校？查看适配指引")
-                            .foregroundStyle(Color.accentColor)
+                    ForEach(section.items) { school in
+                        row(for: school)
                     }
-                } footer: {
-                    if let statusMessage {
-                        Text(statusMessage)
-                    }
+                } header: {
+                    Text(section.key)
                 }
             }
-            .navigationTitle("选择学校")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
+
+            Section {
+                Link(destination: Self.guideURL) {
+                    Text("没有找到你的学校？查看适配指引")
+                        .foregroundStyle(Color.accentColor)
+                }
+            } footer: {
+                if let statusMessage {
+                    Text(statusMessage)
+                }
+            }
+        }
+        .navigationTitle("选择学校")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // Only the standalone (login-sheet) presentation gets a cancel control; when pushed
+            // from settings the outer stack's back control is the way out.
+            if embeddedInOwnStack {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("取消") { dismiss() }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        Task { await refresh() }
-                    } label: {
-                        if isRefreshing {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("刷新")
-                        }
-                    }
-                    .disabled(isRefreshing)
-                }
             }
-            .onChange(of: selection) { newValue in
-                guard let newValue, let school = schools.first(where: { $0.id == newValue }) else { return }
-                onSelect(school)
-                dismiss()
+            ToolbarItem(placement: .navigationBarTrailing) {
+                // Icon-only, like every other in-app refresh control.
+                Button {
+                    Task { await refresh() }
+                } label: {
+                    if isRefreshing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .disabled(isRefreshing)
+                .accessibilityLabel(isRefreshing ? "正在刷新" : "刷新学校列表")
             }
         }
-        .environmentObject(state)
+        .onChange(of: selection) { newValue in
+            guard let newValue, let school = schools.first(where: { $0.id == newValue }) else { return }
+            onSelect(school)
+            dismiss()
+        }
     }
 
     private func row(for school: SchoolProfile) -> some View {
@@ -690,5 +678,20 @@ struct SchoolPickerView: View {
         defer { isRefreshing = false }
         await state.refreshFromGitHub()
         statusMessage = state.errorMessage ?? state.sessionNotice
+    }
+}
+
+/// Wraps the picker in its own `NavigationStack` only for the standalone login-sheet
+/// presentation; when pushed from settings it has to share that stack so its back control works.
+private struct PickerStackWrapping: ViewModifier {
+    let embed: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if embed {
+            NavigationStack { content }
+        } else {
+            content
+        }
     }
 }

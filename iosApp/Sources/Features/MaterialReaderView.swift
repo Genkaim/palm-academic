@@ -11,6 +11,10 @@ struct MaterialReaderView: UIViewRepresentable {
     let url: String
     let adapterScript: String
     let schoolConfigJSON: String
+    /// The quick-entry kind ("schedule"/"grade"/"exam"/"program"), used to tell a populated
+    /// publication from the page's empty DOM skeleton. Empty/placeholder publications are neither
+    /// rendered nor cached, which is what keeps a refresh from wiping the data already on screen.
+    let nativeType: String?
     let refreshToken: Int
     let action: MaterialReaderAction?
     let isDark: Bool
@@ -116,17 +120,26 @@ struct MaterialReaderView: UIViewRepresentable {
         })();
         """
         controller.addUserScript(
-            WKUserScript(source: hostAPI, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+            WKUserScript(source: hostAPI, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
         // The watchdog runs first, then the adapter. Both are document-end: the adapter's own
         // bootstrap calls `observer.observe(document.body, ...)`, which throws if the body does not
         // exist yet, and at didCommit it often does not -- a thrown bootstrap leaves
         // `window.PalmAcademicAdapter` half-installed, so no retry could ever recover.
+        //
+        // MAIN FRAME ONLY. These used to be injected into every frame
+        // (`forMainFrameOnly: false`): an auxiliary same-origin iframe (announcement/help widgets
+        // on the grade and exam entries) then got its OWN adapter instance, and on pages whose
+        // path it did not recognise the adapter fell back to publishing the frame's whole body as
+        // the page content. That payload overrode the real data through this same bridge and was
+        // cached under the entry URL -- the server-rendered timetable (no such iframe) kept
+        // working while the AJAX-rendered grade and exam pages never did. Android's
+        // evaluateJavascript injects into the main frame only; this matches it.
         controller.addUserScript(
-            WKUserScript(source: watchdog, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+            WKUserScript(source: watchdog, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         )
         controller.addUserScript(
-            WKUserScript(source: guardedAdapter, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+            WKUserScript(source: guardedAdapter, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         )
 
         context.coordinator.applyAppearance(to: webView, isDark: isDark)
@@ -134,9 +147,19 @@ struct MaterialReaderView: UIViewRepresentable {
         // Replay the persisted session cookie before the first navigation, mirroring
         // `PortalSessionStore.restoreToWebView`. The completion runs after the WebView's own
         // cookie store has been populated; loading before then bounces off a login redirect.
+        //
+        // The request bypasses the local cache on purpose (Android sets LOAD_NO_CACHE). The grade
+        // and exam pages are an HTML shell whose real rows arrive from a follow-up XHR; serving a
+        // cached shell whose scripts then run against stale state was one of the ways those two
+        // pages spun forever on iOS.
         if let target = URL(string: url) {
-            let request = URLRequest(url: target)
+            let request = URLRequest(
+                url: target,
+                cachePolicy: .reloadIgnoringLocalCacheData,
+                timeoutInterval: 60
+            )
             SessionStore.shared.restoreToWebView { [weak webView] in
+                context.coordinator.initialLoadStarted = true
                 webView?.load(request)
             }
         }
@@ -146,7 +169,13 @@ struct MaterialReaderView: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.applyAppearance(to: webView, isDark: isDark)
-        if context.coordinator.refreshToken != refreshToken {
+        // Only a token change arriving AFTER the initial entry load has actually started is a real
+        // reload request. The screen mounts the reader and immediately bumps the token for its
+        // first background fetch; honoring that bump before the cookie-restore completion fires
+        // either no-ops (nothing loaded yet) or, worse on slow networks, cancels the entry document
+        // after its AJAX state machine has started -- which wedged the grade and exam pages, whose
+        // data only exists after that state machine runs.
+        if context.coordinator.initialLoadStarted, context.coordinator.refreshToken != refreshToken {
             context.coordinator.refreshToken = refreshToken
             webView.reload()
         }
@@ -200,8 +229,16 @@ struct MaterialReaderView: UIViewRepresentable {
             // URL differs from the one the screen and the background prefetcher look the cache up
             // with; keying on the redirected URL made every save unfindable, so every revisit --
             // and the first-login baseline -- cold-loaded. Android keys its cache the same way.
-            if let parent = coordinator?.parent {
+            //
+            // Only pages that actually contain data are cached. The adapter also publishes interim
+            // "暂无…" skeletons while the entry's own XHR is still in flight; caching those made
+            // the next visit open on an empty page and stay there until a refresh happened to win
+            // the race.
+            if let parent = coordinator?.parent,
+               QuickEntryBaseline.hasData(page: page, nativeType: parent.nativeType) {
                 MaterialPageCache.save(url: parent.url, json: json)
+            }
+            if let parent = coordinator?.parent {
                 parent.onContent(page)
             }
         }
@@ -211,6 +248,10 @@ struct MaterialReaderView: UIViewRepresentable {
         var parent: MaterialReaderView
         var refreshToken: Int
         var actionToken: Int
+        /// False until the entry URL has actually been handed to the WebView (the load waits for
+        /// the cookie restore). A refresh-token bump observed before then is the screen's initial
+        // fetch, not a reload, and must not cancel the entry load.
+        var initialLoadStarted = false
         weak var bridgeHandler: BridgeHandler?
         /// Tells the page that a payload has been delivered, so the injected watchdog can stop
         /// reporting a failure that has in fact been resolved.
@@ -282,6 +323,7 @@ struct MaterialReaderView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            initialLoadStarted = true
             didPublish = false
             parent.onLoading(true)
         }

@@ -70,30 +70,51 @@ struct LiquidTabItem: Identifiable, Hashable {
 /// iOS counterpart of Android's `FloatingHomeNavigation`.
 ///
 /// The compact state exposes the two destinations and a 44pt-plus search target. Tapping search
-/// turns that target into the same bottom-anchored search surface instead of inserting a second
-/// field at the top of the list. SwiftUI's keyboard safe area carries the expanded surface above
-/// the keyboard; its spring only animates the shape and never fights the system keyboard motion.
+/// morphs that circular glass target IN PLACE into a full-width search capsule exactly as wide as
+/// the whole bar (rather than sliding a new surface in from the trailing edge): a matched-geometry
+/// move grows the circle's frame to the bar's width on a spring, while the field contents fade in.
+/// The bar is lifted above the keyboard by its UIKit shell (`MainShellViewController`).
 struct FloatingHomeNavigation: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
 
-    private let shape = Capsule(style: .continuous)
+    /// Total width of the compact bar (tab capsule + gap + search circle). The expanded capsule
+    /// grows to this exact width, so open and closed states occupy the same footprint.
+    private static let barWidth: CGFloat = 282
+    private static let barHeight: CGFloat = 64
+    private static let tabCapsuleWidth: CGFloat = 208
+
+    /// Drives both morphs: the search circle -> search capsule, and the selected-tab highlight
+    /// sliding between the two destinations.
+    @Namespace private var chrome
+    @Namespace private var selection
+
+    private let morphSpring: Animation = .spring(response: 0.38, dampingFraction: 0.82)
+    private let selectionSpring: Animation = .spring(response: 0.30, dampingFraction: 0.72)
+
+    private var shape: Capsule { Capsule(style: .continuous) }
 
     var body: some View {
-        Group {
-            if state.isSearchPresented {
-                expandedSearch
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
-            } else {
-                compactNavigation
-                    .transition(.opacity)
+        // Leading aligned, matching the previous free-sized bar: the 282pt chrome stays at the
+        // leading 16pt inset instead of drifting to the centre on wide screens.
+        HStack(spacing: 0) {
+            Group {
+                if state.isSearchPresented {
+                    expandedSearch
+                        .transition(.identity)
+                } else {
+                    compactNavigation
+                        .transition(.identity)
+                }
             }
+            .frame(width: Self.barWidth, height: Self.barHeight)
+            Spacer(minLength: 0)
         }
-        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.84), value: state.isSearchPresented)
+        .animation(reduceMotion ? nil : morphSpring, value: state.isSearchPresented)
+        // The shell lifts this host for the keyboard itself; SwiftUI must not ALSO shrink the bar
+        // for the keyboard safe area (that doubled the motion).
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
         .onChange(of: state.isSearchPresented) { presented in
@@ -115,21 +136,28 @@ struct FloatingHomeNavigation: View {
                     tabButton(.settings)
                 }
                 .padding(4)
-                .frame(width: 208, height: 64)
+                .frame(width: Self.tabCapsuleWidth, height: Self.barHeight)
             }
+            // Fades and shrinks away while the search circle grows into the field, so the open
+            // motion reads as the tab strip giving the search the room.
+            .opacity(state.isSearchPresented ? 0 : 1)
 
             SystemGlassSurface(shape: Circle(), interactive: true) {
                 Button {
+                    // presentSearch also switches the pager back to home: search filters the home
+                    // list, so opening it while the settings page is showing must not strand it.
                     state.presentSearch()
                 } label: {
                     Image(systemName: "magnifyingglass")
                         .font(.title3.weight(.semibold))
-                        .frame(width: 64, height: 64)
+                        .frame(width: Self.barHeight, height: Self.barHeight)
                 }
                 .buttonStyle(TabPressStyle())
                 .accessibilityLabel("搜索教务功能")
             }
-            .frame(width: 64, height: 64)
+            .frame(width: Self.barHeight, height: Self.barHeight)
+            // Grows this circle's frame straight into the expanded capsule's frame.
+            .matchedGeometryEffect(id: "searchSurface", in: chrome)
         }
     }
 
@@ -157,32 +185,40 @@ struct FloatingHomeNavigation: View {
             }
             .padding(.leading, 18)
             .padding(.trailing, 6)
-            .frame(maxWidth: 360)
-            .frame(height: 64)
+            .frame(width: Self.barWidth, height: Self.barHeight)
+            // The contents fade in across the morph; a glyph stretched by the frame interpolation
+            // would smear, so the contents ride the last third of the move instead.
+            .opacity(state.isSearchPresented ? 1 : 0)
         }
+        .frame(width: Self.barWidth, height: Self.barHeight)
+        .matchedGeometryEffect(id: "searchSurface", in: chrome)
     }
 
     private func tabButton(_ item: LiquidTabItem) -> some View {
         let selected = state.selectedTab == item
         return Button {
             if state.isSearchPresented { state.dismissSearch() }
-            if reduceMotion {
-                state.selectedTab = item
-            } else {
-                withAnimation(.easeInOut(duration: 0.24)) { state.selectedTab = item }
-            }
+            withAnimation(selectionSpring) { state.selectedTab = item }
         } label: {
-            VStack(spacing: 3) {
-                Image(systemName: selected ? item.selectedSystemImage : item.systemImage)
-                    .font(.body.weight(.semibold))
-                Text(item.title)
-                    .font(.caption2.weight(.medium))
+            ZStack {
+                // One sliding highlight instead of two backgrounds toggling, so changing tabs
+                // moves a single piece of glass-tinted fill across the capsule.
+                if selected {
+                    shape
+                        .fill(Color.accentColor.opacity(0.14))
+                        .matchedGeometryEffect(id: "tabSelection", in: selection)
+                }
+                VStack(spacing: 3) {
+                    Image(systemName: selected ? item.selectedSystemImage : item.systemImage)
+                        .font(.body.weight(.semibold))
+                    Text(item.title)
+                        .font(.caption2.weight(.medium))
+                }
+                .foregroundStyle(selected ? Color.accentColor : Color.primary)
             }
-            .foregroundStyle(selected ? Color.accentColor : Color.primary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(selected ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
         }
-        .buttonStyle(TabPressStyle(scale: 0.96))
+        .buttonStyle(TabPressStyle(scale: 0.94))
         .accessibilityLabel(item.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }

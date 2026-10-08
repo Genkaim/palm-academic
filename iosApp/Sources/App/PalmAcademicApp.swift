@@ -1,4 +1,5 @@
 import Combine
+import QuartzCore
 import SwiftUI
 import UIKit
 import UserNotifications
@@ -202,6 +203,10 @@ struct MainShellContainer: UIViewControllerRepresentable {
 /// position or its navigation stack, matching Android's `HorizontalPager`.
 @MainActor
 final class MainShellViewController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+    /// Mirrors the tint `AppRoot` applies on the SwiftUI side; manually created hosting
+    /// controllers do not inherit it.
+    private static let appTint = Color(red: 0.16, green: 0.44, blue: 0.85)
+
     private let state: AppState
     /// Button-driven turns only; swipe gestures are always interactive. Reduce-motion flips this
     /// off.
@@ -231,12 +236,34 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
         )
         // Each page -- and the bar -- gets the app state injected explicitly: a manually created
         // `UIHostingController` does not inherit the SwiftUI environment of whatever presented the
-        // shell, so without the injection these trees would find no `AppState`.
+        // shell, so without the injection these trees would find no `AppState`. The app tint is
+        // injected the same way, or accent-coloured chrome (the selected tab, links) would fall
+        // back to the system blue.
+        //
+        // Both pages also ignore the keyboard safe area: the shell lifts the bar itself when the
+        // search keyboard appears, and letting the hosted list avoid the keyboard as well moved the
+        // home content twice (once per owner). With this on the page, the list stays put and only
+        // the bar rises.
         pageControllers = [
-            UIHostingController(rootView: AnyView(HomeView().environmentObject(state))),
-            UIHostingController(rootView: AnyView(SettingsScreen().environmentObject(state)))
+            UIHostingController(rootView: AnyView(
+                HomeView()
+                    .environmentObject(state)
+                    .tint(Self.appTint)
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+            )),
+            UIHostingController(rootView: AnyView(
+                SettingsScreen()
+                    .environmentObject(state)
+                    .tint(Self.appTint)
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+            ))
         ]
-        barHost = UIHostingController(rootView: AnyView(FloatingHomeNavigation().environmentObject(state)))
+        barHost = UIHostingController(rootView: AnyView(
+            FloatingHomeNavigation()
+                .environmentObject(state)
+                .tint(Self.appTint)
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+        ))
         currentIndex = state.selectedTab == .settings ? 1 : 0
         super.init(nibName: nil, bundle: nil)
     }
@@ -316,11 +343,36 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
         guard !isTurning, index != currentIndex, pageControllers.indices.contains(index) else { return }
         let direction: UIPageViewController.NavigationDirection = index > currentIndex ? .forward : .reverse
         isTurning = true
-        pager.setViewControllers([pageControllers[index]], direction: direction, animated: animated) { [weak self] finished in
+        let finish: (Bool) -> Void = { [weak self] finished in
             guard let self else { return }
             isTurning = false
             // A non-animated turn reports finished == true immediately.
             if finished || !animated { currentIndex = index }
+        }
+        if animated {
+            // The pager's default curve is a straight linear slide. Wrap the imperative turn in a
+            // transaction with its own timing function so the move eases out -- fast off the tap,
+            // settling gently -- matching the spring the rest of the chrome uses. The interactive
+            // swipe gesture is unaffected (it is driven by the finger, not this transaction).
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.4)
+            CATransaction.setAnimationTimingFunction(
+                CAMediaTimingFunction(controlPoints: 0.25, 0.8, 0.35, 1)
+            )
+            pager.setViewControllers(
+                [pageControllers[index]],
+                direction: direction,
+                animated: true,
+                completion: finish
+            )
+            CATransaction.commit()
+        } else {
+            pager.setViewControllers(
+                [pageControllers[index]],
+                direction: direction,
+                animated: false,
+                completion: finish
+            )
         }
     }
 

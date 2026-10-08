@@ -62,6 +62,11 @@ final class AppState: ObservableObject {
         // Restore the persisted "a school was chosen" state so the login form opens on the last
         // selected school instead of the first-run landing.
         hasSelectedSchool = SchoolCatalog.shared.hasSelectedSchool
+        // Restore the remembered credential BEFORE the signed-out early return below. The previous
+        // placement only ran on the signed-in path, so a cold launch with no live session -- the
+        // exact case the login form exists for -- always showed empty fields even though a
+        // credential was saved, which read as "记住密码 does nothing".
+        loadRememberedCredential()
         _ = SchoolCatalog.shared.loadDefinition()
         isDark = ThemePreferences.shared.mode == .dark
         SessionStore.shared.restoreToCookieStorage()

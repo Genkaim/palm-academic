@@ -136,6 +136,7 @@ struct QuickEntryBaselinePrefetch: View {
             url: item.url(baseURL: definition?.baseUrl ?? SchoolCatalog.shared.baseURL),
             adapterScript: SchoolCatalog.shared.readAdapterScript(assetPath: definition?.readerAdapter ?? ""),
             schoolConfigJSON: SchoolCatalog.shared.readerConfigJSON(),
+            nativeType: item.nativeType,
             refreshToken: 0,
             action: nil,
             isDark: state.isDark,
@@ -144,6 +145,11 @@ struct QuickEntryBaselinePrefetch: View {
                 // The raw JSON is read back rather than re-serialising the parsed page: the log
                 // description and the later snapshot comparison both work off the adapter's own
                 // output, and a round trip through the Swift model would lose fields they use.
+                //
+                // Only a populated page seeds the baseline: an interim "暂无…" skeleton publication
+                // would otherwise be recorded as the first observation and make the real data read
+                // as a change on the next check.
+                guard QuickEntryBaseline.hasData(page: page, nativeType: item.nativeType) else { return }
                 guard let json = MaterialPageCache.loadRaw(url: item.url(baseURL: definition?.baseUrl ?? SchoolCatalog.shared.baseURL)) else { return }
                 latestSnapshot = Snapshot(item: item, json: json, page: page)
                 publicationVersion += 1

@@ -56,13 +56,15 @@ struct OriginalPortalScreen: View {
             .ignoresSafeArea(edges: .bottom)
 
             if case .loading = phase {
-                ProgressView()
-                    .controlSize(.small)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding(.top, 6)
-                    .transition(.opacity)
+                // A plain hint, not a button, so it carries no glass/material capsule behind it.
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("正在加载…")
+                        .font(.caption)
+                        .foregroundStyle(PortalPalette.secondaryText)
+                }
+                .padding(.top, 8)
+                .transition(.opacity)
             }
 
             // A load that failed gets a page of its own rather than a transient alert: the alert
