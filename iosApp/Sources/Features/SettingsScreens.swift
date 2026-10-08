@@ -431,7 +431,7 @@ struct NoticeHistoryScreen: View {
                 }
                 .disabled(entries.isEmpty)
             }
-            .background(PortalPalette.page)
+            .background(PortalPalette.page.ignoresSafeArea(edges: .top))
         }
         .onAppear(perform: refreshExport)
         .onReceive(NotificationCenter.default.publisher(for: PortalPollHistory.didChangeNotification)) { _ in
@@ -752,7 +752,7 @@ struct AboutScreen: View {
             }
         }
         .listStyle(.insetGrouped)
-        .background(PortalPalette.page)
+        .background(PortalPalette.page.ignoresSafeArea(edges: .top))
         .navigationTitle("关于")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) {

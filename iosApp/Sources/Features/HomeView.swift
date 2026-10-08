@@ -90,7 +90,12 @@ struct HomeView: View {
                 }
             }
             .listStyle(.insetGrouped)
-            .background(PortalPalette.page)
+            // The background colour is anchored to the view and clipped to safe area by default,
+            // which left the status bar area as the host's clear colour against the page
+            // underneath and read as a strip of dead pixels. Extending it past the top safe
+            // edge lets the page colour reach the very top of the screen while the rest of the
+            // List continues to respect insets for its rows.
+            .background(PortalPalette.page.ignoresSafeArea(edges: .top))
             .navigationBarTitleDisplayMode(.inline)
             // The nav bar's own chrome is dropped so the list and its section headers extend under
             // the status bar; the bar itself is drawn as transparent glass by the shell. Without

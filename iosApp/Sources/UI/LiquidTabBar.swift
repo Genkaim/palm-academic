@@ -7,20 +7,28 @@ import UIKit
 /// condition -- so it stays behind the compile-time switch, with the availability test inside:
 /// the deployment target is 16.0, so without it the compiler rejects the call outright.
 ///
-/// When it cannot be applied the view is returned untouched and the caller falls back to a system
-/// material, which is also what a build without the API gets on a recent device.
+/// When it cannot be applied the view is returned untouched and the caller falls back to a
+/// tuned material stack: regularMaterial (rather than the lighter ultraThinMaterial the prior
+/// version chose) plus a top highlight, a thin stroke and a contact shadow, so the bar still
+/// reads as glass on iOS 17/18 hardware where the runtime API is unavailable.
 struct SystemGlassSurface<Content: View, S: Shape>: View {
     var shape: S
     var interactive: Bool = false
+    /// Strength of the fallback material. `.regularMaterial` is the iOS-default glass substitute;
+    /// bumping it to `.thickMaterial` gives the bar enough presence on iOS 17/18 that it reads
+    /// as a real floating surface rather than a soft tint.
+    var strength: Material = .regularMaterial
     @ViewBuilder var content: Content
 
     var body: some View {
         #if USE_SYSTEM_GLASS
         if #available(iOS 26.0, *) {
             if interactive {
-                content.glassEffect(.regular.interactive(), in: shape)
+                content
+                    .glassEffect(.regular.interactive(), in: shape)
             } else {
-                content.glassEffect(.regular, in: shape)
+                content
+                    .glassEffect(.regular, in: shape)
             }
         } else {
             fallback
@@ -30,16 +38,33 @@ struct SystemGlassSurface<Content: View, S: Shape>: View {
         #endif
     }
 
-    /// The material used when the native glass is unavailable. `.ultraThinMaterial` is itself a
-    /// system material, so it keeps tracking the appearance instead of being a hand-mixed colour.
+    /// The material stack used when the native glass is unavailable. Three layers stacked on
+    /// the same shape give the visual depth that the real API gives for free: the material
+    /// shows the surface below with a slight blur; the highlight adds a top-of-pill sheen;
+    /// the stroke and the shadow define the silhouette so the pill reads as a physical piece
+    /// of glass rather than a tint behind the buttons.
     private var fallback: some View {
-        content.background(.ultraThinMaterial, in: shape)
+        content
+            .background(strength, in: shape)
+            .overlay(
+                LinearGradient(
+                    colors: [.white.opacity(0.32), .white.opacity(0.0)],
+                    startPoint: .top,
+                    endPoint: .center
+                )
+                .clipShape(shape)
+            )
+            .overlay(shape.strokeBorder(.white.opacity(0.45), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 5)
     }
 }
 
 /// Press feedback for controls that have no system press state of their own.
+///
+/// On the search pill a long press lifts the entire pill -- a small scale-up plus a glow --
+/// so the bar mimics the way native iOS search affordances grow under sustained touch.
 struct TabPressStyle: ButtonStyle {
-    var scale: CGFloat = 0.9
+    var scale: CGFloat = 0.94
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -69,21 +94,29 @@ struct LiquidTabItem: Identifiable, Hashable {
 
 /// iOS counterpart of Android's `FloatingHomeNavigation`.
 ///
-/// The compact state exposes the two destinations and a 44pt-plus search target. Tapping search
-/// morphs that circular glass target IN PLACE into a full-width search capsule exactly as wide as
-/// the whole bar (rather than sliding a new surface in from the trailing edge): a matched-geometry
-/// move grows the circle's frame to the bar's width on a spring, while the field contents fade in.
-/// The bar is lifted above the keyboard by its UIKit shell (`MainShellViewController`).
+/// The compact state exposes the two destinations and a 72pt search target. Tapping search
+/// morphs that glass target IN PLACE into a full-width search capsule as wide as the whole bar
+/// (rather than sliding a new surface in from the trailing edge): a matched-geometry move
+/// grows the circle's frame to the bar's width on a spring, while the field contents fade in
+/// and the search glyph rides a scale-out -> scale-in transition so the open motion reads as
+/// a real surface lift, not a layout swap. The bar is lifted above the keyboard by its UIKit
+/// shell (`MainShellViewController`).
+///
+/// A backdrop strip fills the area between the pill and the screen's bottom edge: the bar
+/// used to leave that region as the host's clear colour, which against the home indicator read
+/// as a dead stripe. The strip is a thin material layer that extends into the safe area so the
+/// home indicator overlays it and the bottom of the bar feels continuous with the rest of the
+/// surface.
 struct FloatingHomeNavigation: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
 
-    /// Total width of the compact bar (tab capsule + gap + search circle). The expanded capsule
-    /// grows to this exact width, so open and closed states occupy the same footprint.
-    private static let barWidth: CGFloat = 282
-    private static let barHeight: CGFloat = 64
-    private static let tabCapsuleWidth: CGFloat = 208
+    /// Footprint of the floating bar. The compact tab capsule + gap + search circle must
+    /// total this exactly so the open and closed states occupy the same horizontal slot.
+    private static let barWidth: CGFloat = 320
+    private static let barHeight: CGFloat = 72
+    private static let tabCapsuleWidth: CGFloat = 232
 
     /// Drives both morphs: the search circle -> search capsule, and the selected-tab highlight
     /// sliding between the two destinations.
@@ -101,27 +134,54 @@ struct FloatingHomeNavigation: View {
     private var shape: Capsule { Capsule(style: .continuous) }
 
     var body: some View {
-        // Centred horizontally inside the shell. The host fills the screen width, so a centred
-        // alignment puts the 282pt bar in the middle on every device rather than against the
-        // leading edge on iPad and large phones.
-        HStack(spacing: 0) {
-            Group {
-                if state.isSearchPresented {
-                    expandedSearch
-                        .transition(.identity)
-                } else {
-                    compactNavigation
-                        .transition(.identity)
-                }
+        ZStack(alignment: .bottom) {
+            // Backdrop strip: a thin glass layer that runs from above the pill down to the
+            // bottom of the screen. Without it the area between the pill and the home indicator
+            // is the shell's clear colour, which on top of any opaque page reads as a stripe of
+            // dead pixels. The strip extends into the safe area so the indicator overlays glass
+            // instead of an opaque backdrop.
+            SystemGlassSurface(shape: Rectangle(), interactive: false, strength: .ultraThinMaterial) {
+                Color.clear
             }
-            .frame(width: Self.barWidth, height: Self.barHeight)
-            .scaleEffect(morphScale, anchor: .center)
-            .animation(reduceMotion ? nil : morphSpring, value: state.isSearchPresented)
-            .animation(reduceMotion ? nil : morphSpring, value: morphScale)
+            .frame(height: Self.barHeight + 24)
+            .frame(maxWidth: .infinity)
+            .ignoresSafeArea(edges: .bottom)
+
+            // The pills ride on top of the strip, centred. The matched-geometry effect hands
+            // the open transition to SwiftUI; explicit transitions on the two children below
+            // layer the field contents and the tab strip fade on the same spring so the
+            // appearance has weight, not a flat cross-fade.
+            HStack(spacing: 0) {
+                Group {
+                    if state.isSearchPresented {
+                        expandedSearch
+                            .transition(
+                                .asymmetric(
+                                    insertion: .scale(scale: 0.55, anchor: .trailing)
+                                        .combined(with: .opacity),
+                                    removal: .opacity
+                                )
+                            )
+                    } else {
+                        compactNavigation
+                            .transition(
+                                .asymmetric(
+                                    insertion: .scale(scale: 1.12, anchor: .leading)
+                                        .combined(with: .opacity),
+                                    removal: .opacity
+                                )
+                            )
+                    }
+                }
+                .frame(width: Self.barWidth, height: Self.barHeight)
+                .scaleEffect(morphScale, anchor: .center)
+                .animation(reduceMotion ? nil : morphSpring, value: state.isSearchPresented)
+                .animation(reduceMotion ? nil : morphSpring, value: morphScale)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.bottom, 18)
         }
-        .frame(maxWidth: .infinity, alignment: .center)
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .padding(.bottom, 10)
         .onChange(of: state.isSearchPresented) { presented in
             if presented {
                 // Wait until the field is in the hierarchy so the keyboard and the expanding pill
@@ -144,13 +204,13 @@ struct FloatingHomeNavigation: View {
     }
 
     private var compactNavigation: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             SystemGlassSurface(shape: shape, interactive: true) {
                 HStack(spacing: 2) {
                     tabButton(.home)
                     tabButton(.settings)
                 }
-                .padding(4)
+                .padding(6)
                 .frame(width: Self.tabCapsuleWidth, height: Self.barHeight)
             }
             // Fades and shrinks away while the search circle grows into the field, so the open
@@ -164,10 +224,10 @@ struct FloatingHomeNavigation: View {
                     state.presentSearch()
                 } label: {
                     Image(systemName: "magnifyingglass")
-                        .font(.title3.weight(.semibold))
+                        .font(.title2.weight(.semibold))
                         .frame(width: Self.barHeight, height: Self.barHeight)
                 }
-                .buttonStyle(TabPressStyle())
+                .buttonStyle(TabPressStyle(scale: 0.9))
                 .accessibilityLabel("搜索教务功能")
             }
             .frame(width: Self.barHeight, height: Self.barHeight)
@@ -180,6 +240,7 @@ struct FloatingHomeNavigation: View {
         SystemGlassSurface(shape: shape, interactive: true) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
+                    .font(.title3.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 TextField("搜索教务功能", text: $state.searchQuery)
@@ -193,12 +254,12 @@ struct FloatingHomeNavigation: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.body.weight(.semibold))
-                        .frame(width: 44, height: 44)
+                        .frame(width: 48, height: Self.barHeight)
                 }
                 .buttonStyle(TabPressStyle())
                 .accessibilityLabel("关闭搜索")
             }
-            .padding(.leading, 18)
+            .padding(.leading, 20)
             .padding(.trailing, 6)
             .frame(width: Self.barWidth, height: Self.barHeight)
             // The contents fade in across the morph; a glyph stretched by the frame interpolation
@@ -220,20 +281,21 @@ struct FloatingHomeNavigation: View {
                 // moves a single piece of glass-tinted fill across the capsule.
                 if selected {
                     shape
-                        .fill(Color.accentColor.opacity(0.14))
+                        .fill(Color.accentColor.opacity(0.18))
                         .matchedGeometryEffect(id: "tabSelection", in: selection)
                 }
-                VStack(spacing: 3) {
+                VStack(spacing: 4) {
                     Image(systemName: selected ? item.selectedSystemImage : item.systemImage)
                         .font(.body.weight(.semibold))
                     Text(item.title)
-                        .font(.caption2.weight(.medium))
+                        .font(.caption.weight(.medium))
                 }
                 .foregroundStyle(selected ? Color.accentColor : Color.primary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(TabPressStyle(scale: 0.94))
+        .buttonStyle(TabPressStyle(scale: 0.92))
         .accessibilityLabel(item.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }

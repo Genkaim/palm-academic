@@ -352,40 +352,52 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
         guard !isTurning, index != currentIndex, pageControllers.indices.contains(index) else { return }
         let direction: UIPageViewController.NavigationDirection = index > currentIndex ? .forward : .reverse
         isTurning = true
-        let finish: (Bool) -> Void = { [weak self] finished in
+        let finish: () -> Void = { [weak self] in
             guard let self else { return }
             isTurning = false
-            // A non-animated turn reports finished == true immediately.
-            if finished || !animated { currentIndex = index }
+            currentIndex = index
         }
         if animated {
-            // The pager drives its own scroll-view content offset for the programmatic turn; that
-            // animation honours a `UIView.animate` wrapping the `setViewControllers` call, so the
-            // turn rides a spring the rest of the chrome uses. `CATransaction` was tried first and
-            // produced a straight linear slide -- the pager's internal scroll ignores it -- so the
-            // spring now lives in `UIView.animate` instead. The interactive swipe gesture is
-            // unaffected (it is finger-driven, not this call).
+            // UIPageViewController's internal linear scroll animation ignores every
+            // `UIView.animate` spring we wrap around `setViewControllers`. The only reliable way
+            // to make a button-driven turn ride a spring is to step outside the pager for the
+            // visible motion: snapshot the current pager surface, swap pages underneath via
+            // animated:false, then slide the snapshot off on a curve we control while the new
+            // page comes through. The swipe gesture is unaffected -- it is finger-driven and
+            // does not go through this code path.
+            let snapshot = pager.view.snapshotView(afterScreenUpdates: false)
+            view.addSubview(snapshot ?? UIView())
+            snapshot?.frame = view.bounds
+            snapshot?.clipsToBounds = true
+            // The pager's view itself clips its own children; the snapshot sits on top, so the
+            // sliding page does not see neighbouring pages leaking through.
+            pager.setViewControllers(
+                [pageControllers[index]],
+                direction: direction,
+                animated: false
+            )
+            let offset = direction == .forward ? -view.bounds.width : view.bounds.width
             UIView.animate(
-                withDuration: 0.46,
+                withDuration: 0.55,
                 delay: 0,
-                usingSpringWithDamping: 0.86,
-                initialSpringVelocity: 0.32,
+                usingSpringWithDamping: 0.82,
+                initialSpringVelocity: 0.45,
                 options: [.curveEaseInOut, .allowUserInteraction],
                 animations: {
-                    self.pager.setViewControllers(
-                        [self.pageControllers[index]],
-                        direction: direction,
-                        animated: true
-                    )
+                    snapshot?.transform = CGAffineTransform(translationX: offset, y: 0)
                 },
-                completion: { _ in finish(true) }
+                completion: { _ in
+                    snapshot?.transform = .identity
+                    snapshot?.removeFromSuperview()
+                    finish()
+                }
             )
         } else {
             pager.setViewControllers(
                 [pageControllers[index]],
                 direction: direction,
                 animated: false,
-                completion: finish
+                completion: { _ in finish() }
             )
         }
     }

@@ -344,8 +344,13 @@ private func revalidateQuietly() async {
             PortalMonitor.shared.cancel()
             SessionStore.shared.clear()
             if phase == .signedIn {
+                // Switching schools invalidates the prior session and needs the login form to
+                // re-bind to the new school. The banner the previous version pushed
+                // (`sessionNotice = "已切换学校，请重新登录"`) surfaced inside the shell as an
+                // extra top-of-screen overlay the user had to dismiss; the login form itself
+                // already explains the situation once it appears, so the second surface was
+                // redundant and noisy.
                 phase = .signedOut
-                sessionNotice = "已切换学校，请重新登录"
             }
         }
     }
