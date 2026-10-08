@@ -22,8 +22,13 @@ struct HomeView: View {
 
     /// Android trims the query and matches titles only -- group headings, subtitles and paths are
     /// not searched -- then drops any group left with nothing in it.
+    ///
+    /// The declared order is kept. Android's `HomeContent` filters `school.quickItems` in place and
+    /// never sorts it; `orderedQuickBaselineItems` exists for the background prefetcher, which
+    /// wants the cheapest page first, so applying it here reordered the grid away from the sequence
+    /// the school file declares (培养方案 / 课表 / 考试 / 成绩 became 课表 / 成绩 / 考试 / 培养方案).
     private var visibleQuickItems: [PortalItem] {
-        let all = QuickEntryBaseline.orderedQuickBaselineItems(definition?.quickItems ?? [])
+        let all = definition?.quickItems ?? []
         guard state.isSearching else { return all }
         return all.filter { $0.title.localizedCaseInsensitiveContains(state.trimmedSearchQuery) }
     }
@@ -107,8 +112,18 @@ struct HomeView: View {
             }
             .navigationDestination(for: PortalRoute.self) { route in
                 switch route {
-                case .item(let item): MaterialPageScreen(item: item)
-                case .notifications: NotificationSettingsScreen()
+                case .item(let item):
+                    // Android's `HomeActivity.openItem` splits on the same flag: a `quick` entry is
+                    // drawn by the shared JS adapter, everything else is the portal's own page.
+                    // Routing both through `MaterialPageScreen` left the non-quick majority with
+                    // whatever the adapter happened to publish for a DOM it was not written for.
+                    if item.quick == true {
+                        MaterialPageScreen(item: item)
+                    } else {
+                        OriginalPortalScreen(item: item)
+                    }
+                case .notifications:
+                    NotificationSettingsScreen()
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -229,7 +244,7 @@ struct HomeView: View {
             path.append(.notifications)
             return
         }
-        let quick = QuickEntryBaseline.orderedQuickBaselineItems(definition.quickItems)
+        let quick = definition.quickItems
         let target = quick.first { $0.nativeType == notice.nativeType }
             ?? definition.groups.flatMap(\.items).first { $0.nativeType == notice.nativeType }
         PortalPollHistory.acknowledge(changeID: notice.entryID)

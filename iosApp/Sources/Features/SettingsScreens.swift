@@ -330,6 +330,9 @@ struct NotificationSettingsScreen: View {
 /// Port of `NotificationHistoryActivity.kt`.
 struct NoticeHistoryScreen: View {
     @Binding var entries: [PortalPollHistoryEntry]
+    /// The list's editing environment, driven by the toolbar's delete button so the platform draws
+    /// the red delete control on each row.
+    @Environment(\.editMode) private var editMode
     @State private var expandedEntryIDs: Set<UUID> = []
     @State private var exportURL: URL?
 
@@ -367,10 +370,12 @@ struct NoticeHistoryScreen: View {
         .navigationTitle("检查日志")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            // The system's own edit control, which is how rows are deleted on this platform: it
-            // flips the list into its editing environment, where every row gets the platform's
-            // red delete control and its swipe counterpart. Hand-rolling the deletion would mean
-            // re-implementing that whole environment to get a worse result.
+            // A trash button rather than `EditButton`. `EditButton` is the system's own way into the
+            // list's editing environment, but it labels itself 编辑/完成, so the corner read as
+            // "switch to another mode" rather than "get rid of something". The mode itself is still
+            // the system's -- driving `editMode` is what puts the platform's red delete control on
+            // every row and keeps the swipe-to-delete counterpart -- only the affordance in the
+            // corner is spelled as the action it performs.
             //
             // It replaces a filter. The log is short by nature -- one entry per check run, and a
             // background check runs a handful of times a day -- so there was never enough in it to
@@ -378,8 +383,13 @@ struct NoticeHistoryScreen: View {
             // whole log keeps its own button at the bottom, which is the destructive read of "删除"
             // and deserves to stay separate from deleting one row.
             ToolbarItem(placement: .navigationBarTrailing) {
-                EditButton()
-                    .disabled(entries.isEmpty)
+                Button {
+                    withAnimation { editMode = editMode == .active ? .inactive : .active }
+                } label: {
+                    Image(systemName: editMode == .active ? "checkmark" : "trash")
+                }
+                .disabled(entries.isEmpty)
+                .accessibilityLabel(editMode == .active ? "完成删除" : "删除记录")
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 if let exportURL {

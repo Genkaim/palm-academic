@@ -81,24 +81,21 @@ struct FloatingHomeNavigation: View {
     private let shape = Capsule(style: .continuous)
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-            Group {
-                if state.isSearchPresented {
-                    expandedSearch
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .trailing).combined(with: .opacity)
-                        ))
-                } else {
-                    compactNavigation
-                        .transition(.opacity)
-                }
+        Group {
+            if state.isSearchPresented {
+                expandedSearch
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
+            } else {
+                compactNavigation
+                    .transition(.opacity)
             }
-            .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.84), value: state.isSearchPresented)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 10)
         }
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.84), value: state.isSearchPresented)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
         .onChange(of: state.isSearchPresented) { presented in
             if presented {
                 // Waiting until the field is in the hierarchy lets the keyboard and the expanding

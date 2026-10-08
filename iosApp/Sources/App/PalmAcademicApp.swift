@@ -118,21 +118,41 @@ struct RootView: View {
 /// Host for the home/settings content and the Android-parity floating bottom navigation.
 /// Search belongs to that bottom surface so the home list stays content-only and keeps its scroll
 /// position while a query is entered.
+///
+/// Both destinations stay mounted and the visible one is brought forward with `zIndex` rather than
+/// drawn in a fixed order. Ordering by zIndex is what makes the switch real: a fixed ZStack order
+/// puts the home list on top of the settings page, so the settings page could fade in underneath it
+/// and stay invisible no matter what `selectedTab` said -- the tab animated, nothing changed.
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The cross-fade, scoped to the two pages. The navigation bar opts out of it (it is an overlay
+    /// now, so a transition written here would otherwise reach it through the modifier chain) and
+    /// drives its own search animation instead.
+    private var pageAnimation: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: 0.24)
+    }
 
     var body: some View {
         ZStack {
             HomeView()
                 .opacity(state.selectedTab == .home ? 1 : 0)
                 .allowsHitTesting(state.selectedTab == .home)
+                .zIndex(state.selectedTab == .home ? 1 : 0)
+
             SettingsScreen()
                 .opacity(state.selectedTab == .settings ? 1 : 0)
                 .allowsHitTesting(state.selectedTab == .settings)
-
+                .zIndex(state.selectedTab == .settings ? 1 : 0)
+        }
+        .animation(pageAnimation, value: state.selectedTab)
+        .overlay(alignment: .bottom) {
+            // An overlay rather than a third ZStack child: the bar is pinned to the bottom by the
+            // alignment instead of by a full-height `Spacer`, so it no longer covers the whole
+            // screen and cannot swallow touches meant for the page underneath it.
             FloatingHomeNavigation()
         }
-        .animation(.easeInOut(duration: 0.24), value: state.selectedTab)
         .overlay(alignment: .top) {
             if let notice = state.sessionNotice {
                 noticeBanner(notice)

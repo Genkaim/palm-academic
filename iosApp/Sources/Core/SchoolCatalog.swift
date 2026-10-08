@@ -314,12 +314,27 @@ final class SchoolCatalog: ObservableObject {
 
     // MARK: - Resource access
 
+    /// Resolves a catalog-relative path such as `schools/index.json` or `adapters/cupk-reader.js`
+    /// to a file inside the app bundle.
+    ///
+    /// The extension has to be read back off the path rather than assumed. Both directories are
+    /// folder references, so the layout is preserved in the bundle, but the assets do not share one
+    /// extension: hard-coding `json` made every adapter resolve as `cupk-reader.js.json`, which does
+    /// not exist, so `readAdapterScript` silently returned an empty string and the reader reported
+    /// "适配器脚本未安装" while the school catalog itself loaded fine.
     private func bundledURL(_ assetPath: String) -> URL? {
         let components = assetPath.split(separator: "/").map(String.init)
-        guard let name = components.last?.replacingOccurrences(of: ".json", with: ""),
-              let directory = components.dropLast().first else { return nil }
-        return Bundle.main.url(forResource: name, withExtension: "json", subdirectory: directory)
-            ?? Bundle.main.url(forResource: name, withExtension: "json")
+        guard let fileName = components.last else { return nil }
+        let name = (fileName as NSString).deletingPathExtension
+        let ext = (fileName as NSString).pathExtension
+        guard !name.isEmpty, !ext.isEmpty else { return nil }
+        let directories = components.dropLast()
+
+        if let directory = directories.first,
+           let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: directory) {
+            return url
+        }
+        return Bundle.main.url(forResource: name, withExtension: ext)
     }
 
     private func readBundledText(assetPath: String) throws -> String {
