@@ -308,7 +308,7 @@ struct MaterialPageScreen: View {
     /// filters belong above the data they filter, inside one surface.
     @ViewBuilder
     private func controlsPanel(_ page: MaterialPage) -> some View {
-        let days = page.sections.compactMap { section -> ScheduleDay? in
+        let days = page.sections.compactMap { section -> [ScheduleDay]? in
             if case .schedule(_, _, let scheduleDays) = section { return scheduleDays }
             return nil
         }.first ?? []
@@ -534,7 +534,7 @@ struct MaterialPageScreen: View {
                     Text(PortalGroupStyle.display(lesson.schedule?.startTime ?? ""))
                         .font(.footnote.weight(.bold))
                         .foregroundStyle(PortalPalette.onSurface)
-                    Text(lesson.schedule?.endTime.map { "至 \($0)" } ?? "")
+                    Text(lesson.schedule.map { "\($0.endTime.isEmpty ? "" : "至 \($0.endTime)")" } ?? "")
                         .font(.caption2)
                         .foregroundStyle(PortalPalette.secondaryText)
                 }
@@ -710,8 +710,8 @@ struct MaterialPageScreen: View {
     /// module tree. They were merged into one card here, which lost the progress bar entirely --
     /// the numbers were there but the one thing that answers "how far along am I" was not.
     private func programSection(_ title: String, _ completed: String, _ required: String, _ modules: [ProgramModule]) -> some View {
-        let completedValue = Float(completed) ?? 0
-        let requiredValue = Float(required) ?? 0
+        let completedValue = CGFloat(Double(completed) ?? 0)
+        let requiredValue = CGFloat(Double(required) ?? 0)
         let progress = requiredValue > 0 ? min(max(completedValue / requiredValue, 0), 1) : 0
 
         return PortalGroupStyle.Block(title: nil) {

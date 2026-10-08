@@ -39,10 +39,10 @@ enum PortalGroupStyle {
                 )
                 .overlay(
                     GroupedCardShape(position: position)
-                        .strokeBorder(
-                            isNested ? PortalPalette.outlineVariant.opacity(0.48) : .clear,
-                            lineWidth: 0.5
-                        )
+                        // `stroke`, not `strokeBorder`: the latter is an `InsettableShape` member
+                        // and `GroupedCardShape` is a plain `Shape`, because the grouped corners are
+                        // written as an explicit path rather than a rounded rect SwiftUI could inset.
+                        .stroke(isNested ? PortalPalette.outlineVariant.opacity(0.48) : .clear, lineWidth: 0.5)
                 )
         }
     }
