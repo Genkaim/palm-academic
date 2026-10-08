@@ -70,20 +70,6 @@ struct GroupedCardShape: Shape {
     }
 }
 
-/// A group's heading, matching the Android `HomeSection` / `MaterialSectionBlock` title.
-struct PortalSectionHeader: View {
-    let title: String
-
-    var body: some View {
-        Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(PortalPalette.secondaryText)
-            .padding(.leading, 8)
-            .padding(.bottom, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 /// One row inside a group: a title and a disclosure indicator, on the system grouped surface.
 ///
 /// Android's `PortalRow` uses a 16/15 horizontal/vertical inset and a chevron tinted with the

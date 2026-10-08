@@ -39,6 +39,14 @@ enum PortalPalette {
     /// Android `primary`, which is the near-black/near-white label colour rather than a blue.
     static let primary = Color(uiColor: .label)
 
+    /// The colour that reads as content on top of `primary`.
+    ///
+    /// Android's `primary` is `label`, so its counterpart pair is the system background -- a filled
+    /// primary control is near-black with near-white text in light mode and the reverse in dark mode.
+    /// `PortalPalette.onSurface` cannot be reused here: it is `label` too, and would render the
+    /// filled refresh capsule as black-on-black.
+    static let onPrimary = Color(uiColor: .systemBackground)
+
     /// The colour that reads as body text on top of either surface.
     static let onSurface = Color(uiColor: .label)
 
@@ -47,6 +55,16 @@ enum PortalPalette {
 
     /// Android `outline`: separators and disclosure chevrons.
     static let outline = Color(uiColor: .tertiaryLabel)
+
+    /// Android `surfaceVariant`: the quiet fill behind chips, table headers and progress tracks.
+    ///
+    /// It is a distinct token from `outline` even though both are grey, because Android uses it as a
+    /// *background* rather than as a line, and several of the native pages lean on that difference --
+    /// a status chip and a progress track are `surfaceVariant` fills, not `outline` strokes.
+    static let surfaceVariant = Color(uiColor: .tertiarySystemFill)
+
+    /// Android `outlineVariant`: the separator colour, which is `outline` at reduced strength.
+    static var outlineVariant: Color { Color(uiColor: .separator) }
 
     /// Android `error`.
     static let error = Color(uiColor: .systemRed)
