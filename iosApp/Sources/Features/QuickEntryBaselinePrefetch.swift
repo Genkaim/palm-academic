@@ -61,7 +61,10 @@ struct QuickEntryBaselinePrefetch: View {
         // Android arms the prefetch three seconds after the home screen settles, so the first
         // paint is not competing with four page loads. The same delay is used here.
         Color.clear
-            .frame(width: 1, height: 1)
+            // WKWebView must receive a real viewport for the portal's responsive scripts and XHR
+            // bootstrap to run. A 1×1 reader frequently stayed at the empty DOM shell, so the
+            // supposedly automatic four-page refresh never populated its cache.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .opacity(0.01)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -166,7 +169,7 @@ struct QuickEntryBaselinePrefetch: View {
             },
             onDiagnostic: { _ in }
         )
-        .frame(width: 1, height: 1)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .opacity(0.01)
         .allowsHitTesting(false)
     }

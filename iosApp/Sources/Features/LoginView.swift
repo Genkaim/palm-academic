@@ -221,7 +221,7 @@ struct LoginView: View {
                     ) { showingSchools = true }
                     secondaryButton(systemImage: "safari", title: "用网页登录", showsChevron: false) {
                         focusedField = nil
-                        state.showingWebLogin = true
+                        Task { await state.beginWebLogin() }
                     }
                 }
                 .opacity(secondaryOpacity)
@@ -350,14 +350,14 @@ struct LoginView: View {
                 .foregroundStyle(PortalPalette.onSurface)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    state.rememberPassword.toggle()
-                    if !state.rememberPassword {
-                        CredentialStore.clear(schoolID: SchoolCatalog.shared.selectedSchoolID)
-                    }
+                    state.setRememberPassword(!state.rememberPassword)
                 }
             Spacer()
             // The system's own switch, at the system's own size.
-            Toggle("", isOn: $state.rememberPassword)
+            Toggle("", isOn: Binding(
+                get: { state.rememberPassword },
+                set: { state.setRememberPassword($0) }
+            ))
                 .labelsHidden()
         }
         .padding(.horizontal, 16)

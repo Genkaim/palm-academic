@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import SwiftUI
 import UserNotifications
 
@@ -28,6 +29,9 @@ final class AppState: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
     @Published var selectedTab: LiquidTabItem = .home
+    /// Increments only after a new password/web login succeeds. Views use it as an identity so a
+    /// logout/login cycle cannot revive the previous tab, navigation path or hidden prefetch state.
+    @Published private(set) var authenticationGeneration = 0
     /// Whether the user has ever explicitly chosen a school, port of Android's
     /// `hasSelectedSchool`. The catalog always resolves an active profile (falling back to the
     /// built-in default), so this persisted flag -- not the non-nil profile -- is what tells the
@@ -56,7 +60,6 @@ final class AppState: ObservableObject {
     @Published private(set) var sessionTrusted: Bool = SessionTrustStore.shared.trusted
 
     private let auth = AuthRepository()
-    private var credentialKey = ""
     /// Bumped on every explicit authentication success / content-arrived / sign-out. A quiet
     /// revalidation loop captures the value at entry and stops the moment it changes, so a loop
     /// that was started by a hidden reader's transient login-redirect can never surface a
@@ -123,7 +126,7 @@ final class AppState: ObservableObject {
                 Task { await revalidateQuietly() }
             }
         case .valid:
-            onAuthenticationCompleted()
+            onAuthenticationCompleted(freshLogin: false)
         }
     }
 
@@ -153,7 +156,7 @@ private func revalidateQuietly() async {
                 guard revision == sessionRevision else { return }
                 sessionStatus = .hidden
                 sessionNotice = nil
-                onAuthenticationCompleted()
+                onAuthenticationCompleted(freshLogin: false)
                 // Any mounted reader is showing a stale page right now (its WebView answered
                 // "session expired" before this revalidation succeeded). Bumping a global
                 // counter lets each open `MaterialPageScreen` reload against the restored
@@ -198,7 +201,7 @@ private func revalidateQuietly() async {
         case .valid:
             sessionStatus = .hidden
             sessionNotice = nil
-            onAuthenticationCompleted()
+            onAuthenticationCompleted(freshLogin: false)
         case .expired:
             if sessionTrusted {
                 sessionNotice = "登录状态已失效"
@@ -230,20 +233,16 @@ private func revalidateQuietly() async {
         errorMessage = nil
         defer { isLoading = false }
 
-        // Persist the credentials the moment the user commits to logging in. The previous code only
-        // saved on success, which meant a network timeout on the very first login discarded the
-        // password even though 记住密码 was on -- the next launch opened with empty fields and the
-        // user had to type everything in again. Saving here lets the very next launch retry with
-        // the remembered credentials, even if THIS attempt never reaches the home page.
-        if rememberPassword {
-            CredentialStore.save(username: user, password: password, schoolID: school.id)
-        } else {
-            CredentialStore.clear(schoolID: school.id)
-        }
-
         do {
             try await auth.login(username: user, password: password)
-            onAuthenticationCompleted()
+            // Match Android: only a completed login is allowed to replace the remembered secret.
+            // A typo or transient failed attempt must not overwrite the last working credential.
+            if rememberPassword {
+                CredentialStore.save(username: user, password: password, schoolID: school.id)
+            } else {
+                CredentialStore.clear(schoolID: school.id)
+            }
+            onAuthenticationCompleted(freshLogin: true)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -251,7 +250,21 @@ private func revalidateQuietly() async {
 
     func completeWebLogin() {
         showingWebLogin = false
-        onAuthenticationCompleted()
+        onAuthenticationCompleted(freshLogin: true)
+    }
+
+    /// Waits for a prior logout's asynchronous WebKit deletion before creating a login WebView.
+    /// Otherwise the old deletion callback can run after the new page has set SESSION and erase it.
+    func beginWebLogin() async {
+        await SessionStore.shared.waitForPendingClear()
+        showingWebLogin = true
+    }
+
+    func setRememberPassword(_ enabled: Bool) {
+        rememberPassword = enabled
+        if !enabled {
+            CredentialStore.clear(schoolID: SchoolCatalog.shared.selectedSchoolID)
+        }
     }
 
     /// Port of Android's `PortalSessionCoordinator.markAuthenticated()`.
@@ -277,22 +290,19 @@ private func revalidateQuietly() async {
     func signOut(message: String? = nil) {
         SessionStore.shared.clear()
         PortalMonitor.shared.cancel()
-        CredentialStore.clear(schoolID: SchoolCatalog.shared.selectedSchoolID)
-        // The current school is no longer trusted: the user is on the login form with empty fields,
-        // so any "trusted session" retry logic would be operating on credentials they explicitly
-        // asked to forget. The flag is per-school, so the next time they pick a school and sign in
-        // it is set fresh.
+        // Signing out ends the session but does not mean "forget my saved password". Android keeps
+        // the encrypted credential too; the login form reloads it below, while toggling 记住密码 off
+        // remains the explicit deletion action.
         SessionTrustStore.shared.trusted = false
         sessionTrusted = false
-        username = ""
-        password = ""
-        rememberPassword = false
+        loadRememberedCredential()
         errorMessage = message
         showingWebLogin = false
         // Retire any quiet-retry loop so it cannot republish a badge over the login form.
         markSessionReady()
         isSearchPresented = false
         searchQuery = ""
+        selectedTab = .home
         phase = .signedOut
     }
 
@@ -334,7 +344,7 @@ private func revalidateQuietly() async {
         searchQuery = ""
     }
 
-    private func onAuthenticationCompleted() {
+    private func onAuthenticationCompleted(freshLogin: Bool) {
         NotificationPreferences.shared.clearAuthenticationFailureMarker()
         let schoolID = SchoolCatalog.shared.selectedSchoolID
         // Once the home page has answered valid, the credential is "good" until the user signs out
@@ -342,7 +352,16 @@ private func revalidateQuietly() async {
         // kick the user back to the login form.
         SessionTrustStore.shared.trusted = true
         sessionTrusted = true
-        QuickEntryBaseline.request(schoolID: schoolID)
+        if freshLogin {
+            // Never show data produced under the previous session/account. The new shell starts on
+            // Home, mounts a fresh baseline warmer, and fetches all declared redrawn pages again.
+            MaterialPageCache.clearAll()
+            QuickEntryBaseline.request(schoolID: schoolID)
+            selectedTab = .home
+            isSearchPresented = false
+            searchQuery = ""
+            authenticationGeneration &+= 1
+        }
         NotificationPreferences.shared.reschedule()
         loadRememberedCredential()
         errorMessage = nil
@@ -361,7 +380,6 @@ private func revalidateQuietly() async {
         // The pick persists the id, and this flag is what makes the next cold launch reopen the
         // form on the same school.
         hasSelectedSchool = SchoolCatalog.shared.hasSelectedSchool
-        credentialKey = school.id
         loadRememberedCredential()
         // The trust flag is read through a projection over the current school, so it flips
         // automatically to "false" the moment `selectedSchoolID` changes. Mirror that into the
@@ -394,7 +412,6 @@ private func revalidateQuietly() async {
 
     private func loadRememberedCredential() {
         let schoolID = SchoolCatalog.shared.selectedSchoolID
-        credentialKey = schoolID
         if let credential = CredentialStore.load(schoolID: schoolID) {
             username = credential.username
             password = credential.password
@@ -409,24 +426,77 @@ private func revalidateQuietly() async {
 
 /// Port of `PasswordCredentialStore` from `PasswordCredentialStore.kt`.
 enum CredentialStore {
+    private struct Payload: Codable {
+        let username: String
+        let password: String
+    }
+
+    private static let service = "\(Bundle.main.bundleIdentifier ?? "cn.edu.cupk.portalreader").remembered-password"
     private static func usernameKey(_ schoolID: String) -> String { "credential_username_\(schoolID)" }
     private static func passwordKey(_ schoolID: String) -> String { "credential_password_\(schoolID)" }
 
     static func load(schoolID: String) -> (username: String, password: String)? {
+        var result: CFTypeRef?
+        var query = baseQuery(schoolID: schoolID)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data,
+           let payload = try? JSONDecoder().decode(Payload.self, from: data),
+           !payload.username.isEmpty,
+           !payload.password.isEmpty {
+            return (payload.username, payload.password)
+        }
+
+        // One-time migration from the earlier plaintext UserDefaults implementation.
         let defaults = UserDefaults.standard
         guard let username = defaults.string(forKey: usernameKey(schoolID)),
               let password = defaults.string(forKey: passwordKey(schoolID)),
+              !username.isEmpty,
               !password.isEmpty else { return nil }
+        save(username: username, password: password, schoolID: schoolID)
         return (username, password)
     }
 
     static func save(username: String, password: String, schoolID: String) {
-        let defaults = UserDefaults.standard
-        defaults.set(username, forKey: usernameKey(schoolID))
-        defaults.set(password, forKey: passwordKey(schoolID))
+        let trimmed = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !password.isEmpty,
+              let data = try? JSONEncoder().encode(Payload(username: trimmed, password: password)) else { return }
+        let query = baseQuery(schoolID: schoolID)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let finalStatus: OSStatus
+        if updateStatus == errSecItemNotFound {
+            var inserted = query
+            attributes.forEach { inserted[$0.key] = $0.value }
+            finalStatus = SecItemAdd(inserted as CFDictionary, nil)
+        } else {
+            finalStatus = updateStatus
+        }
+        // During migration, retain the legacy value if Keychain is temporarily unavailable. The
+        // next launch can retry instead of silently losing a credential the user chose to keep.
+        if finalStatus == errSecSuccess {
+            clearLegacy(schoolID: schoolID)
+        }
     }
 
     static func clear(schoolID: String) {
+        SecItemDelete(baseQuery(schoolID: schoolID) as CFDictionary)
+        clearLegacy(schoolID: schoolID)
+    }
+
+    private static func baseQuery(schoolID: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: schoolID
+        ]
+    }
+
+    private static func clearLegacy(schoolID: String) {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: usernameKey(schoolID))
         defaults.removeObject(forKey: passwordKey(schoolID))

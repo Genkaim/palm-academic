@@ -13,6 +13,7 @@ import SwiftUI
 /// what the system already draws.
 struct HomeView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Value-based navigation so the status panel can push the page a pending change belongs to,
     /// the way Android acknowledges the notice and then opens the matching quick entry.
     @State private var path: [PortalRoute] = []
@@ -108,29 +109,33 @@ struct HomeView: View {
                 // There is no leading item: the school is changed from Settings, which is where
                 // Android puts it too.
                 //
-                // The session badge lives in the SAME principal cluster as the title rather than
-                // in a trailing bar button: a trailing item is laid out at the screen edge, which
-                // put a wide gap between it and the centred title. Grouping them keeps the badge
-                // right next to the title and lets the whole cluster re-centre as one.
                 ToolbarItem(placement: .principal) {
-                    HStack(spacing: 7) {
-                        VStack(spacing: 1) {
-                            Text("掌上教务")
-                                .font(.headline.weight(.bold))
-                            Text(state.selectedSchool?.name ?? "未选择学校")
-                                .font(.caption)
-                                .foregroundStyle(PortalPalette.secondaryText)
-                                .lineLimit(1)
-                        }
+                    VStack(spacing: 1) {
+                        Text("掌上教务")
+                            .font(.headline.weight(.bold))
+                        Text(state.selectedSchool?.name ?? "未选择学校")
+                            .font(.caption)
+                            .foregroundStyle(PortalPalette.secondaryText)
+                            .lineLimit(1)
+                    }
+                    // The title yields just enough visual room when the trailing status appears;
+                    // both movements share one short transition instead of snapping independently.
+                    .offset(x: sessionStatusVisible && !reduceMotion ? -4 : 0)
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if sessionStatusVisible {
                         sessionStatusBadge
-                            .transition(.opacity)
+                            .padding(.leading, 8)
+                            .transition(
+                                .asymmetric(
+                                    insertion: .opacity.combined(with: .move(edge: .trailing)),
+                                    removal: .opacity
+                                )
+                            )
                     }
                 }
             }
-            // Animating on the enum keeps the badge's appear/disappear transition (and the
-            // principal title's re-centring that the system performs alongside it) on the same
-            // spring as the rest of the chrome.
-            .animation(.spring(response: 0.42, dampingFraction: 0.82), value: state.sessionStatus)
+            .animation(sessionChromeAnimation, value: state.sessionStatus)
             .navigationDestination(for: PortalRoute.self) { route in
                 switch route {
                 case .item(let item):
@@ -159,12 +164,21 @@ struct HomeView: View {
 
     // MARK: - Header
 
+    private var sessionStatusVisible: Bool {
+        if case .hidden = state.sessionStatus { return false }
+        return true
+    }
+
+    private var sessionChromeAnimation: Animation? {
+        reduceMotion ? nil : .timingCurve(0.23, 1, 0.32, 1, duration: 0.22)
+    }
+
     /// Port of `PortalSessionStatus`: nothing for a healthy session, a spinner while checking, and
     /// a tappable failure otherwise.
     ///
-    /// Both states are plain inline text with NO capsule fill: the badge sits directly beside the
-    /// principal title inside one cluster, so a background plate there read as a coloured chip
-    /// bolted onto the title. Android's status row is likewise text-only.
+    /// Both states are plain inline text with no capsule fill. The badge owns the trailing toolbar
+    /// position while the principal title yields a few points, keeping the status visually related
+    /// to the title without turning it into a coloured chip. Android's status row is text-only too.
     @ViewBuilder
     private var sessionStatusBadge: some View {
         switch state.sessionStatus {

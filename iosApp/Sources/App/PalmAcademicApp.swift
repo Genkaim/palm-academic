@@ -126,6 +126,10 @@ struct MainShellView: View {
 
     var body: some View {
         MainShellContainer(state: state, animated: !reduceMotion)
+            // A successful fresh login owns a new navigation lifetime. Rebuilding the UIKit shell
+            // guarantees the home page and an empty NavigationStack even if SwiftUI retained the
+            // previous signed-in branch across logout/login.
+            .id(state.authenticationGeneration)
             // Extend the shell itself so its dynamic background paints beneath the status bar and
             // home indicator. The controls still respect their safe-area anchors below.
             .ignoresSafeArea(.container, edges: [.top, .bottom])
@@ -145,8 +149,8 @@ struct MainShellView: View {
 /// interesting behaviour lives in `MainShellViewController`.
 struct MainShellContainer: UIViewControllerRepresentable {
     let state: AppState
-    /// Whether button-driven turns animate. Swipe gestures are always interactive; this only
-    /// covers the imperative turn, so the accessibility "reduce motion" setting can disable it.
+    /// Whether button-driven cross-fades animate. Horizontal page swiping is intentionally disabled;
+    /// the accessibility "reduce motion" setting disables this remaining transition as well.
     var animated: Bool = true
 
     func makeUIViewController(context: Context) -> MainShellViewController {
@@ -174,7 +178,8 @@ struct MainShellContainer: UIViewControllerRepresentable {
 /// hit, so touches beside the pills fall through to the pager and the pills themselves always
 /// receive theirs. Page turns are driven by a Combine subscription to `selectedTab`, delivered on
 /// a later runloop pass than the tap -- an imperative `setViewControllers` outside any SwiftUI
-/// update transaction -- while the data source keeps the horizontal swipe gesture. Both page
+/// update transaction. The pager's pan gesture stays disabled, so only the visible tab controls can
+/// switch top-level pages. Both page
 /// hosting controllers stay mounted for the life of the shell, so neither page loses its scroll
 /// position or its navigation stack, matching Android's `HorizontalPager`.
 @MainActor
@@ -184,8 +189,7 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
     private static let appTint = Color(red: 0.16, green: 0.44, blue: 0.85)
 
     private let state: AppState
-    /// Button-driven turns only; swipe gestures are always interactive. Reduce-motion flips this
-    /// off.
+    /// Button-driven cross-fades only; horizontal swipe is disabled. Reduce-motion flips this off.
     var animated: Bool
 
     private let pager: UIPageViewController

@@ -14,6 +14,8 @@ final class SessionStore {
 
     private let cookieHeaderKey = "academic_session_cookie_header"
     private let lock = NSLock()
+    private var pendingWebKitClear: Task<Void, Never>?
+    private var clearRevision = 0
 
     private init() {}
 
@@ -231,17 +233,47 @@ final class SessionStore {
         lock.lock()
         UserDefaults.standard.removeObject(forKey: cookieHeaderKey)
         lock.unlock()
-        if let origin = URL(string: SchoolCatalog.shared.origin) {
-            HTTPCookieStorage.shared.cookies(for: origin)?.forEach(HTTPCookieStorage.shared.deleteCookie)
+        if let host = URL(string: SchoolCatalog.shared.origin)?.host?.lowercased() {
+            // `cookies(for: origin)` only returns cookies whose path matches `/`; EAMS normally
+            // scopes SESSION to `/student`, so that lookup left the very cookie we meant to clear.
+            // Match by domain here and remove every path variant for the selected school.
+            let storage = HTTPCookieStorage.shared
+            storage.cookies?.filter { cookie in
+                let domain = cookie.domain
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                    .lowercased()
+                return host == domain || host.hasSuffix(".\(domain)")
+            }.forEach(storage.deleteCookie)
         }
         // The WebKit data store owns a separate copy of the cookies used by the reader
         // web view, so it has to be cleared alongside HTTPCookieStorage. The callback
         // form is used because the async overload is unavailable on iOS 16.
-        let store = WKWebsiteDataStore.default()
-        store.removeData(
-            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
-            modifiedSince: .distantPast
-        ) { }
+        let previous = pendingWebKitClear
+        clearRevision &+= 1
+        let revision = clearRevision
+        pendingWebKitClear = Task { @MainActor in
+            if let previous { await previous.value }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                WKWebsiteDataStore.default().removeData(
+                    ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                    modifiedSince: .distantPast
+                ) {
+                    continuation.resume()
+                }
+            }
+            // A later clear owns the stored task; do not erase its handle when this one completes.
+            if revision == clearRevision { pendingWebKitClear = nil }
+        }
+    }
+
+    /// Serialises a new login behind logout's asynchronous WebKit deletion. Without this barrier,
+    /// a fast user can finish the new login first and then have the old deletion callback erase the
+    /// freshly-installed SESSION cookie.
+    func waitForPendingClear() async {
+        let revision = clearRevision
+        let pending = pendingWebKitClear
+        await pending?.value
+        if revision == clearRevision { pendingWebKitClear = nil }
     }
 }
 
@@ -277,13 +309,19 @@ struct AuthRepository {
         let trimmed = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !password.isEmpty else { throw PortalError.loginRejected("请输入账号和密码") }
 
-        // A dedicated client keeps the login handshake isolated from the cached session.
+        // Logout clears WebKit asynchronously. Wait for it before any new cookie is created, or its
+        // completion can erase the successful login after this method returns.
+        await SessionStore.shared.waitForPendingClear()
+
+        // A dedicated client and an in-memory cookie jar keep the login handshake isolated from the
+        // cached global session, matching Android's LoginCookieJar.
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = HTTPCookieStorage.shared
-        configuration.httpShouldSetCookies = true
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
         configuration.httpCookieAcceptPolicy = .always
         configuration.timeoutIntervalForRequest = 40
         let client = URLSession(configuration: configuration)
+        let loginCookies = LoginCookieJar()
 
         // Prime the pre-session cookie. Real EAMS deployments reject a correct password when the
         // login page has never been opened in the same session.
@@ -292,11 +330,11 @@ struct AuthRepository {
         pageRequest.setValue(homeURL, forHTTPHeaderField: "Referer")
         pageRequest.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
         pageRequest.setValue(Self.languageHeader, forHTTPHeaderField: "Accept-Language")
-        _ = try await perform(client, pageRequest)
+        _ = try await perform(client, pageRequest, cookies: loginCookies)
 
         var saltRequest = URLRequest(url: URL(string: "\(baseURL)/login-salt")!)
         applyAjaxHeaders(&saltRequest, referer: loginURL)
-        let saltData = try await perform(client, saltRequest)
+        let saltData = try await perform(client, saltRequest, cookies: loginCookies)
         guard let salt = String(data: saltData, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
@@ -314,7 +352,7 @@ struct AuthRepository {
             "password": Self.sha1Hex("\(salt)-\(password)"),
             "captchaToken": ""
         ])
-        let responseData = try await perform(client, loginRequest)
+        let responseData = try await perform(client, loginRequest, cookies: loginCookies)
 
         // Only an explicit captcha demand or a negative `result` counts as a credential failure.
         // Some deployments answer a successful login with an empty body or HTML, so a missing
@@ -328,15 +366,12 @@ struct AuthRepository {
             }
         }
 
-        guard let cookies = HTTPCookieStorage.shared.cookies(for: URL(string: loginURL)!),
-              cookies.contains(where: { $0.name == "SESSION" && !$0.value.isEmpty }) else {
+        guard loginCookies.hasSession else {
             throw PortalError.noSession
         }
         // The login endpoint accepted the request, so persist the session immediately. Home page
         // structure detection is content reading and must not invalidate a completed login.
-        SessionStore.shared.saveCookieHeader(
-            cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-        )
+        SessionStore.shared.saveCookieHeader(loginCookies.header)
         SessionStore.shared.restoreToCookieStorage()
         // Mirror Android: install the cookies into the WebView's own store before declaring the
         // login successful. Without this, the first page navigation bounces off a login redirect
@@ -399,15 +434,63 @@ struct AuthRepository {
         request.setValue(Self.languageHeader, forHTTPHeaderField: "Accept-Language")
     }
 
-    private func perform(_ client: URLSession, _ request: URLRequest) async throws -> Data {
+    private func perform(
+        _ client: URLSession,
+        _ originalRequest: URLRequest,
+        cookies: LoginCookieJar
+    ) async throws -> Data {
+        var request = originalRequest
+        cookies.apply(to: &request)
         let (data, response) = try await client.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw PortalError.invalidResponse }
+        cookies.capture(from: http, fallbackURL: request.url)
         guard (200..<400).contains(http.statusCode) else { throw PortalError.requestFailed(http.statusCode) }
         return data
     }
 
     static func sha1Hex(_ value: String) -> String {
         Insecure.SHA1.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// One-login-only cookie jar. It deliberately never reads `HTTPCookieStorage.shared`, so an expired
+/// SESSION cannot contaminate the pre-session cookie, salt request or credential POST.
+@MainActor
+private final class LoginCookieJar {
+    private var values: [String: HTTPCookie] = [:]
+
+    var hasSession: Bool {
+        values.values.contains { $0.name.uppercased() == "SESSION" && !$0.value.isEmpty }
+    }
+
+    var header: String {
+        values.values
+            .sorted { $0.name < $1.name }
+            .map { "\($0.name)=\($0.value)" }
+            .joined(separator: "; ")
+    }
+
+    func apply(to request: inout URLRequest) {
+        guard !values.isEmpty else { return }
+        HTTPCookie.requestHeaderFields(with: Array(values.values)).forEach {
+            request.setValue($0.value, forHTTPHeaderField: $0.key)
+        }
+    }
+
+    func capture(from response: HTTPURLResponse, fallbackURL: URL?) {
+        guard let url = response.url ?? fallbackURL else { return }
+        let fields = response.allHeaderFields.reduce(into: [String: String]()) { result, entry in
+            guard let key = entry.key as? String else { return }
+            result[key] = String(describing: entry.value)
+        }
+        HTTPCookie.cookies(withResponseHeaderFields: fields, for: url).forEach { cookie in
+            let key = "\(cookie.domain)|\(cookie.path)|\(cookie.name)"
+            if cookie.expiresDate.map({ $0 <= Date() }) == true {
+                values.removeValue(forKey: key)
+            } else {
+                values[key] = cookie
+            }
+        }
     }
 }
 

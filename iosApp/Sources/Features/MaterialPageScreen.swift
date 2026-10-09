@@ -3,6 +3,7 @@ import SwiftUI
 /// Port of `MaterialPortalActivity.kt`: renders a `MaterialPage` produced by the shared JS adapter.
 struct MaterialPageScreen: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: PortalItem
 
     /// Cold start is FETCHING, not AUTHENTICATING: the user only reaches this screen through the
@@ -39,6 +40,10 @@ struct MaterialPageScreen: View {
     /// Which weekday the timetable is filtered to, or nil for all of them. Android keeps this in
     /// the same state as the rest of the controls so the pill and the list cannot disagree.
     @State private var selectedDay: String?
+    /// Only a genuinely cold network result gets an entrance. A cached snapshot is already-known
+    /// state and must appear immediately when the destination opens; replaying the entrance on
+    /// every visit makes navigation feel slower and visually unstable.
+    @State private var animateContentEntrance = false
 
     /// The six states `MaterialPortalActivity` distinguishes. The previous version collapsed these
     /// into `isLoading` plus an optional error string, which could not tell "the portal is slow"
@@ -123,17 +128,16 @@ struct MaterialPageScreen: View {
             case .loaded:
                 if let loaded = renderedPage {
                     content(loaded)
-                        // The first time data exists it rises/fades in over the loading state; the
-                        // animation is driven by the load-state change below rather than per body,
-                        // so refreshes do not re-run the entrance.
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .transition(contentEntranceTransition)
                 }
             }
         }
-        // `.smooth` is an iOS 17+ factory; the deployment target is 16. A standard
-        // `easeInOut` curve is what the system's own view transitions use, so the load-state
-        // cross-fade reads the same way the rest of the system does.
-        .animation(.easeInOut(duration: 0.32), value: loadState)
+        // A cold result only travels eight points while fading in. The strong ease-out starts
+        // immediately and settles gently; cached results disable this transaction entirely.
+        .animation(
+            reduceMotion ? nil : .timingCurve(0.23, 1, 0.32, 1, duration: 0.24),
+            value: loadState
+        )
         // Android titles the screen with the page's own heading, which the adapter sets from the
         // portal ("我的成绩", "课程表"). The catalogue name was a reasonable stand-in before the
         // page existed; once it does, using it means the title never matches the content.
@@ -219,6 +223,11 @@ struct MaterialPageScreen: View {
 
     private var statusTransition: AnyTransition { .opacity }
 
+    private var contentEntranceTransition: AnyTransition {
+        guard animateContentEntrance, !reduceMotion else { return .identity }
+        return .opacity.combined(with: .offset(y: 8))
+    }
+
     private func retry() {
         // A refresh over rendered content must keep it on screen (the "刷新中" strip); only a cold
         // retry with nothing rendered goes back to the full-screen loading state. Setting
@@ -249,6 +258,7 @@ struct MaterialPageScreen: View {
             if renderedPage == nil { return }
             if !allowsEmpty { return }
         }
+        animateContentEntrance = renderedPage == nil
         renderedPage = newPage
         loadState = .loaded
         isRefreshing = false
@@ -1031,8 +1041,13 @@ struct MaterialPageScreen: View {
         // "暂无…" skeletons; reviving those would reopen the page on empty chrome.
         if let cached = MaterialPageCache.load(url: url),
            QuickEntryBaseline.hasData(page: cached, nativeType: item.nativeType) {
-            renderedPage = cached
-            loadState = .loaded
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                animateContentEntrance = false
+                renderedPage = cached
+                loadState = .loaded
+            }
             prepareExports(for: cached)
             prepareProgramExpansion(for: cached)
             // Distinguish "showing what we had" from "fetching", so a slow network does not look

@@ -305,15 +305,26 @@ enum MaterialPageCache {
         try? json.write(to: target, atomically: true, encoding: .utf8)
     }
 
+    /// A successful new login starts a new account/session data lifetime. Removing the directory
+    /// atomically prevents any redrawn screen from flashing a previous login's snapshot before its
+    /// own reader finishes, while the baseline prefetch repopulates every declared quick entry.
+    static func clearAll() {
+        try? FileManager.default.removeItem(at: cacheDirectoryURL())
+    }
+
     private static func cacheFile(url: String) -> URL {
         let digest = SHA256Helper.hexDigest(url)
+        cacheDirectoryURL().appendingPathComponent("\(digest).json")
+    }
+
+    private static func cacheDirectoryURL() -> URL {
         let base = (try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         )) ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent(directory).appendingPathComponent("\(digest).json")
+        return base.appendingPathComponent(directory)
     }
 }
 

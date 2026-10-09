@@ -178,13 +178,25 @@ struct FloatingHomeNavigation: View {
 
     var body: some View {
         SystemGlassContainer(spacing: Self.itemGap) {
-            HStack(spacing: Self.itemGap) {
-                if !isSearchPresented {
-                    tabCapsule
+            // Reserve the expanded field's complete width and keep every state pinned to its
+            // trailing edge. The compact circle and the expanded capsule therefore share the same
+            // right edge: opening grows leftward out of the search control instead of appearing to
+            // originate in the tab strip on its left.
+            ZStack(alignment: .trailing) {
+                if isSearchPresented {
+                    searchSurface
+                } else {
+                    HStack(spacing: Self.itemGap) {
+                        tabCapsule
+                        searchSurface
+                    }
                 }
-
-                searchSurface
             }
+            .frame(
+                width: Self.expandedWidth,
+                height: Self.barHeight,
+                alignment: .trailing
+            )
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .animation(reduceMotion ? nil : morphSpring, value: isSearchPresented)
