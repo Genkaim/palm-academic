@@ -314,7 +314,7 @@ enum MaterialPageCache {
 
     private static func cacheFile(url: String) -> URL {
         let digest = SHA256Helper.hexDigest(url)
-        cacheDirectoryURL().appendingPathComponent("\(digest).json")
+        return cacheDirectoryURL().appendingPathComponent("\(digest).json")
     }
 
     private static func cacheDirectoryURL() -> URL {
