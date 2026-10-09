@@ -29,6 +29,12 @@ struct PortalPollHistoryDetail: Codable, Identifiable {
     var technicalDetails: String?
     var notificationEnabled: Bool?
     var responseCode: Int?
+    /// Mirrors Android's diagnostic fields. Optional keeps logs from earlier app versions
+    /// decodable while allowing every new run to show the requested/final URL and both snapshots.
+    var requestURL: String?
+    var finalURL: String?
+    var previousContent: String?
+    var currentContent: String?
 
     init(
         id: UUID = UUID(),
@@ -39,7 +45,11 @@ struct PortalPollHistoryDetail: Codable, Identifiable {
         difference: String = "",
         technicalDetails: String? = nil,
         notificationEnabled: Bool? = nil,
-        responseCode: Int? = nil
+        responseCode: Int? = nil,
+        requestURL: String? = nil,
+        finalURL: String? = nil,
+        previousContent: String? = nil,
+        currentContent: String? = nil
     ) {
         self.id = id
         self.category = category
@@ -50,13 +60,18 @@ struct PortalPollHistoryDetail: Codable, Identifiable {
         self.technicalDetails = technicalDetails
         self.notificationEnabled = notificationEnabled
         self.responseCode = responseCode
+        self.requestURL = requestURL
+        self.finalURL = finalURL
+        self.previousContent = previousContent
+        self.currentContent = currentContent
     }
 }
 
 enum PortalPollHistory {
     private static let entriesKey = "poll_history_entries"
-    private static let limit = 60
     private static let acknowledgedPrefix = "poll_history_read_"
+    private static let fileName = "portal_poll_history.json"
+    private static let lock = NSLock()
     static let didChangeNotification = Notification.Name("portalPollHistoryDidChange")
 
     struct UnreadChange: Equatable {
@@ -66,22 +81,25 @@ enum PortalPollHistory {
     }
 
     static func load() -> [PortalPollHistoryEntry] {
-        guard let data = UserDefaults.standard.data(forKey: entriesKey) else { return [] }
-        return (try? JSONDecoder().decode([PortalPollHistoryEntry].self, from: data)) ?? []
+        lock.lock()
+        defer { lock.unlock() }
+        return readUnlocked()
     }
 
     static func append(_ entry: PortalPollHistoryEntry) {
-        var entries = load()
+        lock.lock()
+        var entries = readUnlocked()
         entries.insert(entry, at: 0)
-        if entries.count > limit { entries = Array(entries.prefix(limit)) }
-        if let data = try? JSONEncoder().encode(entries) {
-            UserDefaults.standard.set(data, forKey: entriesKey)
-        }
+        writeUnlocked(entries)
+        lock.unlock()
         publishChange()
     }
 
     static func clear() {
+        lock.lock()
+        try? FileManager.default.removeItem(at: historyFile)
         UserDefaults.standard.removeObject(forKey: entriesKey)
+        lock.unlock()
         for type in ["schedule", "grade", "exam", "program"] {
             UserDefaults.standard.removeObject(forKey: acknowledgedPrefix + type)
         }
@@ -89,10 +107,47 @@ enum PortalPollHistory {
     }
 
     static func replace(_ entries: [PortalPollHistoryEntry]) {
-        if let data = try? JSONEncoder().encode(entries) {
-            UserDefaults.standard.set(data, forKey: entriesKey)
-        }
+        lock.lock()
+        writeUnlocked(entries)
+        lock.unlock()
         publishChange()
+    }
+
+    /// Android stores this potentially large diagnostic record as an atomic JSON file. Keeping
+    /// full before/after snapshots in UserDefaults can exceed the preferences daemon's practical
+    /// limit and silently lose the very log needed to diagnose a failed comparison, so iOS uses
+    /// the same file-backed model and migrates the earlier preference value once.
+    private static var historyFile: URL {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return root.appendingPathComponent(fileName)
+    }
+
+    private static func readUnlocked() -> [PortalPollHistoryEntry] {
+        if let data = try? Data(contentsOf: historyFile),
+           let entries = try? JSONDecoder().decode([PortalPollHistoryEntry].self, from: data) {
+            return entries
+        }
+        guard let legacy = UserDefaults.standard.data(forKey: entriesKey),
+              let entries = try? JSONDecoder().decode([PortalPollHistoryEntry].self, from: legacy) else {
+            return []
+        }
+        writeUnlocked(entries)
+        return entries
+    }
+
+    private static func writeUnlocked(_ entries: [PortalPollHistoryEntry]) {
+        do {
+            try FileManager.default.createDirectory(
+                at: historyFile.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(entries)
+            try data.write(to: historyFile, options: .atomic)
+            UserDefaults.standard.removeObject(forKey: entriesKey)
+        } catch {
+            NSLog("portal history write failed: \(error.localizedDescription)")
+        }
     }
 
     /// The same text representation Android writes through its CreateDocument contract. Keeping
@@ -176,8 +231,20 @@ enum PortalPollHistory {
                 if let code = detail.responseCode, !(200...299).contains(code) {
                     output.append("HTTP 状态：\(code)")
                 }
+                if let requestURL = detail.requestURL, !requestURL.isEmpty {
+                    output.append("请求地址：\(requestURL)")
+                }
+                if let finalURL = detail.finalURL, !finalURL.isEmpty, finalURL != detail.requestURL {
+                    output.append("最终地址：\(finalURL)")
+                }
                 if !detail.difference.isEmpty {
                     output += ["数据明细：", detail.difference]
+                }
+                if let previous = detail.previousContent, !previous.isEmpty {
+                    output += ["比较前快照：", previous]
+                }
+                if let current = detail.currentContent, !current.isEmpty {
+                    output += ["比较后快照：", current]
                 }
                 if let technical = detail.technicalDetails, !technical.isEmpty {
                     output += ["技术详情：", technical]

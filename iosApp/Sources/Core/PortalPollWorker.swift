@@ -252,7 +252,11 @@ final class PortalPollWorker {
                 changed: changed
             ),
             notificationEnabled: NotificationPreferences.shared.scheduleEnabled,
-            responseCode: response.statusCode
+            responseCode: response.statusCode,
+            requestURL: response.requestURL,
+            finalURL: response.finalURL,
+            previousContent: previous,
+            currentContent: snapshot
         )
     }
 
@@ -297,7 +301,11 @@ final class PortalPollWorker {
                 changed: changed
             ),
             notificationEnabled: enabled,
-            responseCode: response.statusCode
+            responseCode: response.statusCode,
+            requestURL: response.requestURL,
+            finalURL: response.finalURL,
+            previousContent: previous,
+            currentContent: snapshot
         )
     }
 
@@ -372,6 +380,7 @@ final class PortalPollWorker {
 
     private struct Response {
         let body: String
+        let requestURL: String
         let finalURL: String
         let statusCode: Int
         let errorDescription: String?
@@ -395,15 +404,23 @@ final class PortalPollWorker {
                 category: category,
                 summary: summary,
                 notificationTriggered: notificationTriggered,
-                technicalDetails: technicalDetails ?? errorDescription ?? "HTTP \(statusCode) · \(finalURL)",
-                responseCode: statusCode
+                technicalDetails: technicalDetails ?? errorDescription,
+                responseCode: statusCode,
+                requestURL: requestURL,
+                finalURL: finalURL
             )
         }
     }
 
     private func get(_ urlString: String, referer: String? = nil, ajax: Bool = false) async -> Response {
         guard let url = URL(string: urlString) else {
-            return Response(body: "", finalURL: urlString, statusCode: -1, errorDescription: "URL 无效：\(urlString)")
+            return Response(
+                body: "",
+                requestURL: urlString,
+                finalURL: urlString,
+                statusCode: -1,
+                errorDescription: "URL 无效：\(urlString)"
+            )
         }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -429,6 +446,7 @@ final class PortalPollWorker {
                 ?? ""
             return Response(
                 body: body,
+                requestURL: urlString,
                 finalURL: http?.url?.absoluteString ?? urlString,
                 statusCode: http?.statusCode ?? -1,
                 errorDescription: nil
@@ -436,6 +454,7 @@ final class PortalPollWorker {
         } catch {
             return Response(
                 body: "",
+                requestURL: urlString,
                 finalURL: urlString,
                 statusCode: -1,
                 errorDescription: "GET \(urlString) 失败：\(error.localizedDescription)"

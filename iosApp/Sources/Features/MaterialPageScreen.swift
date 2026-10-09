@@ -147,19 +147,27 @@ struct MaterialPageScreen: View {
         // and the title floats over the content rather than sitting inside a strip.
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                if !exports.isEmpty {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                // The timetable always owns a visible export affordance. Keeping it present while
+                // the first snapshot is loading prevents the trailing controls from jumping; it
+                // becomes enabled as soon as at least one export file has been produced.
+                if item.nativeType == "schedule" {
                     Menu {
-                        ForEach(ScheduleExport.Format.allCases) { format in
-                            if let url = exports[format] {
-                                ShareLink(item: url) {
-                                    Label(format.displayName, systemImage: format.systemImage)
+                        if exports.isEmpty {
+                            Text("课表加载完成后即可导出")
+                        } else {
+                            ForEach(ScheduleExport.Format.allCases) { format in
+                                if let url = exports[format] {
+                                    ShareLink(item: url) {
+                                        Label(format.displayName, systemImage: format.systemImage)
+                                    }
                                 }
                             }
                         }
                     } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
+                    .disabled(exports.isEmpty)
                     .accessibilityLabel("导出课表")
                 }
                 Button {
@@ -296,7 +304,7 @@ struct MaterialPageScreen: View {
                     // transition; content/error callbacks own the others.
                 }
             },
-            onContent: { newPage in
+            onContent: { newPage, _ in
                 Task { @MainActor in
                     accept(newPage)
                 }
@@ -381,6 +389,12 @@ struct MaterialPageScreen: View {
         .refreshable {
             retry()
             try? await Task.sleep(nanoseconds: 600_000_000)
+        }
+        // This screen is pushed inside HomeView's navigation stack, but the shell's floating tab
+        // bar is a UIKit sibling above that stack. HomeView's own inset does not propagate through
+        // a pushed destination, so every redrawn page must reserve the same clearance itself.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear.frame(height: BottomClearance.height)
         }
     }
 
@@ -1066,7 +1080,7 @@ struct MaterialPageScreen: View {
         // never calls back, and a spinner that never resolves is indistinguishable from "still
         // working". After this long without content the page says so and offers a retry, which is
         // what turns an undebuggable hang into a reportable state.
-        try? await Task.sleep(nanoseconds: 20_000_000_000)
+        try? await Task.sleep(nanoseconds: 40_000_000_000)
         guard !Task.isCancelled else { return }
         if renderedPage != nil {
             // A cached snapshot is on screen and the fresh fetch never produced data: end the
@@ -1082,7 +1096,7 @@ struct MaterialPageScreen: View {
         // The page's own account of what went wrong comes first; the local-network answer comes
         // next, because a refused private-address connection is invisible from the load's own
         // report and would otherwise be indistinguishable from a broken reader.
-        var reason = diagnostic ?? "页面在 20 秒内没有返回数据，可能是教务会话已失效或该页面需要网页端交互。"
+        var reason = diagnostic ?? "页面在 40 秒内没有返回数据，可能是教务会话已失效或该页面需要网页端交互。"
         if diagnostic == nil, !LocalNetworkProbe.shared.state.isHealthy {
             reason += "\n本地网络：\(LocalNetworkProbe.shared.state.label)"
         }

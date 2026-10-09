@@ -605,19 +605,48 @@ enum QuickEntryBaseline {
         // data. A partial cache must stay pending, otherwise the missing page can be mistaken for
         // a legitimate empty baseline by the first background comparison.
         guard snapshots.count == 4 else { return }
+        // Seed the exact business keys read by PortalPollWorker. Earlier builds only wrote a log
+        // saying that a baseline existed; the first background run still found nil and silently
+        // established a second baseline. Persisting the normalized rows here makes the first
+        // scheduled comparison a real comparison, including a legitimate empty initial state.
+        let defaults = UserDefaults.standard
+        for snapshot in snapshots {
+            guard let nativeType = snapshot.item.nativeType else { continue }
+            let rows = PortalLogDetails.rows(for: nativeType, json: snapshot.json)
+            let encoded = PortalLogDetails.encode(rows)
+            defaults.set(snapshot.json, forKey: "snapshot_\(nativeType)")
+            switch nativeType {
+            case "schedule":
+                defaults.set(encoded, forKey: "course_business_snapshot_v1")
+                defaults.set(!rows.isEmpty, forKey: "course_has_entries")
+            case "grade":
+                defaults.set(encoded, forKey: "grade_business_snapshot_v1")
+            case "exam":
+                defaults.set(encoded, forKey: "exam_business_snapshot_v1")
+            default:
+                break
+            }
+        }
+
         PortalPollHistory.append(PortalPollHistoryEntry(
             timestamp: Date(),
             status: "首次登录基线已建立（4 项）",
             notificationTriggered: false,
             details: snapshots.map { snapshot in
-                PortalPollHistoryDetail(
+                let rows = PortalLogDetails.rows(
+                    for: snapshot.item.nativeType ?? "",
+                    json: snapshot.json
+                )
+                return PortalPollHistoryDetail(
                     category: category(for: snapshot.item.nativeType),
                     summary: "已建立初始数据",
                     difference: PortalLogDetails.describe(
                         previousSnapshot: nil,
-                        currentRows: PortalLogDetails.rows(for: snapshot.item.nativeType ?? "", json: snapshot.json),
+                        currentRows: rows,
                         changed: false
-                    )
+                    ),
+                    previousContent: nil,
+                    currentContent: PortalLogDetails.encode(rows)
                 )
             }
         ))

@@ -1,5 +1,7 @@
 import SwiftUI
 import UIKit
+import BackgroundTasks
+import UserNotifications
 
 /// Port of `SettingsActivity.kt`.
 ///
@@ -495,7 +497,31 @@ struct NoticeHistoryScreen: View {
             if let code = detail.responseCode, !(200...299).contains(code) {
                 Text("HTTP 状态：\(code)").font(.caption)
             }
+            if let requestURL = detail.requestURL, !requestURL.isEmpty {
+                Text("请求：\(requestURL)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(PortalPalette.secondaryText)
+            }
+            if let finalURL = detail.finalURL, !finalURL.isEmpty, finalURL != detail.requestURL {
+                Text("最终地址：\(finalURL)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(PortalPalette.secondaryText)
+            }
             if !detail.difference.isEmpty { Text(detail.difference).font(.caption).foregroundStyle(PortalPalette.secondaryText) }
+            if let previous = detail.previousContent, !previous.isEmpty {
+                Text("比较前快照")
+                    .font(.caption.weight(.semibold))
+                Text(previous)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(PortalPalette.secondaryText)
+            }
+            if let current = detail.currentContent, !current.isEmpty {
+                Text("比较后快照")
+                    .font(.caption.weight(.semibold))
+                Text(current)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(PortalPalette.secondaryText)
+            }
             if let technical = detail.technicalDetails, !technical.isEmpty { Text(technical).font(.caption2).foregroundStyle(PortalPalette.outline) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -515,21 +541,49 @@ struct NoticeHistoryScreen: View {
 /// brief allows; what has to match is that the page exists, is reachable in one tap, and says what
 /// state the app is actually in.
 struct BackgroundSupportScreen: View {
-    @EnvironmentObject private var state: AppState
     @ObservedObject private var notifications = NotificationPreferences.shared
     @ObservedObject private var localNetwork = LocalNetworkProbe.shared
     @State private var authorisation: UNAuthorizationStatus = .notDetermined
     @State private var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+    @State private var backgroundRefreshStatus: UIBackgroundRefreshStatus = .restricted
+    @State private var hasPendingRefresh = false
+    @State private var pendingRefreshDate: Date?
 
     var body: some View {
         List {
             Section {
-                statusRow(
-                    icon: PortalRowIcon("network"),
-                    title: "本地网络权限",
-                    detail: localNetworkDetail,
-                    healthy: localNetwork.state.isHealthy
-                )
+                Button {
+                    Task { await localNetwork.probe(force: true) }
+                } label: {
+                    actionableStatusRow(
+                        icon: PortalRowIcon("network"),
+                        title: "本地网络",
+                        detail: localNetworkDetail,
+                        healthy: localNetwork.state.isHealthy
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Button(action: openSystemSettings) {
+                    actionableStatusRow(
+                        icon: PortalRowIcon("arrow.clockwise.circle"),
+                        title: "后台 App 刷新",
+                        detail: backgroundRefreshLabel,
+                        healthy: backgroundRefreshStatus == .available
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Button(action: notificationPermissionAction) {
+                    actionableStatusRow(
+                        icon: PortalRowIcon("bell.badge"),
+                        title: "通知权限",
+                        detail: authorisationLabel,
+                        healthy: authorisation == .authorized || authorisation == .provisional
+                    )
+                }
+                .buttonStyle(.plain)
+
                 statusRow(
                     icon: PortalRowIcon("bolt"),
                     title: "低电量模式",
@@ -538,53 +592,25 @@ struct BackgroundSupportScreen: View {
                         : "已关闭，后台刷新按请求间隔执行",
                     healthy: !lowPowerMode
                 )
-                statusRow(
-                    icon: PortalRowIcon("bell.badge"),
-                    title: "通知权限",
-                    detail: authorisationLabel,
-                    healthy: authorisation == .authorized || authorisation == .provisional
-                )
-                statusRow(
-                    icon: PortalRowIcon("arrow.triangle.2.circlepath"),
-                    title: "后台检查",
-                    detail: notifications.monitorEnabled
-                        ? "已开启，每 \(notifications.intervalMinutes) 分钟请求一次"
-                        : "已关闭",
-                    healthy: notifications.monitorEnabled
-                )
             } header: {
-                Text("系统状态")
+                Text("权限与运行条件")
             } footer: {
-                Text("iOS 不会让应用常驻后台。刷新由系统的 BGTaskScheduler 调度，"
-                     + "实际执行时间取决于电量与使用习惯，可在「设置 → 通用 → 后台 App 刷新」中查看本应用的授权。")
+                Text("点按本地网络可重新探测；点按后台刷新或通知可前往系统设置。低电量模式需要在控制中心或电池设置中关闭。")
             }
 
             Section {
-                Button {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                } label: {
-                    PortalSettingsRow(
-                        icon: PortalRowIcon("gearshape"),
-                        title: "打开系统设置",
-                        subtitle: "调整通知、低电量模式与后台 App 刷新"
-                    )
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    Task { await localNetwork.probe(force: true) }
-                } label: {
-                    PortalSettingsRow(
-                        icon: PortalRowIcon("arrow.clockwise"),
-                        title: "重新检测",
-                        subtitle: localNetwork.state.label
-                    )
-                }
-                .buttonStyle(.plain)
+                statusRow(
+                    icon: PortalRowIcon("clock.arrow.circlepath"),
+                    title: "后台检查计划",
+                    detail: backgroundScheduleLabel,
+                    healthy: notifications.monitorEnabled
+                        && backgroundRefreshStatus == .available
+                        && hasPendingRefresh
+                )
             } header: {
-                Text("操作")
+                Text("系统调度")
+            } footer: {
+                Text("iOS 不允许应用按固定分钟数常驻或准点唤醒。应用会以所选间隔作为最早执行时间提交任务，实际运行时刻由系统结合电量、网络与使用习惯决定。")
             }
         }
         .listStyle(.insetGrouped)
@@ -596,6 +622,12 @@ struct BackgroundSupportScreen: View {
         .onAppear {
             refreshStatus()
             Task { await localNetwork.probe() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            refreshStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
+            refreshStatus()
         }
     }
 
@@ -629,8 +661,39 @@ struct BackgroundSupportScreen: View {
                     .foregroundStyle(healthy ? PortalPalette.secondaryText : PortalPalette.error)
             }
             Spacer(minLength: 8)
+            Image(systemName: healthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(healthy ? Color.green : PortalPalette.error)
+                .accessibilityHidden(true)
         }
         .padding(.vertical, 4)
+        .frame(minHeight: 44)
+    }
+
+    private func actionableStatusRow(
+        icon: PortalRowIcon,
+        title: String,
+        detail: String,
+        healthy: Bool
+    ) -> some View {
+        HStack(spacing: 12) {
+            icon.glyph()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.body)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(healthy ? PortalPalette.secondaryText : PortalPalette.error)
+            }
+            Spacer(minLength: 8)
+            Image(systemName: healthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(healthy ? Color.green : PortalPalette.error)
+                .accessibilityHidden(true)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+        }
+        .padding(.vertical, 4)
+        .frame(minHeight: 44)
     }
 
     private var authorisationLabel: String {
@@ -644,11 +707,54 @@ struct BackgroundSupportScreen: View {
         }
     }
 
+    private var backgroundRefreshLabel: String {
+        switch backgroundRefreshStatus {
+        case .available: return "系统已允许"
+        case .denied: return "已关闭，后台比较不会运行"
+        case .restricted: return "受系统或设备管理限制"
+        @unknown default: return "未知"
+        }
+    }
+
+    private var backgroundScheduleLabel: String {
+        guard notifications.monitorEnabled else { return "变动通知已关闭" }
+        guard backgroundRefreshStatus == .available else { return "等待后台 App 刷新权限" }
+        guard hasPendingRefresh else { return "尚未发现待执行任务，重新进入应用后会补充调度" }
+        if let pendingRefreshDate {
+            return "已请求系统调度，最早 \(pendingRefreshDate.formatted(date: .omitted, time: .shortened)) 后可运行"
+        }
+        return "已请求系统调度，等待系统安排"
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+
+    private func notificationPermissionAction() {
+        guard authorisation == .notDetermined else {
+            openSystemSettings()
+            return
+        }
+        Task {
+            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+            await MainActor.run { refreshStatus() }
+        }
+    }
+
     private func refreshStatus() {
         lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        backgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             let status = settings.authorizationStatus
             Task { @MainActor in authorisation = status }
+        }
+        BGTaskScheduler.shared.getPendingTaskRequests { requests in
+            Task { @MainActor in
+                let refreshRequests = requests.filter { $0.identifier == PortalMonitor.refreshTaskIdentifier }
+                hasPendingRefresh = !refreshRequests.isEmpty
+                pendingRefreshDate = refreshRequests.compactMap(\.earliestBeginDate).min()
+            }
         }
     }
 }

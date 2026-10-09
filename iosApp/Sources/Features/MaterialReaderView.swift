@@ -19,7 +19,10 @@ struct MaterialReaderView: UIViewRepresentable {
     let action: MaterialReaderAction?
     let isDark: Bool
     let onLoading: (Bool) -> Void
-    let onContent: (MaterialPage) -> Void
+    /// Delivers both the parsed page used by SwiftUI and the adapter's original JSON used for
+    /// comparison baselines. Passing the raw publication directly also lets a stable, legitimate
+    /// empty page establish a baseline without polluting the visible-page cache with DOM skeletons.
+    let onContent: (MaterialPage, String) -> Void
     let onError: (String) -> Void
     let onSessionExpired: () -> Void
     /// Why the page produced nothing, in the page's own words.
@@ -74,16 +77,14 @@ struct MaterialReaderView: UIViewRepresentable {
             if (!window.PalmAcademicAdapter) {
               report('适配器脚本未安装。host=' + (window.PalmAcademicHost ? 'ok' : 'missing')
                 + ' adapterLength=' + \(adapterScript.count));
-            } else if (window.__portalPublished !== true) {
-              report('适配器已加载但没有产出内容：URL=' + location.pathname
-                + ' bodyLength=' + (document.body ? document.body.innerText.length : -1));
             }
-          }, 6000);
+          }, 8000);
           setTimeout(function () {
             if (window.__portalPublished !== true) {
-              report('15 秒仍未收到数据：URL=' + location.pathname);
+              report('适配器已加载但 30 秒仍未产出内容：URL=' + location.pathname
+                + ' bodyLength=' + (document.body ? document.body.innerText.length : -1));
             }
-          }, 15000);
+          }, 30000);
         })();
         """
 
@@ -153,14 +154,24 @@ struct MaterialReaderView: UIViewRepresentable {
         // cached shell whose scripts then run against stale state was one of the ways those two
         // pages spun forever on iOS.
         if let target = URL(string: url) {
-            let request = URLRequest(
-                url: target,
-                cachePolicy: .reloadIgnoringLocalCacheData,
-                timeoutInterval: 60
-            )
-            SessionStore.shared.restoreToWebView { [weak webView] in
-                context.coordinator.initialLoadStarted = true
-                webView?.load(request)
+            // Android disables network images for every hidden reader. Match that policy with a
+            // WebKit content rule so a timetable fetch does not compete with portal banners and
+            // avatars on a phone hotspot. Rule compilation is cached by WebKit; a bounded fallback
+            // still starts the page if the rule store is unexpectedly unavailable.
+            let imageRule = """
+            [{"trigger":{"url-filter":".*","resource-type":["image"]},"action":{"type":"block"}}]
+            """
+            WKContentRuleListStore.default().compileContentRuleList(
+                forIdentifier: "PalmAcademic.BlockPortalImages.v1",
+                encodedContentRuleList: imageRule
+            ) { rule, _ in
+                DispatchQueue.main.async {
+                    if let rule { controller.add(rule) }
+                    context.coordinator.beginInitialLoad(webView, target: target)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                context.coordinator.beginInitialLoad(webView, target: target)
             }
         }
         return webView
@@ -177,7 +188,7 @@ struct MaterialReaderView: UIViewRepresentable {
         // data only exists after that state machine runs.
         if context.coordinator.initialLoadStarted, context.coordinator.refreshToken != refreshToken {
             context.coordinator.refreshToken = refreshToken
-            webView.reload()
+            context.coordinator.loadFresh(webView)
         }
         if let action, context.coordinator.actionToken != action.token {
             context.coordinator.actionToken = action.token
@@ -241,7 +252,7 @@ struct MaterialReaderView: UIViewRepresentable {
                 MaterialPageCache.save(url: parent.url, json: json)
             }
             if let parent = coordinator?.parent {
-                parent.onContent(page)
+                parent.onContent(page, json)
             }
         }
     }
@@ -254,10 +265,14 @@ struct MaterialReaderView: UIViewRepresentable {
         /// the cookie restore). A refresh-token bump observed before then is the screen's initial
         // fetch, not a reload, and must not cancel the entry load.
         var initialLoadStarted = false
+        private var initialRestoreRequested = false
         weak var bridgeHandler: BridgeHandler?
         /// Tells the page that a payload has been delivered, so the injected watchdog can stop
         /// reporting a failure that has in fact been resolved.
         private var didPublish = false
+        /// A single native retry makes transient hotspot drops match Android WebView's practical
+        /// behaviour without hiding a persistent failure behind an endless spinner.
+        private var transientRetryCount = 0
 
         init(parent: MaterialReaderView) {
             self.parent = parent
@@ -268,6 +283,31 @@ struct MaterialReaderView: UIViewRepresentable {
         func markPublished() {
             guard !didPublish else { return }
             didPublish = true
+            transientRetryCount = 0
+        }
+
+        func beginInitialLoad(_ webView: WKWebView, target: URL) {
+            guard !initialRestoreRequested else { return }
+            initialRestoreRequested = true
+            SessionStore.shared.restoreToWebView { [weak self, weak webView] in
+                guard let self, let webView else { return }
+                self.loadFresh(webView, target: target)
+            }
+        }
+
+        func loadFresh(_ webView: WKWebView, target: URL? = nil, resetRetry: Bool = true) {
+            guard let target = target ?? URL(string: parent.url) else {
+                parent.onLoading(false)
+                parent.onError("页面地址无效")
+                return
+            }
+            if resetRetry { transientRetryCount = 0 }
+            initialLoadStarted = true
+            webView.load(URLRequest(
+                url: target,
+                cachePolicy: .reloadIgnoringLocalCacheData,
+                timeoutInterval: 60
+            ))
         }
 
         func applyAppearance(to webView: WKWebView, isDark: Bool) {
@@ -347,8 +387,11 @@ struct MaterialReaderView: UIViewRepresentable {
                 parent.onSessionExpired()
                 return
             }
-            // Observe the DOM as soon as it is drawable instead of waiting for every subresource.
-            injectReader(webView)
+            // The first installation belongs exclusively to the document-end user script. At
+            // didCommit the final document frequently has no body yet; injecting here let the
+            // adapter create its global and then throw while attaching its MutationObserver. The
+            // later document-end script saw that global and returned, yielding the misleading
+            // "adapter loaded but no content" failure.
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -363,17 +406,53 @@ struct MaterialReaderView: UIViewRepresentable {
             Task {
                 await SessionStore.shared.captureFromWebView()
             }
-            // Fallback for page loads that never issued a commit callback.
+            parent.onLoading(false)
+            // Back/forward-cache fallback. A normal navigation was already installed safely by
+            // the document-end script; `injectReader` only republishes in that case.
             injectReader(webView)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            parent.onLoading(false)
-            parent.onError(error.localizedDescription.isEmpty ? "内容加载失败" : error.localizedDescription)
+            handleFailure(in: webView, error: error)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard (error as NSError).code != NSURLErrorCancelled else { return }
+            handleFailure(in: webView, error: error)
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            handleFailure(
+                in: webView,
+                error: NSError(
+                    domain: WKErrorDomain,
+                    code: WKError.Code.webContentProcessTerminated.rawValue,
+                    userInfo: [NSLocalizedDescriptionKey: "网页进程已终止"]
+                )
+            )
+        }
+
+        private func handleFailure(in webView: WKWebView, error: Error) {
+            let nsError = error as NSError
+            let retryableCodes: Set<Int> = [
+                NSURLErrorTimedOut,
+                NSURLErrorNetworkConnectionLost,
+                NSURLErrorCannotConnectToHost,
+                NSURLErrorCannotFindHost,
+                NSURLErrorDNSLookupFailed,
+                WKError.Code.webContentProcessTerminated.rawValue
+            ]
+            if transientRetryCount == 0,
+               (nsError.domain == NSURLErrorDomain || nsError.domain == WKErrorDomain),
+               retryableCodes.contains(nsError.code) {
+                transientRetryCount = 1
+                parent.onLoading(true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak webView] in
+                    guard let self, let webView else { return }
+                    self.loadFresh(webView, resetRetry: false)
+                }
+                return
+            }
             parent.onLoading(false)
             parent.onError(error.localizedDescription.isEmpty ? "内容加载失败" : error.localizedDescription)
         }

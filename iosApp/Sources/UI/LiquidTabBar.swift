@@ -143,9 +143,11 @@ struct LiquidTabItem: Identifiable, Hashable {
 /// full-width material strip behind it -- a backdrop rectangle filled the home-indicator gutter
 /// with an opaque blur and read as a dead block of colour.
 ///
-/// The compact circle and expanded search capsule share one native glass identity inside a
-/// `GlassEffectContainer`. SwiftUI therefore treats the conditional states as one liquid surface
-/// morph, while the tab capsule is absorbed along the same spring instead of flashing away.
+/// The compact circle and expanded search capsule share one stable native glass identity. Search
+/// uses its own glass container, separate from the tab capsule: grouping all three controls in one
+/// container made iOS merge the expanding material out of the Home/Settings pill. Keeping the
+/// search surface stable and trailing-aligned makes the expansion visibly originate at the round
+/// search button, while the destination pill simply fades behind it.
 struct FloatingHomeNavigation: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -177,27 +179,32 @@ struct FloatingHomeNavigation: View {
     private var isSearchPresented: Bool { state.isSearchPresented }
 
     var body: some View {
-        SystemGlassContainer(spacing: Self.itemGap) {
-            // Reserve the expanded field's complete width and keep every state pinned to its
-            // trailing edge. The compact circle and the expanded capsule therefore share the same
-            // right edge: opening grows leftward out of the search control instead of appearing to
-            // originate in the tab strip on its left.
-            ZStack(alignment: .trailing) {
-                if isSearchPresented {
-                    searchSurface
-                } else {
-                    HStack(spacing: Self.itemGap) {
-                        tabCapsule
-                        searchSurface
-                    }
+        // Both layers reserve the final width and share the same trailing edge. The tab layer is
+        // never used as geometry for the search morph; it only fades, so no material can appear to
+        // stretch out of the Home or Settings buttons.
+        ZStack(alignment: .trailing) {
+            SystemGlassContainer(spacing: Self.itemGap) {
+                HStack(spacing: Self.itemGap) {
+                    tabCapsule
+                    Color.clear
+                        .frame(width: Self.barHeight, height: Self.barHeight)
+                        .allowsHitTesting(false)
                 }
             }
-            .frame(
-                width: Self.expandedWidth,
-                height: Self.barHeight,
-                alignment: .trailing
-            )
+            .opacity(isSearchPresented ? 0 : 1)
+            .scaleEffect(isSearchPresented ? 0.98 : 1, anchor: .trailing)
+            .allowsHitTesting(!isSearchPresented)
+
+            SystemGlassContainer {
+                searchSurface
+            }
+            .zIndex(1)
         }
+        .frame(
+            width: Self.expandedWidth,
+            height: Self.barHeight,
+            alignment: .trailing
+        )
         .frame(maxWidth: .infinity, alignment: .center)
         .animation(reduceMotion ? nil : morphSpring, value: isSearchPresented)
         // The host pins this view to the screen's bottom edge; SwiftUI's own safe-area inset
@@ -233,33 +240,29 @@ struct FloatingHomeNavigation: View {
         }
     }
 
-    /// The compact control is explicitly a `Circle`, rather than relying on a capsule whose
-    /// outer frame happens to be square. Both states use the same native glass identity, so the
-    /// system morphs the circle into the expanded capsule instead of cross-fading two materials.
-    @ViewBuilder
+    /// One capsule-backed surface owns both sizes. At 66×66 the capsule is geometrically a circle;
+    /// animating only its width keeps the right edge fixed and lets native glass interpolate one
+    /// object instead of replacing two conditional surfaces.
     private var searchSurface: some View {
-        if isSearchPresented {
-            SystemGlassSurface(
-                shape: Capsule(style: .continuous),
-                interactive: true,
-                effectID: "search",
-                namespace: glassEffects
-            ) {
+        SystemGlassSurface(
+            shape: Capsule(style: .continuous),
+            interactive: true,
+            effectID: "search",
+            namespace: glassEffects
+        ) {
+            ZStack {
                 expandedSearchContent
-                    // Size must be established before `.glassEffect`; the effect reads its input
-                    // view's bounds and cannot infer a later outer frame.
-                    .frame(width: Self.expandedWidth, height: Self.barHeight)
-            }
-        } else {
-            SystemGlassSurface(
-                shape: Circle(),
-                interactive: true,
-                effectID: "search",
-                namespace: glassEffects
-            ) {
+                    .opacity(isSearchPresented ? 1 : 0)
+                    .allowsHitTesting(isSearchPresented)
                 compactSearchButton
-                    .frame(width: Self.barHeight, height: Self.barHeight)
+                    .opacity(isSearchPresented ? 0 : 1)
+                    .allowsHitTesting(!isSearchPresented)
             }
+            // Size is established before `.glassEffect`; the material reads these animated bounds.
+            .frame(
+                width: isSearchPresented ? Self.expandedWidth : Self.barHeight,
+                height: Self.barHeight
+            )
         }
     }
 
@@ -267,7 +270,11 @@ struct FloatingHomeNavigation: View {
         Button {
             // presentSearch also switches the pager back to home: search filters the home list,
             // so opening it while the settings page is showing must not strand the search UI.
-            state.presentSearch()
+            if reduceMotion {
+                state.presentSearch()
+            } else {
+                withAnimation(morphSpring) { state.presentSearch() }
+            }
         } label: {
             Image(systemName: "magnifyingglass")
                 .font(.title3.weight(.semibold))
@@ -292,7 +299,11 @@ struct FloatingHomeNavigation: View {
                 .focused($searchFocused)
                 .accessibilityLabel("搜索教务功能")
             Button {
-                state.dismissSearch()
+                if reduceMotion {
+                    state.dismissSearch()
+                } else {
+                    withAnimation(morphSpring) { state.dismissSearch() }
+                }
             } label: {
                 Image(systemName: "xmark")
                     .font(.subheadline.weight(.semibold))
@@ -308,7 +319,10 @@ struct FloatingHomeNavigation: View {
     private func tabButton(_ item: LiquidTabItem) -> some View {
         let selected = state.selectedTab == item
         return Button {
-            if state.isSearchPresented { state.dismissSearch() }
+            if state.isSearchPresented {
+                if reduceMotion { state.dismissSearch() }
+                else { withAnimation(morphSpring) { state.dismissSearch() } }
+            }
             if reduceMotion {
                 state.selectedTab = item
             } else {

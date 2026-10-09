@@ -57,6 +57,11 @@ struct HomeView: View {
                 // surface is open, including before the first character is entered.
                 if !state.isSearchPresented {
                     statusPanel
+                        .transition(
+                            reduceMotion
+                                ? .identity
+                                : .opacity.combined(with: .scale(scale: 0.98, anchor: .top))
+                        )
                 }
 
                 if !visibleQuickItems.isEmpty {
@@ -98,6 +103,10 @@ struct HomeView: View {
             // bottom. The inset-grouped section cards keep their own row backgrounds.
             .scrollContentBackground(.hidden)
             .background(PortalPalette.page.ignoresSafeArea())
+            .animation(
+                reduceMotion ? nil : .timingCurve(0.23, 1, 0.32, 1, duration: 0.22),
+                value: state.isSearchPresented
+            )
             .navigationBarTitleDisplayMode(.inline)
             // The nav bar's own chrome is dropped so the list and its section headers extend under
             // the status bar; the bar itself is drawn as transparent glass by the shell. Without

@@ -144,21 +144,23 @@ struct QuickEntryBaselinePrefetch: View {
             action: nil,
             isDark: state.isDark,
             onLoading: { _ in },
-            onContent: { page in
+            onContent: { page, json in
                 // The raw JSON is read back rather than re-serialising the parsed page: the log
                 // description and the later snapshot comparison both work off the adapter's own
                 // output, and a round trip through the Swift model would lose fields they use.
                 //
-                // Only a populated page seeds the baseline: an interim "暂无…" skeleton publication
-                // would otherwise be recorded as the first observation and make the real data read
-                // as a change on the next check.
-                guard QuickEntryBaseline.hasData(page: page, nativeType: item.nativeType) else { return }
-                guard let json = MaterialPageCache.loadRaw(url: item.url(baseURL: definition?.baseUrl ?? SchoolCatalog.shared.baseURL)) else { return }
+                // Keep every publication, including an empty one. The settle window below waits
+                // ten seconds for an empty page and restarts whenever a newer payload arrives, so
+                // an AJAX skeleton is replaced by real rows while a genuinely empty exam page can
+                // still become a valid comparison baseline -- exactly how Android's warmer works.
                 latestSnapshot = Snapshot(item: item, json: json, page: page)
                 publicationVersion += 1
                 Task { await settle(item) }
             },
-            onError: { _ in finish(item, snapshot: latestSnapshot) },
+            // A navigation error invalidates this item even if an earlier DOM skeleton happened
+            // to publish. Android passes null here for the same reason: a partial four-page run
+            // must remain pending rather than becoming the comparison baseline.
+            onError: { _ in finish(item, snapshot: nil) },
             onSessionExpired: {
                 // A hidden reader can briefly see a redirect. Confirm centrally rather than
                 // dropping the user to the login screen from a page they never opened -- and do
