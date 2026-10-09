@@ -154,9 +154,14 @@ struct LoginView: View {
     /// keyboard is up, so the focus-survival behaviour of the container below it is unchanged.
     private var brand: some View {
         HStack(spacing: 10) {
-            Image(systemName: "building.columns")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(PortalPalette.primary)
+            // The redesigned liquid-glass app icon. Kept small (28pt, iOS-squircle clip) to sit
+            // beside the title like the brand lock-up; a circular plate here would fight the new
+            // full-bleed icon language.
+            Image("BrandLogo")
+                .resizable()
+                .scaledToFill()
+                .frame(width: 28, height: 28)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             Text("掌上教务")
                 .font(.headline.weight(.bold))
                 .foregroundStyle(PortalPalette.onSurface)

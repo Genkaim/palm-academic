@@ -67,6 +67,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -82,6 +83,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
@@ -208,19 +210,26 @@ internal fun RefactoredLoginContent(
                         shrinkTowards = Alignment.Top
                     )
                 ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().height(172.dp).clipToBounds(),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                    // Compact brand lock-up aligned with iOS: a 28dp app-icon mark and the title
+                    // on ONE leading row (was a centered 88dp hero above a displaySmall title).
+                    // Only the mark/title size and placement change; nothing else on this screen.
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Image(
-                            painter = painterResource(R.drawable.ic_launcher_foreground),
+                            painter = painterResource(R.mipmap.ic_launcher),
                             contentDescription = "掌上教务标识",
-                            modifier = Modifier.size(88.dp)
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(RoundedCornerShape(7.dp))
                         )
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.size(10.dp))
                         Text(
                             "掌上教务",
-                            style = MaterialTheme.typography.displaySmall,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontSize = 19.sp,
                             color = MaterialTheme.colorScheme.onBackground,
                             fontWeight = FontWeight.Bold
                         )
