@@ -119,6 +119,12 @@ struct HomeView: View {
                 // Android puts it too.
                 //
                 ToolbarItem(placement: .principal) {
+                    // The title is ALWAYS strictly centred and never moves. The badge is pinned
+                    // just OUTSIDE the title's trailing edge with a 4pt gap via an overlay -- not
+                    // as a trailing bar button, which would sit at the screen edge and leave a
+                    // wide void between it and the title, and not as an HStack sibling, whose
+                    // whole cluster would re-centre (shoving the title toward the left edge) the
+                    // moment the badge appeared.
                     VStack(spacing: 1) {
                         Text("掌上教务")
                             .font(.headline.weight(.bold))
@@ -127,20 +133,16 @@ struct HomeView: View {
                             .foregroundStyle(PortalPalette.secondaryText)
                             .lineLimit(1)
                     }
-                    // The title yields just enough visual room when the trailing status appears;
-                    // both movements share one short transition instead of snapping independently.
-                    .offset(x: sessionStatusVisible && !reduceMotion ? -4 : 0)
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    if sessionStatusVisible {
-                        sessionStatusBadge
-                            .padding(.leading, 8)
-                            .transition(
-                                .asymmetric(
-                                    insertion: .opacity.combined(with: .move(edge: .trailing)),
-                                    removal: .opacity
-                                )
-                            )
+                    .overlay(alignment: .trailing) {
+                        if sessionStatusVisible {
+                            sessionStatusBadge
+                                .fixedSize()
+                                .alignmentGuide(HorizontalAlignment.trailing) { dims in
+                                    // Badge leading edge sits 4pt past the title's trailing edge.
+                                    dims[.leading] - 4
+                                }
+                                .transition(.opacity)
+                        }
                     }
                 }
             }
