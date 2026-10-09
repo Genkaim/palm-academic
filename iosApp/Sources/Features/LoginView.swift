@@ -609,10 +609,25 @@ struct SchoolPickerView: View {
                 }
             }
 
+            // The guide link and the import action share the final section, at the very bottom
+            // of the school list. Import used to be a tray icon in the toolbar, which read as a
+            // top-level management action rather than the "add your own school" affordance it
+            // actually is; listing it after the built-in schools matches Android.
             Section {
                 Link(destination: Self.guideURL) {
                     Text("没有找到你的学校？查看适配指引")
                         .foregroundStyle(Color.accentColor)
+                }
+                Button {
+                    showingImport = true
+                } label: {
+                    Label {
+                        Text("导入本地规则")
+                            .foregroundStyle(PortalPalette.onSurface)
+                    } icon: {
+                        Image(systemName: "square.and.arrow.down")
+                            .foregroundStyle(Color.accentColor)
+                    }
                 }
             } footer: {
                 if let statusMessage {
@@ -629,14 +644,6 @@ struct SchoolPickerView: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("取消") { dismiss() }
                 }
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    showingImport = true
-                } label: {
-                    Image(systemName: "tray.and.arrow.down")
-                }
-                .accessibilityLabel("导入本地规则")
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 // Icon-only, like every other in-app refresh control.

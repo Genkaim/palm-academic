@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -37,6 +38,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -155,9 +157,6 @@ private fun SchoolSelectionContent(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showingImport = true }) {
-                        Icon(Icons.Outlined.Add, "导入本地规则")
-                    }
                     PortalTopBarRefreshButton(
                         refreshing = refreshing,
                         onClick = {
@@ -249,7 +248,7 @@ private fun SchoolSelectionContent(
                     }
                 }
             }
-            item {
+            item(key = "guide-link") {
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .padding(horizontal = 8.dp, vertical = 18.dp),
@@ -275,6 +274,27 @@ private fun SchoolSelectionContent(
                             }
                         }
                     )
+                }
+            }
+            // The local-rule import lives at the very bottom of the school list rather than in
+            // the top bar: it is a rare, secondary action and reads as "add your own school"
+            // after the built-in list and the guide link.
+            item(key = "import-local") {
+                OutlinedButton(
+                    onClick = { showingImport = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                        .height(52.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline
+                    )
+                ) {
+                    Icon(Icons.Outlined.Add, null)
+                    Spacer(Modifier.size(8.dp))
+                    Text("导入本地规则", fontWeight = FontWeight.Medium)
                 }
             }
         }

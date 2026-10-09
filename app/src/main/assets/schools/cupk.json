@@ -4,7 +4,7 @@
   "name": "中国石油大学（北京）克拉玛依校区",
   "author": {
     "name": "Genkaim",
-    "email": "cxh2066172407@outlook.com"
+    "email": "genkaim@outlook.com"
   },
   "baseUrl": "https://eams.cupk.edu.cn/student",
   "readerAdapter": "adapters/cupk-reader.js",
