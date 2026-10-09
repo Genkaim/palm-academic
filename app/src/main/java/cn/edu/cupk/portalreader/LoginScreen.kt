@@ -213,18 +213,30 @@ internal fun RefactoredLoginContent(
                     // Compact brand lock-up aligned with iOS: a 28dp app-icon mark and the title
                     // on ONE leading row (was a centered 88dp hero above a displaySmall title).
                     // Only the mark/title size and placement change; nothing else on this screen.
+                    //
+                    // The mark uses the launcher VECTOR foreground on the launcher blue, NOT
+                    // R.mipmap.ic_launcher: that resource is an <adaptive-icon> XML, and Compose's
+                    // painterResource supports only VectorDrawables/raster images -- loading it
+                    // here threw "Only VectorDrawables and rasterized asset types are supported"
+                    // and crashed the login screen.
                     Row(
                         modifier = Modifier.fillMaxWidth().height(48.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Image(
-                            painter = painterResource(R.mipmap.ic_launcher),
-                            contentDescription = "掌上教务标识",
-                            contentScale = ContentScale.Crop,
+                        Box(
                             modifier = Modifier
                                 .size(28.dp)
                                 .clip(RoundedCornerShape(7.dp))
-                        )
+                                .background(Color(0xFF2E55A8)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(
+                                painter = painterResource(R.drawable.ic_launcher_foreground),
+                                contentDescription = "掌上教务标识",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                         Spacer(Modifier.size(10.dp))
                         Text(
                             "掌上教务",
