@@ -71,6 +71,7 @@ struct QuickEntryBaselinePrefetch: View {
             .task { await runIfNeeded() }
             .onChange(of: currentItem) { item in
                 guard let item else { return }
+                NSLog("PalmAcademic/baseline: warming entry %@ (%@)", item.title, item.nativeType ?? "?")
                 startedAt = Date()
                 itemFinished = false
                 latestSnapshot = nil
@@ -92,7 +93,21 @@ struct QuickEntryBaselinePrefetch: View {
     private func runIfNeeded() async {
         // Wait out the first paint before touching the network.
         try? await Task.sleep(nanoseconds: 3_000_000_000)
-        guard isActive, !items.isEmpty else { return }
+        guard isActive else {
+            NSLog(
+                "PalmAcademic/baseline: skip warm-up (signedIn=%@ status=%@ pending=%@ items=%d)",
+                state.isSignedIn ? "yes" : "no",
+                String(describing: state.sessionStatus),
+                QuickEntryBaseline.isPending(schoolID: schoolID) ? "yes" : "no",
+                items.count
+            )
+            return
+        }
+        guard !items.isEmpty else {
+            NSLog("PalmAcademic/baseline: skip warm-up, no quick items declared")
+            return
+        }
+        NSLog("PalmAcademic/baseline: warm-up started for school %@ with %d entries", schoolID, items.count)
         phase = .running(index: 0, failure: false)
         currentItem = items[0]
     }
@@ -113,14 +128,26 @@ struct QuickEntryBaselinePrefetch: View {
             // meant a school that declared a fifth quick entry never established a baseline at all,
             // and the fetch looked like it simply did not happen.
             if !anyFailure && collected.count == items.count {
+                NSLog("PalmAcademic/baseline: all %d entries captured, recording baseline", collected.count)
                 QuickEntryBaseline.complete(
                     schoolID: schoolID,
                     snapshots: collected.map { ($0.item, $0.json) }
+                )
+            } else {
+                // The common reason "首次基线没有日志": one entry never produced data within its
+                // window, so the run stays pending instead of writing the baseline entry.
+                NSLog(
+                    "PalmAcademic/baseline: incomplete run, keeping pending (captured=%d, required=%d, failedEarlier=%@, lastHadSnapshot=%@)",
+                    collected.count, items.count, failedEarlier ? "yes" : "no", snapshot != nil ? "yes" : "no"
                 )
             }
             phase = .finished
             currentItem = nil
         } else {
+            NSLog(
+                "PalmAcademic/baseline: entry %@ finished (snapshot=%@), moving to next",
+                item.title, snapshot != nil ? "yes" : "no"
+            )
             snapshots = collected
             phase = .running(index: index + 1, failure: anyFailure)
             currentItem = items[index + 1]
@@ -153,6 +180,11 @@ struct QuickEntryBaselinePrefetch: View {
                 // ten seconds for an empty page and restarts whenever a newer payload arrives, so
                 // an AJAX skeleton is replaced by real rows while a genuinely empty exam page can
                 // still become a valid comparison baseline -- exactly how Android's warmer works.
+                let populated = QuickEntryBaseline.hasData(page: page, nativeType: item.nativeType)
+                NSLog(
+                    "PalmAcademic/baseline: publication for %@ populated=%@ sections=%d",
+                    item.title, populated ? "yes" : "no", page.sections.count
+                )
                 latestSnapshot = Snapshot(item: item, json: json, page: page)
                 publicationVersion += 1
                 Task { await settle(item) }

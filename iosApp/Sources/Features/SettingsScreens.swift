@@ -261,6 +261,7 @@ struct NotificationSettingsScreen: View {
     @ObservedObject private var notifications = NotificationPreferences.shared
     @State private var entries: [PortalPollHistoryEntry] = PortalPollHistory.load()
     @State private var isChecking = false
+    @State private var checkNotice: String?
 
     var body: some View {
         List {
@@ -324,17 +325,31 @@ struct NotificationSettingsScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: PortalPollHistory.didChangeNotification)) { _ in
             entries = PortalPollHistory.load()
         }
+        .alert("无法立即检查", isPresented: Binding(
+            get: { checkNotice != nil },
+            set: { if !$0 { checkNotice = nil } }
+        )) {
+            Button("知道了", role: .cancel) { checkNotice = nil }
+        } message: {
+            Text(checkNotice ?? "")
+        }
     }
 
     /// The background worker only runs when the system grants it a slot, which on iOS can be
     /// minutes or hours after the switch is turned on. Running it inline gives the log its first
     /// entry immediately and proves the session works, which is what a user opening this page is
-    /// actually trying to find out.
+    /// actually trying to find out. The worker runs entirely on a background executor, so a full
+    /// pass no longer blocks the UI.
     private func runCheckNow() async {
+        guard notifications.anyEnabled else {
+            checkNotice = "请先开启至少一项变动提醒，再进行立即检查。"
+            return
+        }
         isChecking = true
-        defer { isChecking = false }
+        // The worker records every outcome -- including failures -- as a log entry itself.
         _ = await PortalPollWorker.shared.run(manual: true)
         entries = PortalPollHistory.load()
+        isChecking = false
     }
 }
 
@@ -899,25 +914,16 @@ struct AboutScreen: View {
         .contentShape(Rectangle())
     }
 
-    /// The author row's avatar. Android ships a 40dp drawable for it; there is no equivalent asset
-    /// in the iOS bundle, so the same 40pt circle is drawn with the owner's initial -- the circle is
-    /// what carries the layout, not the picture.
+    /// The author row's avatar: the same actual photograph Android ships as
+    /// `author_avatar.jpg`, bundled here as the `AuthorAvatar` imageset and cropped to the 40pt
+    /// circle Android uses. A monogram fallback renders only if the asset is somehow missing.
     private struct AuthorAvatar: View {
         var body: some View {
-            ZStack {
-                Circle().fill(
-                    LinearGradient(
-                        colors: [Color(red: 0.31, green: 0.58, blue: 0.95), Color(red: 0.45, green: 0.36, blue: 0.88)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                Text("G")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 40, height: 40)
-            .clipShape(Circle())
+            Image("AuthorAvatar")
+                .resizable()
+                .scaledToFill()
+                .frame(width: 40, height: 40)
+                .clipShape(Circle())
         }
     }
 

@@ -197,6 +197,23 @@ struct LoginView: View {
             if let errorMessage = state.errorMessage {
                 errorBanner(errorMessage)
             }
+
+            // Non-terminal: a network-caused password login is being retried automatically.
+            // Neutral styling (no red) -- the user does not need to do anything but wait.
+            if let retry = state.loginRetryMessage, state.isLoading {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(retry)
+                        .font(.subheadline)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(PortalPalette.surface)
+                )
+            }
         }
     }
 

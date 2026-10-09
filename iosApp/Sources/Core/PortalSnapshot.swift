@@ -600,11 +600,21 @@ enum QuickEntryBaseline {
     }
 
     static func complete(schoolID: String, snapshots: [(item: PortalItem, json: String)]) {
-        guard UserDefaults.standard.string(forKey: pendingSchoolKey) == schoolID else { return }
+        let pendingSchool = UserDefaults.standard.string(forKey: pendingSchoolKey)
+        guard pendingSchool == schoolID else {
+            NSLog(
+                "PalmAcademic/baseline: complete ignored, pending school %@ != %@",
+                pendingSchool ?? "(nil)", schoolID
+            )
+            return
+        }
         // Android completes this warm-up only after all four native entries have published real
         // data. A partial cache must stay pending, otherwise the missing page can be mistaken for
         // a legitimate empty baseline by the first background comparison.
-        guard snapshots.count == 4 else { return }
+        guard snapshots.count == 4 else {
+            NSLog("PalmAcademic/baseline: complete ignored, only %d/4 snapshots", snapshots.count)
+            return
+        }
         // Seed the exact business keys read by PortalPollWorker. Earlier builds only wrote a log
         // saying that a baseline existed; the first background run still found nil and silently
         // established a second baseline. Persisting the normalized rows here makes the first
@@ -628,6 +638,7 @@ enum QuickEntryBaseline {
             }
         }
 
+        NSLog("PalmAcademic/baseline: recording 首次登录基线已建立（4 项） history entry")
         PortalPollHistory.append(PortalPollHistoryEntry(
             timestamp: Date(),
             status: "首次登录基线已建立（4 项）",

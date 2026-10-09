@@ -279,7 +279,11 @@ final class SchoolCatalog: ObservableObject {
         cachedDefinition = nil
         adapterScriptCache.removeAll()
         if !profiles.contains(where: { $0.id == selectedSchoolID }) {
-            selectedSchoolID = profiles.first { $0.id == SchoolCatalog.defaultSchoolID }?.id ?? profiles[0].id
+            // `profiles` can be empty if a refresh wrote an unusable overlay; indexing [0] here
+            // crashed the app. Fall back to the hard-coded default id until profiles recover.
+            selectedSchoolID = profiles.first { $0.id == SchoolCatalog.defaultSchoolID }?.id
+                ?? profiles.first?.id
+                ?? SchoolCatalog.defaultSchoolID
             UserDefaults.standard.set(selectedSchoolID, forKey: Self.selectedSchoolKey)
         }
         definition = nil

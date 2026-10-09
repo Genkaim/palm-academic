@@ -85,6 +85,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -103,27 +104,53 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var error by mutableStateOf<String?>(null)
         private set
+    /// Non-terminal status shown while a network-caused login attempt is being retried, e.g.
+    /// "网络不稳定，正在重试（第 3 次）…". Cleared the moment login succeeds or the portal
+    /// returns a definitive rejection.
+    var retryStatus by mutableStateOf<String?>(null)
+        private set
     var authenticated by mutableStateOf(false)
         private set
 
     private val auth = AuthRepository()
+    private var loginJob: Job? = null
 
     fun login(username: String, password: String, rememberPassword: Boolean = false) {
+        loginJob?.cancel()
         loading = true
         error = null
+        retryStatus = null
         val loginSchoolId = selectedSchoolId
-        viewModelScope.launch {
-            auth.login(username, password)
-                .onSuccess {
+        loginJob = viewModelScope.launch {
+            var attempt = 0
+            // Keep trying until the portal itself says "wrong credentials" or "captcha required".
+            // Every other failure -- timeout, dropped connection, 5xx, a follow-up cookie that
+            // has not arrived yet -- is the network being bad, and the user must not be bounced
+            // back to the form for it. Backoff caps at 15s and the loop runs indefinitely until
+            // one of the terminal outcomes.
+            while (true) {
+                val result = auth.login(username, password)
+                if (result.isSuccess) {
                     if (rememberPassword) {
                         PasswordCredentialStore.save(getApplication(), username, password, loginSchoolId)
                     } else {
                         PasswordCredentialStore.clear(getApplication(), loginSchoolId)
                     }
                     completeAuthentication()
+                    return@launch
                 }
-                .onFailure { error = it.message ?: "登录失败" }
-            loading = false
+                val failure = result.exceptionOrNull()
+                if (failure is LoginRejectedException) {
+                    loading = false
+                    retryStatus = null
+                    error = failure.message
+                    return@launch
+                }
+                attempt += 1
+                retryStatus = "网络不稳定，正在重试（第 $attempt 次）…"
+                val backoffMillis = (1000L shl minOf(attempt - 1, 4)) // 1s,2s,4s,8s,16s…
+                delay(backoffMillis)
+            }
         }
     }
 
@@ -154,6 +181,7 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         authenticated = true
         loading = false
         error = null
+        retryStatus = null
     }
 
     private fun preferredInterval(): Long = getApplication<Application>()

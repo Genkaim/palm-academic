@@ -28,6 +28,10 @@ final class AppState: ObservableObject {
     @Published var rememberPassword = false
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
+    /// Non-terminal status shown while a network-caused password login is being retried, e.g.
+    /// "网络不稳定，正在重试（第 3 次）…". Cleared as soon as login succeeds or the portal
+    /// returns a definitive rejection (wrong password / captcha).
+    @Published private(set) var loginRetryMessage: String?
     @Published var selectedTab: LiquidTabItem = .home
     /// Increments only after a new password/web login succeeds. Views use it as an identity so a
     /// logout/login cycle cannot revive the previous tab, navigation path or hidden prefetch state.
@@ -60,6 +64,9 @@ final class AppState: ObservableObject {
     @Published private(set) var sessionTrusted: Bool = SessionTrustStore.shared.trusted
 
     private let auth = AuthRepository()
+    /// The in-flight password-login retry loop. A new login attempt cancels the previous one so
+    /// two loops cannot interleave their backoff and cookie writes.
+    private var loginTask: Task<Void, Never>?
     /// Bumped on every explicit authentication success / content-arrived / sign-out. A quiet
     /// revalidation loop captures the value at entry and stops the moment it changes, so a loop
     /// that was started by a hidden reader's transient login-redirect can never surface a
@@ -229,23 +236,49 @@ private func revalidateQuietly() async {
             errorMessage = "请输入账号和密码"
             return
         }
+        loginTask?.cancel()
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
-
-        do {
-            try await auth.login(username: user, password: password)
-            // Match Android: only a completed login is allowed to replace the remembered secret.
-            // A typo or transient failed attempt must not overwrite the last working credential.
-            if rememberPassword {
-                CredentialStore.save(username: user, password: password, schoolID: school.id)
-            } else {
-                CredentialStore.clear(schoolID: school.id)
+        loginRetryMessage = nil
+        loginTask = Task {
+            var attempt = 0
+            // Keep trying until the portal itself rejects the credentials or demands a captcha.
+            // Those two are the ONLY terminal outcomes (PortalError.loginRejected); anything
+            // else -- timeout, dropped connection, 5xx, a follow-up SESSION cookie delayed by a
+            // bad network -- is retried for ever with capped exponential backoff, exactly like
+            // the Android client. The user is never bounced back to the form for a network error.
+            while !Task.isCancelled {
+                do {
+                    try await auth.login(username: user, password: password)
+                    // Match Android: only a completed login is allowed to replace the remembered
+                    // secret. A typo or transient failed attempt must not overwrite the last
+                    // working credential.
+                    if rememberPassword {
+                        CredentialStore.save(username: user, password: password, schoolID: school.id)
+                    } else {
+                        CredentialStore.clear(schoolID: school.id)
+                    }
+                    isLoading = false
+                    loginRetryMessage = nil
+                    onAuthenticationCompleted(freshLogin: true)
+                    return
+                } catch PortalError.loginRejected(let message) {
+                    isLoading = false
+                    loginRetryMessage = nil
+                    errorMessage = message
+                    return
+                } catch is CancellationError {
+                    return
+                } catch {
+                    attempt += 1
+                    loginRetryMessage = "网络不稳定，正在重试（第 \(attempt) 次）…"
+                    // 1s, 2s, 4s, 8s, then 16s for every later attempt.
+                    let backoffSeconds = [1, 2, 4, 8, 16][min(attempt - 1, 4)]
+                    try? await Task.sleep(nanoseconds: UInt64(backoffSeconds) * 1_000_000_000)
+                }
             }
-            onAuthenticationCompleted(freshLogin: true)
-        } catch {
-            errorMessage = error.localizedDescription
         }
+        await loginTask?.value
     }
 
     func completeWebLogin() {
@@ -288,6 +321,9 @@ private func revalidateQuietly() async {
     }
 
     func signOut(message: String? = nil) {
+        loginTask?.cancel()
+        isLoading = false
+        loginRetryMessage = nil
         SessionStore.shared.clear()
         PortalMonitor.shared.cancel()
         // Signing out ends the session but does not mean "forget my saved password". Android keeps

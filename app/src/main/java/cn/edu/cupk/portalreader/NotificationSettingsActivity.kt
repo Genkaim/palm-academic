@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -36,8 +37,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +63,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 
 private data class NotificationSetting(
     val key: String,
@@ -91,6 +96,7 @@ class NotificationSettingsActivity : PortalActivity() {
 @Composable
 private fun NotificationSettingsContent(onBack: () -> Unit, onOpenHistory: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val preferences = remember { PortalNotificationPreferences.preferences(context) }
     val settings = remember {
         listOf(
@@ -237,7 +243,53 @@ private fun NotificationSettingsContent(onBack: () -> Unit, onOpenHistory: () ->
                 }
             }
             item {
+                var manualChecking by remember { mutableStateOf(false) }
                 NotificationSection(title = "记录") {
+                    NotificationGroupedCard(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(18.dp))
+                            .clickable(enabled = !manualChecking) {
+                                scope.launch {
+                                    manualChecking = true
+                                    val result = PortalPollEngine(context).run(manual = true)
+                                    manualChecking = false
+                                    val text = when {
+                                        !result.started -> result.status
+                                        result.triggeredNotification -> "${result.status}，已触发通知"
+                                        else -> result.status
+                                    }
+                                    Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Outlined.Refresh,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.size(13.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("立即检查", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (manualChecking) "正在抓取一次并写入日志…" else "立即抓取一次并写入日志",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (manualChecking) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.size(4.dp))
                     NotificationGroupedCard(
                         modifier = Modifier
                             .clip(RoundedCornerShape(18.dp))

@@ -14,6 +14,15 @@ import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
+/**
+ * The portal answered the password handshake with a DEFINITIVE rejection: wrong credentials or a
+ * captcha/security challenge. Only this kind of failure may bounce the user back to the login
+ * form. Every other failure (timeouts, dropped connections, 5xx, missing follow-up cookies on a
+ * slow network) is a network problem and the caller must keep retrying instead of showing an
+ * error.
+ */
+class LoginRejectedException(message: String) : IllegalStateException(message)
+
 class AuthRepository {
     suspend fun login(username: String, password: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
@@ -70,14 +79,17 @@ class AuthRepository {
                 val body = response.body?.string().orEmpty()
                 val json = runCatching { JSONObject(body) }.getOrNull()
 
-                // 只有服务端明确给出这两类结果时，才把本次请求判定为凭据失败。
-                // 某些部署在登录成功后会返回空响应或 HTML，不能再按 result 缺失
-                // 推断为登录失败。
+                // 只有服务端明确给出这两类结果时，才把本次请求判定为凭据失败（终态，
+                // 不再重试）。某些部署在登录成功后会返回空响应或 HTML，不能再按
+                // result 缺失推断为登录失败；那类情况落入下面的网络/会话类错误，
+                // 由调用方持续重试。
                 if (json?.optBoolean("needCaptcha", false) == true) {
-                    error("教务系统要求安全验证，请选择下方的网页登录")
+                    throw LoginRejectedException("教务系统要求安全验证，请选择下方的网页登录")
                 }
                 if (json?.has("result") == true && !json.optBoolean("result")) {
-                    error(json.optString("message").ifBlank { "账号或密码错误" })
+                    throw LoginRejectedException(
+                        json.optString("message").ifBlank { "账号或密码错误" }
+                    )
                 }
             }
 

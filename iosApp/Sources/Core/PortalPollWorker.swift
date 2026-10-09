@@ -4,40 +4,91 @@ import UserNotifications
 
 /// Port of `PortalPollWorker` from `PortalPollWorker.kt`.
 ///
-/// The Android worker runs under WorkManager; iOS uses `BGAppRefreshTask` with the same cadence
-/// clamping, the same snapshot comparison rules and the same change-history records.
+/// The Android worker runs under WorkManager on `Dispatchers.IO`; iOS uses `BGAppRefreshTask`
+/// with the same cadence clamping, the same snapshot comparison rules and the same change-history
+/// records.
 ///
-/// Main-actor isolated because it reads `NotificationPreferences` and the snapshot
-/// store, both of which are ObservableObjects driven from the settings UI. This
-/// matches Android, where the worker reads the same SharedPreferences-backed flags
-/// before doing any I/O.
-@MainActor
-final class PortalPollWorker {
+/// The worker is deliberately NOT main-actor isolated: one pass downloads several pages and runs
+/// multi-MB regex/JSON parsing over them. Doing that work on the main actor (an earlier build)
+/// froze the UI long enough for the system watchdog to kill the app -- this is what made
+/// "立即检查" crash. All heavy work runs on the generic executor; the few reads/writes that touch
+/// main-actor UI state (NotificationPreferences, SchoolCatalog) are explicit hops. The singleton
+/// holds no mutable state of its own, hence `@unchecked Sendable`.
+final class PortalPollWorker: @unchecked Sendable {
     static let shared = PortalPollWorker()
 
-    private let auth = AuthRepository()
+    /// A point-in-time, sendable copy of the notification flags the worker was started with,
+    /// captured on the main actor once so the background pass never touches UI state again.
+    private struct PrefsSnapshot: Sendable {
+        var monitorEnabled: Bool
+        var scheduleEnabled: Bool
+        var gradeEnabled: Bool
+        var examEnabled: Bool
+        var anyEnabled: Bool
+    }
 
     private init() {}
 
     /// Port of `PortalPollWorker.doWork`.
     @discardableResult
     func run(manual: Bool = false) async -> Bool {
-        let preferences = NotificationPreferences.shared
-        guard (manual || preferences.monitorEnabled), preferences.anyEnabled else { return false }
+        let prefs = await MainActor.run {
+            let preferences = NotificationPreferences.shared
+            return PrefsSnapshot(
+                monitorEnabled: preferences.monitorEnabled,
+                scheduleEnabled: preferences.scheduleEnabled,
+                gradeEnabled: preferences.gradeEnabled,
+                examEnabled: preferences.examEnabled,
+                anyEnabled: preferences.anyEnabled
+            )
+        }
+        guard (manual || prefs.monitorEnabled), prefs.anyEnabled else { return false }
 
         let checkedAt = Date()
+
+        // Mirrors Android's `runCatching { ... }.getOrElse { ... }` boundary: a failure in any
+        // step becomes a log entry instead of killing the process. Network failures are labelled
+        // distinctly so the background scheduler can treat them as transient.
+        let outcome: PollOutcome
+        do {
+            outcome = try await performCheck(prefs: prefs)
+        } catch {
+            let isNetwork = (error as? URLError) != nil
+                || String(describing: error).contains("网络")
+            let failureDetails = [
+                PortalPollHistoryDetail(
+                    category: "检查错误",
+                    summary: error.localizedDescription.isEmpty ? "未知错误" : error.localizedDescription,
+                    technicalDetails: "\(error)"
+                )
+            ]
+            outcome = PollOutcome(
+                status: isNetwork ? "网络检查失败" : "检查失败",
+                details: failureDetails
+            )
+        }
+        PortalPollHistory.append(PortalPollHistoryEntry(
+            timestamp: checkedAt,
+            status: outcome.status,
+            notificationTriggered: outcome.details.contains(where: \.notificationTriggered),
+            details: outcome.details
+        ))
+        return outcome.details.contains(where: \.notificationTriggered)
+    }
+
+    /// One finished poll pass: the status string written to history plus the per-category details
+    /// collected along the way. Returned (rather than written through an inout/closure) to avoid
+    /// overlapping Swift exclusivity access between the worker and the history writer.
+    private struct PollOutcome: Sendable {
+        var status: String
+        var details: [PortalPollHistoryDetail]
+    }
+
+    /// The actual poll sequence. Thrown errors are caught by `run(manual:)` and recorded.
+    private func performCheck(prefs: PrefsSnapshot) async throws -> PollOutcome {
         var details: [PortalPollHistoryDetail] = []
 
-        func finish(_ status: String) {
-            PortalPollHistory.append(PortalPollHistoryEntry(
-                timestamp: checkedAt,
-                status: status,
-                notificationTriggered: details.contains(where: \.notificationTriggered),
-                details: details
-            ))
-        }
-
-        guard PortalHTTP.hasSessionCookie else {
+        guard await MainActor.run(body: { PortalHTTP.hasSessionCookie }) else {
             let notified = await notifyAuthenticationFailure()
             details.append(PortalPollHistoryDetail(
                 category: "登录状态",
@@ -45,24 +96,25 @@ final class PortalPollWorker {
                 notificationTriggered: notified,
                 technicalDetails: "PortalHTTP.hasSessionCookie 返回 false。"
             ))
-            finish("登录已过期")
-            return false
+            return PollOutcome(status: "登录已过期", details: details)
         }
 
-        guard let school = SchoolCatalog.shared.loadDefinition() else {
+        // SchoolCatalog is main-actor isolated; hop over once and carry the Sendable definition
+        // onto the background executor for the whole pass.
+        let loadError = await MainActor.run { SchoolCatalog.shared.loadError }
+        guard let school = await MainActor.run(body: { SchoolCatalog.shared.loadDefinition() }) else {
             details.append(PortalPollHistoryDetail(
                 category: "学校配置",
                 summary: "学校定义不可用",
-                technicalDetails: SchoolCatalog.shared.loadError ?? "无法读取学校定义。"
+                technicalDetails: loadError ?? "无法读取学校定义。"
             ))
-            finish("检查完成（配置不可用）")
-            return false
+            return PollOutcome(status: "检查完成（配置不可用）", details: details)
         }
 
         let monitor = school.resolvedMonitor
-        let scheduleEnabled = preferences.scheduleEnabled
-        let gradeEnabled = preferences.gradeEnabled
-        let examEnabled = preferences.examEnabled
+        let scheduleEnabled = prefs.scheduleEnabled
+        let gradeEnabled = prefs.gradeEnabled
+        let examEnabled = prefs.examEnabled
 
         // The course table page is the single entry point that carries both the semester id and the
         // student id, so it is fetched first even when only grades or exams are watched.
@@ -77,13 +129,11 @@ final class PortalPollWorker {
                 summary: "课表页面返回登录页或未授权状态",
                 notificationTriggered: notified
             ))
-            finish("登录已过期")
-            return false
+            return PollOutcome(status: "登录已过期", details: details)
         }
         guard coursePage.isSuccessful else {
             details.append(coursePage.historyDetail(category: "课表", summary: "请求失败"))
-            finish("检查完成（入口暂不可用）")
-            return false
+            return PollOutcome(status: "检查完成（入口暂不可用）", details: details)
         }
 
         let semesterId = extractSemesterId(from: coursePage.body, patterns: monitor.semesterIdPatterns)
@@ -95,8 +145,7 @@ final class PortalPollWorker {
                 summary: "未识别当前学期",
                 technicalDetails: "学校定义中的 semesterIdPatterns 未匹配页面内容。"
             ))
-            finish("检查完成（规则未匹配）")
-            return false
+            return PollOutcome(status: "检查完成（规则未匹配）", details: details)
         }
         if requiresStudentId(monitor, schedule: scheduleEnabled, grade: gradeEnabled, exam: examEnabled), studentId == nil {
             details.append(coursePage.historyDetail(
@@ -104,8 +153,7 @@ final class PortalPollWorker {
                 summary: "未识别学生 ID",
                 technicalDetails: "学校规则与通用学号规则均未匹配入口最终地址或页面内容。"
             ))
-            finish("检查完成（规则未匹配）")
-            return false
+            return PollOutcome(status: "检查完成（规则未匹配）", details: details)
         }
 
         let semester = semesterId ?? ""
@@ -119,8 +167,7 @@ final class PortalPollWorker {
                 let notified = await notifyAuthenticationFailure()
                 details.append(response.historyDetail(category: "课表", summary: "登录状态失效"))
                 details.append(authenticationDetail(notified: notified, reason: "课表数据接口返回登录页或未授权状态"))
-                finish("登录已过期")
-                return false
+                return PollOutcome(status: "登录已过期", details: details)
             }
             if !response.isSuccessful {
                 details.append(response.historyDetail(category: "课表", summary: "请求失败"))
@@ -134,7 +181,12 @@ final class PortalPollWorker {
                 partiallyUnavailable = true
             } else {
                 let rendered = renderedSnapshotOrResponse(school: school, nativeType: "schedule", responseBody: response.body)
-                details.append(await updateCourseSnapshot(semesterID: semester, response: response, renderedContent: rendered))
+                details.append(await updateCourseSnapshot(
+                    scheduleEnabled: scheduleEnabled,
+                    semesterID: semester,
+                    response: response,
+                    renderedContent: rendered
+                ))
             }
         }
 
@@ -150,14 +202,18 @@ final class PortalPollWorker {
                 let notified = await notifyAuthenticationFailure()
                 details.append(response.historyDetail(category: "成绩", summary: "登录状态失效"))
                 details.append(authenticationDetail(notified: notified, reason: "成绩页面返回登录页或未授权状态"))
-                finish("登录已过期")
-                return false
+                return PollOutcome(status: "登录已过期", details: details)
             } else if !response.isSuccessful {
                 details.append(response.historyDetail(category: "成绩", summary: "请求失败"))
                 partiallyUnavailable = true
             } else {
                 let parsed = renderedSnapshotOrResponse(school: school, nativeType: "grade", responseBody: response.body)
-                details.append(await updateContentSnapshot(nativeType: "grade", response: response, parsedContent: parsed))
+                details.append(await updateContentSnapshot(
+                    nativeType: "grade",
+                    enabled: prefs.gradeEnabled,
+                    response: response,
+                    parsedContent: parsed
+                ))
             }
         }
 
@@ -173,8 +229,7 @@ final class PortalPollWorker {
                 let notified = await notifyAuthenticationFailure()
                 details.append(response.historyDetail(category: "考试", summary: "登录状态失效"))
                 details.append(authenticationDetail(notified: notified, reason: "考试页面返回登录页或未授权状态"))
-                finish("登录已过期")
-                return false
+                return PollOutcome(status: "登录已过期", details: details)
             } else if !response.isSuccessful {
                 details.append(response.historyDetail(category: "考试", summary: "请求失败"))
                 partiallyUnavailable = true
@@ -193,6 +248,7 @@ final class PortalPollWorker {
                 } else {
                     details.append(await updateContentSnapshot(
                         nativeType: "exam",
+                        enabled: prefs.examEnabled,
                         response: response,
                         parsedContent: parsed,
                         fallbackRows: tableRows.sorted()
@@ -201,10 +257,12 @@ final class PortalPollWorker {
             }
         }
 
-        preferences.clearAuthenticationFailureMarker()
+        await MainActor.run { NotificationPreferences.shared.clearAuthenticationFailureMarker() }
         UserDefaults.standard.set(Date(), forKey: "last_checked")
-        finish(partiallyUnavailable ? "检查完成（部分项目不可用）" : "检查完成")
-        return details.contains(where: \.notificationTriggered)
+        return PollOutcome(
+            status: partiallyUnavailable ? "检查完成（部分项目不可用）" : "检查完成",
+            details: details
+        )
     }
 
     // MARK: - Snapshot comparison
@@ -219,7 +277,12 @@ final class PortalPollWorker {
         return PortalSnapshot.historyDisplayContent(cached)
     }
 
-    private func updateCourseSnapshot(semesterID: String, response: Response, renderedContent: String) async -> PortalPollHistoryDetail {
+    private func updateCourseSnapshot(
+        scheduleEnabled: Bool,
+        semesterID: String,
+        response: Response,
+        renderedContent: String
+    ) async -> PortalPollHistoryDetail {
         let defaults = UserDefaults.standard
         let parsed = PortalSnapshot.courseDataJSON(payload: response.body, semesterId: semesterID)
         let rawRows = PortalLogDetails.courseRows(response.body)
@@ -238,7 +301,7 @@ final class PortalPollWorker {
         defaults.set(hasEntries, forKey: "course_has_entries")
         ["course_hash", "course_semester_id", "course_semantic_hash_v3", "course_semantic_semester_id_v3", "course_parsed_json_v2", "course_raw_v1"]
             .forEach { defaults.removeObject(forKey: $0) }
-        let notified = changed && NotificationPreferences.shared.scheduleEnabled
+        let notified = changed && scheduleEnabled
             ? await postChangeNotification(category: "课表", summary: "检测到课表新增或课程安排发生变化，请及时查看。")
             : false
         return PortalPollHistoryDetail(
@@ -251,7 +314,7 @@ final class PortalPollWorker {
                 currentRows: currentRows,
                 changed: changed
             ),
-            notificationEnabled: NotificationPreferences.shared.scheduleEnabled,
+            notificationEnabled: scheduleEnabled,
             responseCode: response.statusCode,
             requestURL: response.requestURL,
             finalURL: response.finalURL,
@@ -262,6 +325,7 @@ final class PortalPollWorker {
 
     private func updateContentSnapshot(
         nativeType: String,
+        enabled: Bool,
         response: Response,
         parsedContent: String,
         fallbackRows: [String] = []
@@ -280,9 +344,6 @@ final class PortalPollWorker {
             ? ["grade_hash", "grade_parsed_json_v2", "grade_raw_v1"]
             : ["exam_rows", "exam_rows_v2", "exam_parsed_json_v2", "exam_raw_v1"]
         legacyKeys.forEach { defaults.removeObject(forKey: $0) }
-        let enabled = nativeType == "grade"
-            ? NotificationPreferences.shared.gradeEnabled
-            : NotificationPreferences.shared.examEnabled
         let category = QuickEntryBaseline.category(for: nativeType)
         let message = nativeType == "grade"
             ? "检测到课程成绩新增或已有成绩发生变化，请及时查看。"
@@ -312,8 +373,9 @@ final class PortalPollWorker {
     // MARK: - Notifications
 
     private func notifyAuthenticationFailure() async -> Bool {
-        let preferences = NotificationPreferences.shared
-        let shouldNotify = preferences.shouldNotifyAuthenticationFailure()
+        let shouldNotify = await MainActor.run {
+            NotificationPreferences.shared.shouldNotifyAuthenticationFailure()
+        }
         guard shouldNotify else { return false }
         guard await notificationsAvailable() else { return false }
         let content = UNMutableNotificationContent()
@@ -328,7 +390,7 @@ final class PortalPollWorker {
         )
         do {
             try await UNUserNotificationCenter.current().add(request)
-            preferences.markAuthenticationFailureNotified()
+            await MainActor.run { NotificationPreferences.shared.markAuthenticationFailureNotified() }
             return true
         } catch {
             return false
@@ -387,8 +449,8 @@ final class PortalPollWorker {
 
         var isSuccessful: Bool { (200...299).contains(statusCode) }
 
-        /// Login-page detection goes through `AuthRepository`, which is main-actor isolated.
-        @MainActor
+        /// Login-page detection uses `AuthRepository.isLoginPage`, which is explicitly
+        /// non-isolated, so this check is safe from the worker's background executor.
         var isAuthenticationFailure: Bool {
             AuthRepository.isLoginPage(body, finalURL: finalURL)
                 || statusCode == 401 || statusCode == 403
