@@ -150,7 +150,6 @@ struct SettingsScreen: View {
                 )
             }
             .buttonStyle(.plain)
-            .accessibilityHint(expanded ? "双击收起详情" : "双击展开详情")
             .disabled(isCheckingRelease)
 
             NavigationLink {
@@ -498,6 +497,7 @@ struct NoticeHistoryScreen: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityHint(expanded ? "双击收起详情" : "双击展开详情")
 
             if expanded {
                 Divider()
