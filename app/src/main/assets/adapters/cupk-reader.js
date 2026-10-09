@@ -346,14 +346,23 @@
   let timer;
   let lastPayloadJson = '';
   function publishNow() {
-    if (selectLatestSemesterIfNeeded()) return;
-    loadGpaRank();
-    const payload = read();
-    if (!payload) return;
-    const payloadJson = JSON.stringify(payload);
-    if (payloadJson === lastPayloadJson) return;
-    lastPayloadJson = payloadJson;
-    PalmAcademicHost.publish(payload);
+    try {
+      if (selectLatestSemesterIfNeeded()) return;
+      loadGpaRank();
+      const payload = read();
+      if (!payload) return;
+      const payloadJson = JSON.stringify(payload);
+      if (payloadJson === lastPayloadJson) return;
+      PalmAcademicHost.publish(payload);
+      // Only suppress an identical retry after the host bridge accepted the publication. WebKit
+      // can briefly expose the host object before its message channel is ready during a redirect;
+      // remembering the payload first made that transient failure permanent.
+      lastPayloadJson = payloadJson;
+    } catch (error) {
+      if (PalmAcademicHost.report) {
+        PalmAcademicHost.report('适配器读取出错：' + (error && error.message ? error.message : String(error)));
+      }
+    }
   }
 
   function publish() {
@@ -363,8 +372,20 @@
 
   window.PalmAcademicAdapter = {apiVersion:1, read, publish, perform};
   const observer = new MutationObserver(publish);
-  observer.observe(document.body, {childList:true, subtree:true, characterData:true});
-  publishNow();
+  let observing = false;
+  function startObserving() {
+    if (observing) return;
+    if (!document.body) {
+      // Some redirect responses reach WebKit's document-end phase before their body is attached.
+      // Keep the adapter recoverable instead of throwing after its global object was installed.
+      setTimeout(startObserving, 50);
+      return;
+    }
+    observer.observe(document.body, {childList:true, subtree:true, characterData:true});
+    observing = true;
+    publishNow();
+  }
+  startObserving();
   setTimeout(publish, 350);
   setTimeout(publish, 1000);
   loadGpaRank();

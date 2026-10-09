@@ -285,7 +285,17 @@ struct MaterialReaderView: UIViewRepresentable {
             webView.evaluateJavaScript("!!window.PalmAcademicAdapter") { [weak self] result, _ in
                 guard let self else { return }
                 let installed = (result as? Bool) ?? false
-                guard !installed else { return }
+                if installed {
+                    // A short redirect document can install the adapter global before its body is
+                    // observable. Calling publish again makes that half-initialized state recover
+                    // as soon as commit/finish sees the final DOM, instead of treating "installed"
+                    // as proof that a payload was already delivered.
+                    webView.evaluateJavaScript(
+                        "window.PalmAcademicAdapter.publish && window.PalmAcademicAdapter.publish();",
+                        completionHandler: nil
+                    )
+                    return
+                }
                 self.installReader(webView)
             }
         }

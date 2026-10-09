@@ -14,6 +14,8 @@ import UIKit
 struct SystemGlassSurface<Content: View, S: Shape>: View {
     var shape: S
     var interactive: Bool = false
+    var effectID: String? = nil
+    var namespace: Namespace.ID? = nil
     /// Strength of the fallback material. `.regularMaterial` is the iOS-default glass substitute;
     /// bumping it to `.thickMaterial` gives the bar enough presence on iOS 17/18 that it reads
     /// as a real floating surface rather than a soft tint.
@@ -23,12 +25,24 @@ struct SystemGlassSurface<Content: View, S: Shape>: View {
     var body: some View {
         #if USE_SYSTEM_GLASS
         if #available(iOS 26.0, *) {
-            if interactive {
-                content
-                    .glassEffect(.regular.interactive(), in: shape)
+            if let effectID, let namespace {
+                if interactive {
+                    content
+                        .glassEffect(.regular.interactive(), in: shape)
+                        .glassEffectID(effectID, in: namespace)
+                } else {
+                    content
+                        .glassEffect(.regular, in: shape)
+                        .glassEffectID(effectID, in: namespace)
+                }
             } else {
-                content
-                    .glassEffect(.regular, in: shape)
+                if interactive {
+                    content
+                        .glassEffect(.regular.interactive(), in: shape)
+                } else {
+                    content
+                        .glassEffect(.regular, in: shape)
+                }
             }
         } else {
             fallback
@@ -60,6 +74,29 @@ struct SystemGlassSurface<Content: View, S: Shape>: View {
                 .clipShape(shape)
             )
             .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 5)
+    }
+}
+
+/// Places nearby native glass shapes in one sampling and morphing group on iOS 26+.
+/// Without this container, adjacent `.glassEffect` surfaces render independently and cannot
+/// produce the system liquid merge/separate response. Older systems keep the same layout and
+/// use the material fallback supplied by `SystemGlassSurface`.
+struct SystemGlassContainer<Content: View>: View {
+    var spacing: CGFloat? = nil
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        #if USE_SYSTEM_GLASS
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
     }
 }
 
@@ -106,10 +143,9 @@ struct LiquidTabItem: Identifiable, Hashable {
 /// full-width material strip behind it -- a backdrop rectangle filled the home-indicator gutter
 /// with an opaque blur and read as a dead block of colour.
 ///
-/// The search morph is a single continuous surface, not an if/else branch swap. The tab capsule
-/// collapses to zero width while the search circle's frame grows into the field along one spring,
-/// so the field visibly grows out of the search button (its trailing edge barely moves; the
-/// growth is leftward) instead of flashing in at its final position.
+/// The compact circle and expanded search capsule share one native glass identity inside a
+/// `GlassEffectContainer`. SwiftUI therefore treats the conditional states as one liquid surface
+/// morph, while the tab capsule is absorbed along the same spring instead of flashing away.
 struct FloatingHomeNavigation: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -126,11 +162,13 @@ struct FloatingHomeNavigation: View {
     /// system floating bar.
     private static let bottomGap: CGFloat = 8
 
-    /// Drives the selected-tab highlight sliding between the two destinations.
+    /// Drives the selected-tab highlight and the native glass morph between compact search and
+    /// the expanded field.
     @Namespace private var selection
+    @Namespace private var glassEffects
 
-    /// One spring for the whole morph. The tab strip collapsing and the circle growing ride the
-    /// SAME curve, which is what makes the motion read as one surface reconfiguring itself.
+    /// One spring for the whole morph. The tab strip leaving and the circle growing ride the same
+    /// curve, which is what makes the motion read as one surface reconfiguring itself.
     private let morphSpring: Animation = .spring(response: 0.28, dampingFraction: 0.86)
     private let selectionSpring: Animation = .spring(response: 0.22, dampingFraction: 0.9)
 
@@ -139,21 +177,14 @@ struct FloatingHomeNavigation: View {
     private var isSearchPresented: Bool { state.isSearchPresented }
 
     var body: some View {
-        // The two pieces stay mounted for the lifetime of the bar; only their widths and the
-        // gap animate. Keeping the hierarchy stable is precisely what lets the search field
-        // grow out of the circle's own position: there is no inserted/removed view whose final
-        // frame could flash into place.
-        HStack(spacing: isSearchPresented ? 0 : Self.itemGap) {
-            tabCapsule
-                .frame(width: isSearchPresented ? 0 : Self.tabCapsuleWidth, height: Self.barHeight)
-                .opacity(isSearchPresented ? 0 : 1)
-                .allowsHitTesting(!isSearchPresented)
+        SystemGlassContainer(spacing: Self.itemGap) {
+            HStack(spacing: Self.itemGap) {
+                if !isSearchPresented {
+                    tabCapsule
+                }
 
-            searchSurface
-                .frame(
-                    width: isSearchPresented ? Self.expandedWidth : Self.barHeight,
-                    height: Self.barHeight
-                )
+                searchSurface
+            }
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .animation(reduceMotion ? nil : morphSpring, value: isSearchPresented)
@@ -173,10 +204,14 @@ struct FloatingHomeNavigation: View {
         }
     }
 
-    /// The two destinations on one glass capsule. The capsule itself never re-shapes; its outer
-    /// frame simply collapses to zero while the search surface takes the room.
+    /// The two destinations share one glass capsule and one stable identity while visible.
     private var tabCapsule: some View {
-        SystemGlassSurface(shape: shape, interactive: true) {
+        SystemGlassSurface(
+            shape: shape,
+            interactive: true,
+            effectID: "tab-strip",
+            namespace: glassEffects
+        ) {
             HStack(spacing: 2) {
                 tabButton(.home)
                 tabButton(.settings)
@@ -186,60 +221,76 @@ struct FloatingHomeNavigation: View {
         }
     }
 
-    /// ONE continuous glass surface. A `Capsule` whose width equals its height renders as a
-    /// circle, so no shape swap is involved in the morph: the very same piece of glass grows
-    /// from 66pt (a circle) to 308pt (the field), with its trailing edge anchored where the
-    /// search button was.
+    /// The compact control is explicitly a `Circle`, rather than relying on a capsule whose
+    /// outer frame happens to be square. Both states use the same native glass identity, so the
+    /// system morphs the circle into the expanded capsule instead of cross-fading two materials.
+    @ViewBuilder
     private var searchSurface: some View {
-        SystemGlassSurface(shape: shape, interactive: true) {
-            ZStack {
-                // Compact: the whole circle is the search button.
-                Button {
-                    // presentSearch also switches the pager back to home: search filters the home
-                    // list, so opening it while the settings page is showing must not strand it.
-                    state.presentSearch()
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                        .font(.title3.weight(.semibold))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .buttonStyle(TabPressStyle())
-                .contentShape(Circle())
-                .opacity(isSearchPresented ? 0 : 1)
-                .allowsHitTesting(!isSearchPresented)
-                .accessibilityLabel("搜索教务功能")
-
-                // Expanded: leading glyph + field + clear. It stays mounted the whole time (only
-                // its opacity/hit-testing flips), so focus can land on the field as soon as the
-                // surface has room for it without any view being inserted.
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(PortalPalette.secondaryText)
-                        .accessibilityHidden(true)
-                    TextField("搜索教务功能", text: $state.searchQuery)
-                        .font(.subheadline)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitLabel(.search)
-                        .focused($searchFocused)
-                        .accessibilityLabel("搜索教务功能")
-                    Button {
-                        state.dismissSearch()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(width: 40, height: Self.barHeight)
-                    }
-                    .buttonStyle(TabPressStyle())
-                    .accessibilityLabel("关闭搜索")
-                }
-                .padding(.leading, 18)
-                .padding(.trailing, 4)
-                .opacity(isSearchPresented ? 1 : 0)
-                .allowsHitTesting(isSearchPresented)
+        if isSearchPresented {
+            SystemGlassSurface(
+                shape: Capsule(style: .continuous),
+                interactive: true,
+                effectID: "search",
+                namespace: glassEffects
+            ) {
+                expandedSearchContent
+                    // Size must be established before `.glassEffect`; the effect reads its input
+                    // view's bounds and cannot infer a later outer frame.
+                    .frame(width: Self.expandedWidth, height: Self.barHeight)
+            }
+        } else {
+            SystemGlassSurface(
+                shape: Circle(),
+                interactive: true,
+                effectID: "search",
+                namespace: glassEffects
+            ) {
+                compactSearchButton
+                    .frame(width: Self.barHeight, height: Self.barHeight)
             }
         }
+    }
+
+    private var compactSearchButton: some View {
+        Button {
+            // presentSearch also switches the pager back to home: search filters the home list,
+            // so opening it while the settings page is showing must not strand the search UI.
+            state.presentSearch()
+        } label: {
+            Image(systemName: "magnifyingglass")
+                .font(.title3.weight(.semibold))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Circle())
+        }
+        .buttonStyle(TabPressStyle())
+        .accessibilityLabel("搜索教务功能")
+    }
+
+    private var expandedSearchContent: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(PortalPalette.secondaryText)
+                .accessibilityHidden(true)
+            TextField("搜索教务功能", text: $state.searchQuery)
+                .font(.subheadline)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .focused($searchFocused)
+                .accessibilityLabel("搜索教务功能")
+            Button {
+                state.dismissSearch()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 44, height: Self.barHeight)
+            }
+            .buttonStyle(TabPressStyle())
+            .accessibilityLabel("关闭搜索")
+        }
+        .padding(.leading, 18)
+        .padding(.trailing, 4)
     }
 
     private func tabButton(_ item: LiquidTabItem) -> some View {
