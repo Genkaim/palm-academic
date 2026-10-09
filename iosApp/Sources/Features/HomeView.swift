@@ -243,7 +243,7 @@ struct HomeView: View {
 
     private var enabledNotificationCount: Int {
         let prefs = NotificationPreferences.shared
-        return [prefs.scheduleEnabled, prefs.gradeEnabled, prefs.examEnabled, prefs.programEnabled]
+        return [prefs.scheduleEnabled, prefs.gradeEnabled, prefs.examEnabled]
             .filter { $0 }.count
     }
 
