@@ -54,9 +54,11 @@ data class PortalAuthDefinition(
     val loginUrl: String? = null,
     val successUrlPrefixes: List<String> = emptyList(),
     val sessionCookieHosts: List<String> = emptyList(),
-    val sessionCookieNames: List<String> = listOf("SESSION")
+    val sessionCookieNames: List<String> = listOf("SESSION"),
+    val engine: JSONObject? = null
 ) {
     val webOnly: Boolean get() = type == "web"
+    val usesEngine: Boolean get() = type == "engine" && engine != null
 
     fun accepts(url: String): Boolean = successUrlPrefixes.any { prefix -> url.startsWith(prefix) }
 
@@ -459,7 +461,8 @@ object SchoolAdapterRepository {
                 }.orEmpty(),
                 sessionCookieNames = authJson.optJSONArray("sessionCookieNames")?.let { values ->
                     (0 until values.length()).map(values::getString)
-                } ?: listOf("SESSION")
+                } ?: listOf("SESSION"),
+                engine = authJson.optJSONObject("engine")
             )
         ).also { cachedDefinition = it }
     }
@@ -648,8 +651,37 @@ object SchoolAdapterRepository {
         require(EMAIL_PATTERN.matches(author.optString("email"))) { "学校定义中的作者邮箱无效" }
         root.optJSONObject("auth")?.let { auth ->
             val type = auth.optString("type", "salted-sha1")
-            require(type == "salted-sha1" || type == "web") { "auth.type 仅支持 salted-sha1 或 web" }
-            if (type == "web") {
+            require(type == "salted-sha1" || type == "web" || type == "engine") {
+                "auth.type 仅支持 salted-sha1、web 或 engine"
+            }
+            if (type == "engine") {
+                val engine = auth.optJSONObject("engine")
+                    ?: error("auth.type 为 engine 时 auth.engine 不能为空")
+                val steps = engine.optJSONArray("steps")
+                require(steps != null && steps.length() > 0) { "auth.engine.steps 不能为空" }
+                for (index in 0 until steps.length()) {
+                    val step = steps.getJSONObject(index)
+                    val kinds = listOf("request", "extract", "transform").count { step.has(it) }
+                    require(kinds == 1) { "auth.engine.steps[$index] 必须且只能包含 request/extract/transform 之一" }
+                    step.optJSONObject("request")?.let { request ->
+                        require(request.optString("url").isNotBlank()) {
+                            "auth.engine.steps[$index].request.url 不能为空"
+                        }
+                    }
+                    step.optJSONObject("extract")?.let { extract ->
+                        require(extract.optString("regex").isNotBlank()) {
+                            "auth.engine.steps[$index].extract.regex 不能为空"
+                        }
+                    }
+                    step.optJSONObject("transform")?.let { transform ->
+                        val algorithm = transform.optString("algorithm")
+                        require(algorithm == "rsa-pkcs1-base64" || algorithm == "sha1" || algorithm == "md5") {
+                            "auth.engine.steps[$index].transform.algorithm 仅支持 rsa-pkcs1-base64/sha1/md5"
+                        }
+                    }
+                }
+            }
+            if (type == "web" || type == "engine") {
                 require(auth.optString("loginUrl").startsWith("https://")) { "auth.loginUrl 必须使用 HTTPS" }
                 val prefixes = auth.optJSONArray("successUrlPrefixes")
                 require(prefixes != null && prefixes.length() > 0) { "auth.successUrlPrefixes 不能为空" }

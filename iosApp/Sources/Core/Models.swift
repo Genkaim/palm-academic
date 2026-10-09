@@ -93,11 +93,68 @@ struct SchoolDefinition: Codable {
         let successUrlPrefixes: [String]?
         let sessionCookieHosts: [String]?
         let sessionCookieNames: [String]?
+        let engine: AuthEnginePayload?
 
         var isWebOnly: Bool { type == "web" }
+        var usesEngine: Bool { type == "engine" && engine != nil }
         var resolvedSuccessPrefixes: [String] { successUrlPrefixes ?? [] }
         var resolvedCookieHosts: [String] { sessionCookieHosts ?? [] }
         var resolvedCookieNames: [String] { sessionCookieNames ?? ["SESSION"] }
+    }
+
+    /// Mirrors the `auth.engine` object consumed by `AuthRepository.loginWithEngine` on Android:
+    /// the school definition describes the whole login handshake (requests, value extraction,
+    /// encryption) as data, and the app only executes it.
+    struct AuthEnginePayload: Codable {
+        let steps: [Step]
+        let outcome: Outcome?
+
+        struct Step: Codable {
+            let id: String?
+            let request: Request?
+            let extract: Extract?
+            let transform: Transform?
+
+            struct Request: Codable {
+                let method: String?
+                let url: String
+                let headers: [String: String]?
+                let contentType: String?
+                let form: [String: String]?
+                let json: [String: String]?
+                let body: String?
+            }
+
+            struct Extract: Codable {
+                let from: String?
+                let regex: String
+                let group: Int?
+            }
+
+            struct Transform: Codable {
+                let algorithm: String
+                let publicKey: String?
+                let input: String?
+            }
+        }
+
+        struct Outcome: Codable {
+            let captcha: Rule?
+            let rejected: Rule?
+            let success: Success?
+
+            struct Rule: Codable {
+                let statusCodes: [Int]?
+                let bodyContains: [String]?
+                let message: String?
+            }
+
+            struct Success: Codable {
+                let finalUrlPrefixes: [String]?
+                let cookies: [String]?
+                let statusCodes: [Int]?
+            }
+        }
     }
 
     struct MonitorPayload: Codable {
@@ -307,6 +364,7 @@ enum PortalError: LocalizedError {
     case requestFailed(Int)
     case emptySalt
     case loginRejected(String)
+    case engineFailed(String)
     case noSession
     case webViewSessionMissing
     case sessionExpired
@@ -320,6 +378,7 @@ enum PortalError: LocalizedError {
         case .requestFailed(let code): return "请求失败（HTTP \(code)），请检查网络或校园网/VPN"
         case .emptySalt: return "无法获取登录校验信息"
         case .loginRejected(let message): return message
+        case .engineFailed(let message): return message
         case .noSession: return "登录请求已完成，但没有收到会话信息，请重试"
         case .webViewSessionMissing: return "登录会话未能写入系统浏览器"
         case .sessionExpired: return "登录已过期，请重新登录"

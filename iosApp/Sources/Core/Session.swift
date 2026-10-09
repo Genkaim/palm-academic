@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 import WebKit
 
 /// Persists the EAMS session cookie across process restarts, mirroring `PortalSessionStore`.
@@ -353,6 +354,17 @@ struct AuthRepository {
         let client = URLSession(configuration: configuration)
         let loginCookies = LoginCookieJar()
 
+        // 通用登录引擎：学校定义自己描述整个握手（请求/提取/加密/判定），App 只负责执行，
+        // 与 Android `AuthRepository.login` 的 engine 分支一一对应。
+        if let auth = SchoolCatalog.shared.definition?.auth, auth.usesEngine, let engine = auth.engine {
+            try await loginWithEngine(engine, username: trimmed, password: password, auth: auth, cookies: loginCookies)
+            SessionStore.shared.saveCookieHeader(loginCookies.header)
+            SessionStore.shared.restoreToCookieStorage()
+            let installed = await SessionStore.shared.restoreToWebViewAndWait()
+            if !installed { throw PortalError.webViewSessionMissing }
+            return
+        }
+
         // Prime the pre-session cookie. Real EAMS deployments reject a correct password when the
         // login page has never been opened in the same session.
         var pageRequest = URLRequest(url: URL(string: loginURL)!)
@@ -481,6 +493,280 @@ struct AuthRepository {
     static func sha1Hex(_ value: String) -> String {
         Insecure.SHA1.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
+
+    static func md5Hex(_ value: String) -> String {
+        Insecure.MD5.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// RSA/PKCS1 encryption with an X.509 SubjectPublicKeyInfo key in Base64 -- the counterpart of
+    /// Android's `Cipher.getInstance("RSA/ECB/PKCS1Padding")`, for CAS deployments that encrypt the
+    /// password client-side.
+    static func rsaEncryptBase64(_ plain: String, publicKeyBase64: String) throws -> String {
+        guard let keyData = Data(base64Encoded: publicKeyBase64) else {
+            throw PortalError.engineFailed("RSA 公钥不是有效的 Base64")
+        }
+        let attributes: [CFString: Any] = [
+            kSecAttrKeyType: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass: kSecAttrKeyClassPublic
+        ]
+        var error: Unmanaged<CFError>?
+        guard let key = SecKeyCreateWithData(keyData as CFData, attributes as CFDictionary, &error) else {
+            throw PortalError.engineFailed("RSA 公钥无法解析")
+        }
+        guard SecKeyIsAlgorithmSupported(key, .encrypt, .rsaEncryptionPKCS1),
+              let encrypted = SecKeyCreateEncryptedData(key, .rsaEncryptionPKCS1, Data(plain.utf8) as CFData, &error) else {
+            throw PortalError.engineFailed("密码加密失败")
+        }
+        return (encrypted as Data).base64EncodedString()
+    }
+
+    // MARK: - 通用登录引擎
+
+    /// Port of `AuthRepository.loginWithEngine`: the school definition describes the whole
+    /// handshake and the app only executes it. Network errors propagate unchanged so the caller
+    /// keeps retrying; only a captcha/rejected rule match throws `PortalError.loginRejected`.
+    private func loginWithEngine(
+        _ engine: SchoolDefinition.AuthEnginePayload,
+        username: String,
+        password: String,
+        auth: SchoolDefinition.AuthPayload,
+        cookies: LoginCookieJar
+    ) async throws {
+        // URLSession's automatic redirect following hides the intermediate responses, so a 302's
+        // `Set-Cookie` headers -- exactly where CAS puts its ticket-granting cookie -- would never
+        // reach the jar. The engine declines every redirect and re-issues the request itself.
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.timeoutIntervalForRequest = 40
+        let client = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
+        defer { client.finishTasksAndInvalidate() }
+
+        var variables: [String: String] = [
+            "username": username,
+            "password": password,
+            "baseUrl": SchoolCatalog.shared.definition?.baseUrl ?? baseURL,
+            "loginUrl": auth.loginUrl ?? ""
+        ]
+        var stepResponses: [String: EngineResponse] = [:]
+        var lastResponse: EngineResponse?
+
+        for (index, step) in engine.steps.enumerated() {
+            let id = step.id.flatMap { $0.isEmpty ? nil : $0 } ?? "step\(index)"
+            if let spec = step.request {
+                let response = try await performEngineRequest(spec, variables: variables, client: client, cookies: cookies)
+                stepResponses[id] = response
+                lastResponse = response
+            } else if let spec = step.extract {
+                let source: EngineResponse
+                if let from = spec.from, !from.isEmpty {
+                    guard let referenced = stepResponses[from] else {
+                        throw PortalError.engineFailed("提取步骤 '\(id)' 引用了不存在的请求步骤 '\(from)'")
+                    }
+                    source = referenced
+                } else {
+                    guard let last = lastResponse else {
+                        throw PortalError.engineFailed("提取步骤 '\(id)' 之前没有任何请求步骤")
+                    }
+                    source = last
+                }
+                guard let regex = try? NSRegularExpression(
+                    pattern: spec.regex,
+                    options: [.dotMatchesLineSeparators, .caseInsensitive]
+                ) else { throw PortalError.engineFailed("提取步骤 '\(id)' 的正则表达式无效") }
+                let group = spec.group ?? 1
+                let range = NSRange(source.body.startIndex..., in: source.body)
+                guard let match = regex.firstMatch(in: source.body, range: range),
+                      group < match.numberOfRanges,
+                      let valueRange = Range(match.range(at: group), in: source.body) else {
+                    throw PortalError.engineFailed("提取步骤 '\(id)' 未匹配到内容")
+                }
+                variables[id] = String(source.body[valueRange])
+            } else if let spec = step.transform {
+                let input = interpolate(spec.input ?? "", variables: variables)
+                switch spec.algorithm {
+                case "rsa-pkcs1-base64":
+                    guard let publicKey = spec.publicKey, !publicKey.isEmpty else {
+                        throw PortalError.engineFailed("变换步骤 '\(id)' 缺少 RSA 公钥")
+                    }
+                    variables[id] = try Self.rsaEncryptBase64(input, publicKeyBase64: publicKey)
+                case "sha1":
+                    variables[id] = Self.sha1Hex(input)
+                case "md5":
+                    variables[id] = Self.md5Hex(input)
+                default:
+                    throw PortalError.engineFailed("不支持的变换算法: \(spec.algorithm)")
+                }
+            }
+        }
+
+        try judgeEngineOutcome(engine.outcome, lastResponse: lastResponse, auth: auth, cookies: cookies)
+    }
+
+    private func performEngineRequest(
+        _ spec: SchoolDefinition.AuthEnginePayload.Step.Request,
+        variables: [String: String],
+        client: URLSession,
+        cookies: LoginCookieJar
+    ) async throws -> EngineResponse {
+        guard let initialURL = URL(string: interpolate(spec.url, variables: variables)) else {
+            throw PortalError.invalidResponse
+        }
+        var currentURL = initialURL
+        var method = (spec.method ?? "GET").uppercased()
+        var body = try engineBody(spec, variables: variables)
+        var redirectCount = 0
+
+        while true {
+            var request = URLRequest(url: currentURL)
+            request.httpMethod = method
+            if let body, method != "GET", method != "HEAD" {
+                request.httpBody = body.data
+                request.setValue(body.contentType, forHTTPHeaderField: "Content-Type")
+            }
+            spec.headers?.forEach { key, value in
+                request.setValue(interpolate(value, variables: variables), forHTTPHeaderField: key)
+            }
+            cookies.apply(to: &request)
+
+            let (data, response) = try await client.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw PortalError.invalidResponse }
+            cookies.capture(from: http, fallbackURL: currentURL)
+
+            if (300..<400).contains(http.statusCode),
+               let location = http.value(forHTTPHeaderField: "Location"),
+               redirectCount < 10,
+               let nextURL = URL(string: location, relativeTo: currentURL)?.absoluteURL {
+                // A redirect drops the body and switches to GET, like a browser after a form POST.
+                redirectCount += 1
+                currentURL = nextURL
+                method = "GET"
+                body = nil
+                continue
+            }
+            return EngineResponse(
+                code: http.statusCode,
+                body: String(data: data, encoding: .utf8) ?? "",
+                finalURL: http.url?.absoluteString ?? currentURL.absoluteString
+            )
+        }
+    }
+
+    private func judgeEngineOutcome(
+        _ outcome: SchoolDefinition.AuthEnginePayload.Outcome?,
+        lastResponse: EngineResponse?,
+        auth: SchoolDefinition.AuthPayload,
+        cookies: LoginCookieJar
+    ) throws {
+        guard let response = lastResponse else {
+            throw PortalError.engineFailed("登录引擎没有执行任何请求步骤")
+        }
+
+        func matches(_ rule: SchoolDefinition.AuthEnginePayload.Outcome.Rule?) -> Bool {
+            guard let rule else { return false }
+            if let codes = rule.statusCodes, !codes.contains(response.code) { return false }
+            if let needles = rule.bodyContains,
+               !needles.contains(where: { response.body.range(of: $0, options: .caseInsensitive) != nil }) {
+                return false
+            }
+            return true
+        }
+
+        if matches(outcome?.captcha) {
+            let message = outcome?.captcha?.message.flatMap { $0.isEmpty ? nil : $0 }
+            throw PortalError.loginRejected(message ?? "教务系统要求安全验证，请改用网页登录完成验证")
+        }
+        if matches(outcome?.rejected) {
+            let message = outcome?.rejected?.message.flatMap { $0.isEmpty ? nil : $0 }
+            throw PortalError.loginRejected(message ?? "账号或密码错误")
+        }
+
+        let success = outcome?.success
+        let prefixes = success?.finalUrlPrefixes ?? auth.resolvedSuccessPrefixes
+        let cookieNames = success?.cookies ?? auth.resolvedCookieNames
+        let statusCodes = success?.statusCodes ?? []
+        let urlOK = prefixes.isEmpty || prefixes.contains(where: { response.finalURL.hasPrefix($0) })
+        let cookiesOK = cookies.hasAnyCookie(cookieNames)
+        let statusOK = statusCodes.isEmpty || statusCodes.contains(response.code)
+        guard urlOK, cookiesOK, statusOK else {
+            throw PortalError.engineFailed("登录请求已完成，但未确认登录成功，请重试")
+        }
+    }
+
+    private func engineBody(
+        _ spec: SchoolDefinition.AuthEnginePayload.Step.Request,
+        variables: [String: String]
+    ) throws -> EngineBody? {
+        switch spec.contentType {
+        case "form":
+            // Everything outside the unreserved set is percent-encoded, which matters for an RSA
+            // ciphertext: a raw "+" in Base64 would decode as a space on the server.
+            let pairs = (spec.form ?? [:]).map { key, value -> String in
+                let escapedKey = key.addingPercentEncoding(withAllowedCharacters: Self.formAllowedCharacters) ?? key
+                let escapedValue = interpolate(value, variables: variables)
+                    .addingPercentEncoding(withAllowedCharacters: Self.formAllowedCharacters) ?? ""
+                return "\(escapedKey)=\(escapedValue)"
+            }
+            return EngineBody(
+                data: Data(pairs.sorted().joined(separator: "&").utf8),
+                contentType: "application/x-www-form-urlencoded"
+            )
+        case "json":
+            var object: [String: Any] = [:]
+            for (key, value) in spec.json ?? [:] {
+                object[key] = interpolate(value, variables: variables)
+            }
+            return EngineBody(
+                data: try JSONSerialization.data(withJSONObject: object),
+                contentType: "application/json; charset=utf-8"
+            )
+        default:
+            guard let raw = spec.body else { return nil }
+            return EngineBody(
+                data: Data(interpolate(raw, variables: variables).utf8),
+                contentType: "text/plain; charset=utf-8"
+            )
+        }
+    }
+
+    private func interpolate(_ template: String, variables: [String: String]) -> String {
+        var result = template
+        for (key, value) in variables {
+            result = result.replacingOccurrences(of: "{\(key)}", with: value)
+        }
+        return result
+    }
+
+    private static let formAllowedCharacters: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "-._~")
+        return set
+    }()
+
+    private struct EngineResponse {
+        let code: Int
+        let body: String
+        let finalURL: String
+    }
+
+    private struct EngineBody {
+        let data: Data
+        let contentType: String
+    }
+}
+
+/// Lets the login engine follow redirects by hand: every redirect is declined so the loop in
+/// `performEngineRequest` can capture each hop's `Set-Cookie` headers and re-issue the request.
+private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
 }
 
 /// One-login-only cookie jar. It deliberately never reads `HTTPCookieStorage.shared`, so an expired
@@ -491,6 +777,12 @@ private final class LoginCookieJar {
 
     var hasSession: Bool {
         values.values.contains { $0.name.uppercased() == "SESSION" && !$0.value.isEmpty }
+    }
+
+    func hasAnyCookie(_ names: [String]) -> Bool {
+        names.isEmpty || values.values.contains { cookie in
+            !cookie.value.isEmpty && names.contains { $0.caseInsensitiveCompare(cookie.name) == .orderedSame }
+        }
     }
 
     var header: String {

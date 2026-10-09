@@ -103,8 +103,16 @@ struct MaterialPageScreen: View {
 
             switch loadState {
             case .authenticating:
-                statusView(icon: "hourglass", title: "尝试登录…", detail: "正在验证教务登录状态")
-                    .transition(statusTransition)
+                // A quiet revalidation must not throw away data already on screen: with a rendered
+                // page the content stays visible and the toolbar spinner carries the "登录中"
+                // signal; only a cold page with nothing to show gets the full-screen status.
+                if let loaded = renderedPage {
+                    content(loaded)
+                        .transition(contentEntranceTransition)
+                } else {
+                    statusView(icon: "hourglass", title: "尝试登录…", detail: "正在验证教务登录状态")
+                        .transition(statusTransition)
+                }
             case .unavailable:
                 statusView(
                     icon: "wifi.exclamationmark",
@@ -176,7 +184,7 @@ struct MaterialPageScreen: View {
                     // Icon-only, like every other in-app refresh control: a plain bar glyph with no
                     // word and no filled background. A spinner replaces the glyph while a refresh
                     // runs, which also keeps the control tappable to cancel a stuck one.
-                    if isRefreshing || loadState == .loading {
+                    if isRefreshing || loadState == .loading || loadState == .authenticating {
                         ProgressView().controlSize(.small)
                     } else {
                         Image(systemName: "arrow.clockwise")

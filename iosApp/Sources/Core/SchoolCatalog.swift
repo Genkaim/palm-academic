@@ -424,10 +424,40 @@ final class SchoolCatalog: ObservableObject {
         }
         if let auth = root["auth"] as? [String: Any] {
             let type = auth["type"] as? String ?? "salted-sha1"
-            guard type == "salted-sha1" || type == "web" else {
+            guard type == "salted-sha1" || type == "web" || type == "engine" else {
                 throw PortalError.invalidSchoolDefinition
             }
-            if type == "web" {
+            if type == "engine" {
+                // Mirrors Android `validateDefinition`: every engine step must be exactly one of
+                // request / extract / transform, carrying the fields its kind requires.
+                guard let engine = auth["engine"] as? [String: Any],
+                      let steps = engine["steps"] as? [[String: Any]], !steps.isEmpty else {
+                    throw PortalError.invalidSchoolDefinition
+                }
+                for step in steps {
+                    let kinds = [step["request"] != nil, step["extract"] != nil, step["transform"] != nil]
+                        .filter { $0 }.count
+                    guard kinds == 1 else { throw PortalError.invalidSchoolDefinition }
+                    if let request = step["request"] as? [String: Any] {
+                        guard let url = request["url"] as? String, !url.isEmpty else {
+                            throw PortalError.invalidSchoolDefinition
+                        }
+                    }
+                    if let extract = step["extract"] as? [String: Any] {
+                        guard let pattern = extract["regex"] as? String, !pattern.isEmpty,
+                              (try? NSRegularExpression(pattern: pattern)) != nil else {
+                            throw PortalError.invalidSchoolDefinition
+                        }
+                    }
+                    if let transform = step["transform"] as? [String: Any] {
+                        guard let algorithm = transform["algorithm"] as? String,
+                              ["rsa-pkcs1-base64", "sha1", "md5"].contains(algorithm) else {
+                            throw PortalError.invalidSchoolDefinition
+                        }
+                    }
+                }
+            }
+            if type == "web" || type == "engine" {
                 guard let loginURL = auth["loginUrl"] as? String,
                       loginURL.hasPrefix("https://"),
                       let prefixes = auth["successUrlPrefixes"] as? [String],

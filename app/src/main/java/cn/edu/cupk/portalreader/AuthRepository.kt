@@ -1,18 +1,24 @@
 package cn.edu.cupk.portalreader
 
+import android.util.Base64
 import android.webkit.CookieManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Cookie
 import okhttp3.CookieJar
+import okhttp3.FormBody
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
+import java.security.KeyFactory
 import java.security.MessageDigest
+import java.security.spec.X509EncodedKeySpec
 import java.util.concurrent.TimeUnit
+import javax.crypto.Cipher
 
 /**
  * The portal answered the password handshake with a DEFINITIVE rejection: wrong credentials or a
@@ -35,6 +41,18 @@ class AuthRepository {
             val loginClient = PortalHttp.client.newBuilder()
                 .cookieJar(loginCookies)
                 .build()
+
+            // 通用登录引擎：学校定义自己描述整个握手（请求/提取/加密/判定），App 只负责执行。
+            // 内置的 salted-sha1 流程本质上是引擎的一条具体配置。
+            val auth = SchoolAdapterRepository.activeDefinitionOrNull()?.auth
+            if (auth?.usesEngine == true) {
+                loginWithEngine(username.trim(), password, auth, loginCookies, loginClient)
+                loginCookies.persistSession()
+                if (!PortalSessionStore.restoreToWebViewAndWait()) {
+                    error("登录会话未能写入系统 WebView")
+                }
+                return@runCatching
+            }
 
             // 先打开一次登录页，让服务端下发首次登录所需的预会话 Cookie。
             // 真实教务在没有预会话时可能把正确密码请求误判为异常或要求验证码。
@@ -121,6 +139,193 @@ class AuthRepository {
         }.getOrDefault(SessionValidation.UNAVAILABLE)
     }
 
+    /**
+     * 通用登录引擎：按学校定义依次执行 request/extract/transform 步骤，
+     * 最后根据 outcome 判定登录结果。步骤内的网络异常原样抛出，由调用方按
+     * "网络问题持续重试"的约定处理；只有命中 captcha/rejected 规则时才抛出
+     * LoginRejectedException 把用户打回登录页。
+     */
+    private fun loginWithEngine(
+        username: String,
+        password: String,
+        auth: PortalAuthDefinition,
+        loginCookies: LoginCookieJar,
+        loginClient: OkHttpClient
+    ) {
+        val engine = auth.engine ?: error("学校定义缺少登录引擎配置")
+        val variables = mutableMapOf(
+            "username" to username,
+            "password" to password,
+            "baseUrl" to (SchoolAdapterRepository.activeDefinitionOrNull()?.baseUrl.orEmpty()),
+            "loginUrl" to (auth.loginUrl.orEmpty())
+        )
+        val stepResponses = mutableMapOf<String, EngineResponse>()
+        var lastResponse: EngineResponse? = null
+
+        val steps = engine.getJSONArray("steps")
+        for (index in 0 until steps.length()) {
+            val step = steps.getJSONObject(index)
+            val id = step.optString("id").ifBlank { "step$index" }
+            when {
+                step.has("request") -> {
+                    val response = executeEngineRequest(
+                        step.getJSONObject("request"), variables, loginClient
+                    )
+                    stepResponses[id] = response
+                    lastResponse = response
+                }
+                step.has("extract") -> {
+                    val extract = step.getJSONObject("extract")
+                    val fromId = extract.optString("from").ifBlank { null }
+                    val source = when {
+                        fromId != null -> stepResponses[fromId]
+                            ?: error("提取步骤 '$id' 引用了不存在的请求步骤 '$fromId'")
+                        else -> lastResponse ?: error("提取步骤 '$id' 之前没有任何请求步骤")
+                    }
+                    val regex = Regex(
+                        extract.getString("regex"),
+                        setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+                    )
+                    variables[id] = regex.find(source.body)
+                        ?.groupValues?.getOrNull(extract.optInt("group", 1))
+                        ?: error("提取步骤 '$id' 未匹配到内容")
+                }
+                step.has("transform") -> {
+                    val transform = step.getJSONObject("transform")
+                    val input = interpolate(transform.optString("input"), variables)
+                    variables[id] = when (val algorithm = transform.getString("algorithm")) {
+                        "rsa-pkcs1-base64" -> rsaEncryptBase64(input, transform.getString("publicKey"))
+                        "sha1" -> sha1(input)
+                        "md5" -> md5(input)
+                        else -> error("不支持的变换算法: $algorithm")
+                    }
+                }
+                else -> error("引擎步骤 '$id' 必须包含 request/extract/transform 之一")
+            }
+        }
+
+        judgeEngineOutcome(engine.optJSONObject("outcome"), lastResponse, auth, loginCookies)
+    }
+
+    private fun executeEngineRequest(
+        spec: JSONObject,
+        variables: Map<String, String>,
+        loginClient: OkHttpClient
+    ): EngineResponse {
+        val method = spec.optString("method", "GET").uppercase()
+        val builder = Request.Builder().url(interpolate(spec.getString("url"), variables))
+        spec.optJSONObject("headers")?.let { headers ->
+            for (key in headers.keys()) {
+                builder.header(key, interpolate(headers.getString(key), variables))
+            }
+        }
+        when (spec.optString("contentType")) {
+            "form" -> {
+                val body = FormBody.Builder().also { form ->
+                    spec.optJSONObject("form")?.let { fields ->
+                        for (key in fields.keys()) {
+                            form.add(key, interpolate(fields.getString(key), variables))
+                        }
+                    }
+                }.build()
+                builder.method(method, body)
+            }
+            "json" -> {
+                val payload = interpolateJson(spec.optJSONObject("json") ?: JSONObject(), variables)
+                builder.method(method, payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            }
+            else -> when {
+                spec.has("body") ->
+                    builder.method(method, interpolate(spec.getString("body"), variables).toRequestBody(null))
+                method == "GET" || method == "HEAD" -> builder.method(method, null)
+                else -> builder.method(method, ByteArray(0).toRequestBody(null))
+            }
+        }
+        loginClient.newCall(builder.build()).execute().use { response ->
+            return EngineResponse(
+                code = response.code,
+                body = response.body?.string().orEmpty(),
+                finalUrl = response.request.url.toString()
+            )
+        }
+    }
+
+    private fun judgeEngineOutcome(
+        outcome: JSONObject?,
+        lastResponse: EngineResponse?,
+        auth: PortalAuthDefinition,
+        loginCookies: LoginCookieJar
+    ) {
+        val response = lastResponse ?: error("登录引擎没有执行任何请求步骤")
+
+        fun matches(rule: JSONObject?): Boolean {
+            if (rule == null) return false
+            rule.optJSONArray("statusCodes")?.let { codes ->
+                if (!(0 until codes.length()).any { codes.getInt(it) == response.code }) return false
+            }
+            rule.optJSONArray("bodyContains")?.let { needles ->
+                if (!(0 until needles.length()).any {
+                        response.body.contains(needles.getString(it), ignoreCase = true)
+                    }
+                ) return false
+            }
+            return true
+        }
+
+        outcome?.optJSONObject("captcha")?.takeIf(::matches)?.let { rule ->
+            throw LoginRejectedException(
+                rule.optString("message").ifBlank { "教务系统要求安全验证，请选择下方的网页登录" }
+            )
+        }
+        outcome?.optJSONObject("rejected")?.takeIf(::matches)?.let { rule ->
+            throw LoginRejectedException(
+                rule.optString("message").ifBlank { "账号或密码错误" }
+            )
+        }
+
+        val success = outcome?.optJSONObject("success")
+        val urlPrefixes = success?.optJSONArray("finalUrlPrefixes")?.toStringList()
+            ?: auth.successUrlPrefixes
+        val cookieNames = success?.optJSONArray("cookies")?.toStringList()
+            ?: auth.sessionCookieNames
+        val statusCodes = success?.optJSONArray("statusCodes")?.let { codes ->
+            (0 until codes.length()).map { codes.getInt(it) }
+        }.orEmpty()
+
+        val urlOk = urlPrefixes.isEmpty() || urlPrefixes.any { response.finalUrl.startsWith(it) }
+        val cookiesOk = loginCookies.hasAnyCookie(cookieNames)
+        val statusOk = statusCodes.isEmpty() || response.code in statusCodes
+        if (!urlOk || !cookiesOk || !statusOk) {
+            error("登录请求已完成，但未确认登录成功，请重试")
+        }
+    }
+
+    private fun interpolate(template: String, variables: Map<String, String>): String {
+        var result = template
+        for ((key, value) in variables) {
+            result = result.replace("{$key}", value)
+        }
+        return result
+    }
+
+    private fun interpolateJson(json: JSONObject, variables: Map<String, String>): JSONObject {
+        val result = JSONObject()
+        for (key in json.keys()) {
+            val value = json.get(key)
+            result.put(key, if (value is String) interpolate(value, variables) else value)
+        }
+        return result
+    }
+
+    private fun JSONArray.toStringList(): List<String> =
+        (0 until length()).map { getString(it) }
+
+    private data class EngineResponse(
+        val code: Int,
+        val body: String,
+        val finalUrl: String
+    )
+
     companion object {
         // Keep session probing short on networks that cannot reach the campus service. Actual
         // page and data requests retain the more tolerant timeout configured in PortalHttp.
@@ -137,10 +342,25 @@ class AuthRepository {
                 content.contains("<title>登入页面</title>") ||
                 content.contains("id=\"vue_main\"") && content.contains("login-salt")
 
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
         private fun sha1(value: String): String =
             MessageDigest.getInstance("SHA-1")
                 .digest(value.toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it) }
+
+        private fun md5(value: String): String =
+            MessageDigest.getInstance("MD5")
+                .digest(value.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+
+        private fun rsaEncryptBase64(plain: String, publicKeyBase64: String): String {
+            val key = KeyFactory.getInstance("RSA")
+                .generatePublic(X509EncodedKeySpec(Base64.decode(publicKeyBase64, Base64.DEFAULT)))
+            val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            return Base64.encodeToString(cipher.doFinal(plain.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+        }
     }
 }
 
@@ -171,6 +391,12 @@ private class LoginCookieJar : CookieJar {
     @Synchronized
     fun hasSessionCookie(): Boolean =
         cookies.values.any { it.name == "SESSION" && it.value.isNotBlank() }
+
+    @Synchronized
+    fun hasAnyCookie(names: List<String>): Boolean =
+        names.isEmpty() || cookies.values.any { cookie ->
+            cookie.value.isNotBlank() && names.any { it.equals(cookie.name, ignoreCase = true) }
+        }
 
     @Synchronized
     fun persistSession() {

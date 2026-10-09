@@ -105,9 +105,44 @@ function validateDefinition(assetPath) {
   if (definition.auth !== undefined) {
     const auth = definition.auth;
     const type = auth?.type ?? "salted-sha1";
-    requireValue(type === "salted-sha1" || type === "web", assetPath,
-      "auth.type 仅支持 salted-sha1 或 web");
-    if (type === "web") {
+    requireValue(type === "salted-sha1" || type === "web" || type === "engine", assetPath,
+      "auth.type 仅支持 salted-sha1、web 或 engine");
+    if (type === "engine") {
+      const engine = auth.engine;
+      if (requireValue(engine && typeof engine === "object", assetPath,
+        "auth.type 为 engine 时 auth.engine 不能为空")) {
+        const steps = engine.steps;
+        if (requireValue(Array.isArray(steps) && steps.length > 0, assetPath,
+          "auth.engine.steps 不能为空")) {
+          steps.forEach((step, index) => {
+            const scope = `${assetPath}.auth.engine.steps[${index}]`;
+            const kinds = ["request", "extract", "transform"].filter((key) => step?.[key] !== undefined);
+            requireValue(kinds.length === 1, scope, "必须且只能包含 request/extract/transform 之一");
+            if (step?.request !== undefined) {
+              requireValue(typeof step.request?.url === "string" && step.request.url.trim(), scope,
+                "request.url 不能为空");
+            }
+            if (step?.extract !== undefined) {
+              if (requireValue(typeof step.extract?.regex === "string" && step.extract.regex, scope,
+                "extract.regex 不能为空")) {
+                try { new RegExp(step.extract.regex); } catch (error) {
+                  reportError(scope, `extract.regex 不是有效正则：${error.message}`);
+                }
+              }
+            }
+            if (step?.transform !== undefined) {
+              requireValue(["rsa-pkcs1-base64", "sha1", "md5"].includes(step.transform?.algorithm), scope,
+                "transform.algorithm 仅支持 rsa-pkcs1-base64/sha1/md5");
+              if (step.transform?.algorithm === "rsa-pkcs1-base64") {
+                requireValue(typeof step.transform?.publicKey === "string" && step.transform.publicKey.trim(),
+                  scope, "transform.publicKey 不能为空");
+              }
+            }
+          });
+        }
+      }
+    }
+    if (type === "web" || type === "engine") {
       requireValue(isHttpsUrl(auth.loginUrl), assetPath, "auth.loginUrl 必须是 HTTPS 地址");
       requireValue(Array.isArray(auth.successUrlPrefixes) && auth.successUrlPrefixes.length > 0 &&
         auth.successUrlPrefixes.every(isHttpsUrl), assetPath,

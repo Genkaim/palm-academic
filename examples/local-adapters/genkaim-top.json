@@ -9,8 +9,8 @@
   "baseUrl": "https://portal.cupk.edu.cn/portal",
   "readerAdapter": "adapters/genkaim-top-reader.js",
   "auth": {
-    "type": "web",
-    "loginUrl": "https://cas.cupk.edu.cn/",
+    "type": "engine",
+    "loginUrl": "https://cas.cupk.edu.cn/cas/login",
     "successUrlPrefixes": [
       "https://portal.cupk.edu.cn/portal/"
     ],
@@ -18,7 +18,65 @@
       "portal.cupk.edu.cn",
       "cas.cupk.edu.cn"
     ],
-    "sessionCookieNames": []
+    "sessionCookieNames": [],
+    "engine": {
+      "steps": [
+        {
+          "id": "loginPage",
+          "request": {
+            "method": "GET",
+            "url": "{loginUrl}",
+            "headers": {
+              "Accept": "text/html,application/xhtml+xml",
+              "Accept-Language": "zh-CN,zh;q=0.9"
+            }
+          }
+        },
+        {
+          "id": "execution",
+          "extract": {
+            "regex": "name=\"execution\" value=\"([^\"]+)\""
+          }
+        },
+        {
+          "id": "encryptedPassword",
+          "transform": {
+            "algorithm": "rsa-pkcs1-base64",
+            "publicKey": "MFswDQYJKoZIhvcNAQEBBQADSgAwRwJAUpCfX4kq+mbPNcVHM9x1OIwk94OaU4Dwt0gS0VHDM52pG60Fmxjm47DP5EXIgrg1UlMSwJbBIdHyg1XS1E3OjQIDAQAB",
+            "input": "{password}"
+          }
+        },
+        {
+          "id": "loginPost",
+          "request": {
+            "method": "POST",
+            "url": "{loginUrl}",
+            "headers": {
+              "Referer": "{loginUrl}",
+              "Accept": "text/html,application/xhtml+xml",
+              "Accept-Language": "zh-CN,zh;q=0.9"
+            },
+            "contentType": "form",
+            "form": {
+              "username": "{username}",
+              "password": "{encryptedPassword}",
+              "execution": "{execution}",
+              "_eventId": "submit"
+            }
+          }
+        }
+      ],
+      "outcome": {
+        "rejected": {
+          "statusCodes": [401],
+          "bodyContains": ["Invalid credentials."],
+          "message": "账号或密码错误"
+        },
+        "success": {
+          "finalUrlPrefixes": ["https://portal.cupk.edu.cn/"]
+        }
+      }
+    }
   },
   "monitor": {
     "coursePagePath": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME",

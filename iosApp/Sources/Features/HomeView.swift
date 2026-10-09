@@ -119,28 +119,29 @@ struct HomeView: View {
                 // Android puts it too.
                 //
                 ToolbarItem(placement: .principal) {
-                    // The title is ALWAYS strictly centred and never moves. The badge is pinned
-                    // just OUTSIDE the title's trailing edge with a 4pt gap via an overlay -- not
-                    // as a trailing bar button, which would sit at the screen edge and leave a
-                    // wide void between it and the title, and not as an HStack sibling, whose
-                    // whole cluster would re-centre (shoving the title toward the left edge) the
-                    // moment the badge appeared.
-                    VStack(spacing: 1) {
-                        Text("掌上教务")
-                            .font(.headline.weight(.bold))
-                        Text(state.selectedSchool?.name ?? "未选择学校")
-                            .font(.caption)
-                            .foregroundStyle(PortalPalette.secondaryText)
-                            .lineLimit(1)
-                    }
-                    .overlay(alignment: .trailing) {
+                    // The title is ALWAYS strictly centred and never moves, and the badge never
+                    // overlaps it: when the badge appears, an invisible copy of the same badge
+                    // takes the title's LEADING side while the real one sits on the trailing
+                    // side, so the HStack keeps the title centred between two equal-width slots
+                    // and the badge holds a fixed 4pt gap from the title's edge.
+                    HStack(spacing: 4) {
                         if sessionStatusVisible {
                             sessionStatusBadge
                                 .fixedSize()
-                                .alignmentGuide(HorizontalAlignment.trailing) { dims in
-                                    // Badge leading edge sits 4pt past the title's trailing edge.
-                                    dims[.leading] - 4
-                                }
+                                .hidden()
+                                .accessibilityHidden(true)
+                        }
+                        VStack(spacing: 1) {
+                            Text("掌上教务")
+                                .font(.headline.weight(.bold))
+                            Text(state.selectedSchool?.name ?? "未选择学校")
+                                .font(.caption)
+                                .foregroundStyle(PortalPalette.secondaryText)
+                                .lineLimit(1)
+                        }
+                        if sessionStatusVisible {
+                            sessionStatusBadge
+                                .fixedSize()
                                 .transition(.opacity)
                         }
                     }

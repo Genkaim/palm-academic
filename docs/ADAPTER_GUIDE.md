@@ -15,12 +15,17 @@ PalmAcademic 的 Android 渲染层与学校网页解析逻辑彼此独立。每�
 
 导入时 App 会校验 JSON/JS、四个 `nativeType`、HTTPS 地址和作者信息，并把 JSON 中的 `readerAdapter` 重写成本机安全路径。因此两份待选文件可以放在“文件”、下载目录、LocalSend 或其他文稿提供器中，JS 文件名不要求与 JSON 中的路径相同。
 
-仓库提供了一套可直接导入的 Web-only 示例：
+仓库提供了一套可直接导入的完整示例（通用登录引擎账密登录 + 四个重绘演示）：
 
 - [`examples/local-adapters/genkaim-top.json`](../examples/local-adapters/genkaim-top.json)
 - [`examples/local-adapters/genkaim-top-reader.js`](../examples/local-adapters/genkaim-top-reader.js)
 
-该示例的学校目标为 `https://genkaim.top`，选中后会直接打开 `https://cas.cupk.edu.cn/` 网页登录（需要你本人的统一身份认证账号）；登录成功回到融合门户后，普通功能只放了“融合门户首页”和“服务大厅”两个入口，另外四个重绘演示分别读取首页真实可见的任务计数（`.todoBox`）、应用系统（`#thirdSystem .microserSort a`）、网上服务（`#hallList li`）和常用服务（`#resource li a`），覆盖四种原生重绘数据结构。示例只读取页面，不包含账号、Cookie、Token 或任何固定的个人数据。
+该示例的学校目标为 `https://genkaim.top`，用 `auth.type: "engine"` 把中石大克拉玛依校区 CAS（`https://cas.cupk.edu.cn/`）的账密握手完整描述进学校配置：GET 登录页提取 `execution` 隐藏字段、RSA-PKCS1 加密密码、POST 表单并按最终落点 URL 判定成功；错误密码命中 401 + `Invalid credentials.` 规则，直接提示“账号或密码错误”。登录成功回到融合门户后，普通功能只放了“融合门户首页”和“服务大厅”两个入口，另外四个重绘演示分别读取首页真实可见的任务计数（`.todoBox`）、应用系统（`#thirdSystem .microserSort a`）、网上服务（`#hallList li`）和常用服务（`#resource li a`），覆盖四种原生重绘数据结构。示例只读取页面，不包含账号、Cookie、Token 或任何固定的个人数据。
+
+如果需要一份“学校声明 + 适配器脚本”的真实完整参考，可以在线查看仓库内置的中石大（北京）`cupk` 学校：
+
+- 学校定义（school JSON）：<https://raw.githubusercontent.com/Genkaim/palm-academic/main/app/src/main/assets/schools/cupk.json>
+- 适配器脚本（adapter JS）：<https://raw.githubusercontent.com/Genkaim/palm-academic/main/app/src/main/assets/adapters/cupk-reader.js>
 
 ## 适配主线：只需要重点编写两份文件
 
@@ -142,7 +147,7 @@ app/src/main/assets/
 | `id` / `name` / `author` | 该校定义标识、显示名和维护者联系方式；`id` 在仓库内唯一 |
 | `baseUrl` | 教务系统学生端基地址，必须为 HTTPS |
 | `readerAdapter` | 指向该校唯一且完整的 `adapters/<school>-reader.js` |
-| `auth` | 登录协议。`salted-sha1` 沿用密码登录；`web` 可配置 CAS/SSO 网页登录地址、成功落点和会话 Cookie 主机 |
+| `auth` | 登录协议。`salted-sha1` 沿用内置密码登录；`engine` 用步骤式通用引擎描述任意 HTTP 账密握手（CAS 等）；`web` 配置 CAS/SSO 网页登录地址、成功落点和会话 Cookie 主机 |
 | `groups` | 首页菜单；普通入口只写 `title`/`path`，四个重绘入口额外写 `quick: true` 和 `nativeType` |
 | `monitor` | 后台检查的数据接口模板，以及从入口页/最终 URL 提取学期 ID、学生 ID 的正则 |
 
@@ -150,7 +155,7 @@ app/src/main/assets/
 
 后台检查必须请求真正包含数据的只读接口，不能只填写菜单入口页。课表接口应返回课程/教学班/安排，成绩接口应返回实际成绩行，考试接口应返回实际考试行。日志只保存解析后的前后 JSON 用于肉眼比较，不保存完整 HTML；请求状态、最终 URL 和脱敏后的诊断信息单独记录。接口结构不同的学校只修改自己的定义与独立脚本，Android 通用层不写学校域名、表格 class 或固定 ID。
 
-当前双端支持项目已有的 salted-SHA1 密码流程，以及由学校规则配置的 Web-only/CAS 流程。未提供 `auth.loginUrl` 时保持原来的 `<origin>/student/login` 行为。
+当前双端支持三种登录方式：内置的 salted-SHA1 密码流程、学校规则自描述的通用引擎账密流程（`engine`），以及 Web-only/CAS 网页登录流程（`web`）。未提供 `auth.loginUrl` 时保持原来的 `<origin>/student/login` 行为。
 
 CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会优先直接打开 `loginUrl`；WebView 进入任一 `successUrlPrefixes` 后视为登录完成，并只从 `sessionCookieHosts` 指定的站点捕获会话。`sessionCookieNames` 为空数组表示接受成功落点主机写入的任意非空 Cookie；若学校的会话 Cookie 名称稳定，建议明确列出，例如 `SESSION` 或 `JSESSIONID`。
 
@@ -162,6 +167,66 @@ CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会
     "successUrlPrefixes": ["https://portal.example.edu.cn/portal/"],
     "sessionCookieHosts": ["portal.example.edu.cn"],
     "sessionCookieNames": ["JSESSIONID"]
+  }
+}
+```
+
+### 通用登录引擎：`auth.type: "engine"`
+
+教务系统的登录方式不止 salted-sha1 一种：CAS、统一身份认证、客户端 RSA 加密密码……为每一种登录方式单独写内置流程不现实，因此登录方式可以整个嵌入学校配置。选择 `type: "engine"` 后，App 不再执行任何内置登录流程，而是按 `auth.engine.steps` 的顺序逐条执行学校自己描述的握手；Android 与 iOS 使用同一套引擎语义，同一份 JSON 两端行为一致。
+
+每个步骤有且仅有以下三种之一：
+
+| 步骤 | 作用 | 字段 |
+|---|---|---|
+| `request` | 发起一次 HTTP 请求，自动跟随重定向并收集全程 Cookie | `method`（默认 GET）、`url`、`headers`、`contentType`（`"form"`/`"json"`/省略为原始体）、`form`/`json`/`body` |
+| `extract` | 用正则从响应正文提取变量 | `from`（请求步骤 id，默认上一个请求步骤）、`regex`（默认取第一捕获组）、`group` |
+| `transform` | 对变量做加密/摘要 | `algorithm`（`rsa-pkcs1-base64`/`sha1`/`md5`）、`publicKey`（RSA 时为 X.509 Base64 公钥）、`input` |
+
+内置变量：`{username}`、`{password}`、`{baseUrl}`、`{loginUrl}`；`extract`/`transform` 的输出变量名即该步骤的 `id`，后续步骤用 `{id}` 插值。`form` 的键值在插值后自动 URL 编码。
+
+`outcome` 作用于最后一个 `request` 步骤的最终响应：
+
+- `captcha`/`rejected`：`statusCodes`（任一命中）与 `bodyContains`（不区分大小写、任一命中）同时满足时，按 `message` 提示并返回登录页——只有这种确定的凭据失败才会打断登录；
+- `success`：`finalUrlPrefixes`（默认取 `auth.successUrlPrefixes`）、`cookies`（默认取 `auth.sessionCookieNames`，空数组表示不校验 Cookie 名）、`statusCodes` 三类条件全部满足才判定登录成功；
+- 都不匹配视为网络/会话类错误，App 会持续重试，不会弹回登录页。
+
+以中石大克拉玛依校区 CAS 为例（可直接导入的完整文件见文首 genkaim-top 示例）：
+
+```json
+{
+  "auth": {
+    "type": "engine",
+    "loginUrl": "https://cas.cupk.edu.cn/cas/login",
+    "successUrlPrefixes": ["https://portal.cupk.edu.cn/portal/"],
+    "sessionCookieHosts": ["portal.cupk.edu.cn", "cas.cupk.edu.cn"],
+    "sessionCookieNames": [],
+    "engine": {
+      "steps": [
+        {"id": "loginPage", "request": {"method": "GET", "url": "{loginUrl}"}},
+        {"id": "execution", "extract": {"regex": "name=\"execution\" value=\"([^\"]+)\""}},
+        {"id": "encryptedPassword", "transform": {
+          "algorithm": "rsa-pkcs1-base64",
+          "publicKey": "MFswDQYJKoZIhvcNAQEBBQADSgAwRwJAUpCfX4kq+mbPNcVHM9x1OIwk94OaU4Dwt0gS0VHDM52pG60Fmxjm47DP5EXIgrg1UlMSwJbBIdHyg1XS1E3OjQIDAQAB",
+          "input": "{password}"
+        }},
+        {"id": "loginPost", "request": {
+          "method": "POST",
+          "url": "{loginUrl}",
+          "contentType": "form",
+          "form": {
+            "username": "{username}",
+            "password": "{encryptedPassword}",
+            "execution": "{execution}",
+            "_eventId": "submit"
+          }
+        }}
+      ],
+      "outcome": {
+        "rejected": {"statusCodes": [401], "bodyContains": ["Invalid credentials."], "message": "账号或密码错误"},
+        "success": {"finalUrlPrefixes": ["https://portal.cupk.edu.cn/"]}
+      }
+    }
   }
 }
 ```
