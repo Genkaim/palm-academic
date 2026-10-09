@@ -29,7 +29,14 @@ final class SessionStore {
 
     var hasPersistedSession: Bool {
         guard let header = persistedCookieHeader else { return false }
-        return header.split(separator: ";").contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix("SESSION=") }
+        let accepted = SchoolCatalog.shared.definition?.auth?.resolvedCookieNames ?? ["SESSION"]
+        if accepted.isEmpty { return true }
+        let names = header.split(separator: ";").compactMap { part -> String? in
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            guard let separator = trimmed.firstIndex(of: "=") else { return nil }
+            return String(trimmed[..<separator])
+        }
+        return names.contains { name in accepted.contains { $0.caseInsensitiveCompare(name) == .orderedSame } }
     }
 
     func saveCookieHeader(_ header: String) {
@@ -82,7 +89,9 @@ final class SessionStore {
 
         let storage = HTTPCookieStorage.shared
         let origin = SchoolCatalog.shared.origin
-        let path = "/student"
+        let host = SchoolCatalog.shared.definition?.auth?.resolvedCookieHosts.first
+            ?? URL(string: origin)?.host ?? ""
+        let path = SchoolCatalog.shared.definition?.auth?.resolvedCookieHosts.isEmpty == false ? "/" : "/student"
         for pair in pairs {
             guard let separator = pair.firstIndex(of: "=") else { continue }
             let name = String(pair[pair.startIndex..<separator])
@@ -90,7 +99,7 @@ final class SessionStore {
             var properties: [HTTPCookiePropertyKey: Any] = [
                 .name: name,
                 .value: value,
-                .domain: URL(string: origin)?.host ?? "",
+                .domain: host,
                 .path: path
             ]
             if origin.hasPrefix("https://") {
@@ -114,7 +123,10 @@ final class SessionStore {
     ///   were available, so callers can distinguish "login really finished" from "the portal
     ///   rendered a non-login page without issuing a session".
     @discardableResult
-    func captureFromWebView() async -> Bool {
+    func captureFromWebView(
+        cookieHosts: [String]? = nil,
+        acceptedCookieNames: [String]? = nil
+    ) async -> Bool {
         let store = WKWebsiteDataStore.default().httpCookieStore
         let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
             store.getAllCookies { cookies in
@@ -122,16 +134,28 @@ final class SessionStore {
             }
         }
         guard !cookies.isEmpty else { return false }
-        let host = URL(string: SchoolCatalog.shared.origin)?.host ?? ""
+        let configuredHosts = cookieHosts
+            ?? SchoolCatalog.shared.definition?.auth?.resolvedCookieHosts
+            ?? []
+        let hosts = configuredHosts.isEmpty
+            ? [URL(string: SchoolCatalog.shared.origin)?.host ?? ""]
+            : configuredHosts
         let filtered = cookies.filter { cookie in
             let cookieDomain = cookie.domain
             let normalised = cookieDomain.hasPrefix(".") ? String(cookieDomain.dropFirst()) : cookieDomain
-            return normalised == host || normalised == "." + host || host.hasSuffix("." + normalised)
+            return hosts.contains { host in
+                normalised == host || host.hasSuffix("." + normalised)
+            }
         }
         guard !filtered.isEmpty else { return false }
         // A session has to actually carry SESSION; a page of public marketing markup served from
         // the same host would otherwise be captured as "logged in".
-        let hasSession = filtered.contains { $0.name.uppercased() == "SESSION" && !$0.value.isEmpty }
+        let names = acceptedCookieNames
+            ?? SchoolCatalog.shared.definition?.auth?.resolvedCookieNames
+            ?? ["SESSION"]
+        let hasSession = names.isEmpty || filtered.contains { cookie in
+            !cookie.value.isEmpty && names.contains { $0.caseInsensitiveCompare(cookie.name) == .orderedSame }
+        }
         guard hasSession else { return false }
         let header = filtered
             .sorted(by: { $0.name < $1.name })
@@ -161,9 +185,10 @@ final class SessionStore {
             completion?()
             return false
         }
-        let host = URL(string: SchoolCatalog.shared.origin)?.host ?? ""
-        let isSecure = SchoolCatalog.shared.origin.hasPrefix("https://")
-        let path = "/student"
+        let configuredHosts = SchoolCatalog.shared.definition?.auth?.resolvedCookieHosts ?? []
+        let host = configuredHosts.first ?? URL(string: SchoolCatalog.shared.origin)?.host ?? ""
+        let isSecure = true
+        let path = configuredHosts.isEmpty ? "/student" : "/"
         let cookies: [HTTPCookie] = pairs.compactMap { pair in
             guard let sep = pair.firstIndex(of: "=") else { return nil }
             let name = String(pair[pair.startIndex..<sep])
@@ -233,7 +258,10 @@ final class SessionStore {
         lock.lock()
         UserDefaults.standard.removeObject(forKey: cookieHeaderKey)
         lock.unlock()
-        if let host = URL(string: SchoolCatalog.shared.origin)?.host?.lowercased() {
+        let configuredHosts = SchoolCatalog.shared.definition?.auth?.resolvedCookieHosts ?? []
+        let originHost = URL(string: SchoolCatalog.shared.origin)?.host.map { [$0] } ?? []
+        let hosts = Set((configuredHosts + originHost).map { $0.lowercased() })
+        if !hosts.isEmpty {
             // `cookies(for: origin)` only returns cookies whose path matches `/`; EAMS normally
             // scopes SESSION to `/student`, so that lookup left the very cookie we meant to clear.
             // Match by domain here and remove every path variant for the selected school.
@@ -242,7 +270,7 @@ final class SessionStore {
                 let domain = cookie.domain
                     .trimmingCharacters(in: CharacterSet(charactersIn: "."))
                     .lowercased()
-                return host == domain || host.hasSuffix(".\(domain)")
+                return hosts.contains { host in host == domain || host.hasSuffix(".\(domain)") }
             }.forEach(storage.deleteCookie)
         }
         // The WebKit data store owns a separate copy of the cookies used by the reader
@@ -296,9 +324,11 @@ struct AuthRepository {
     }
 
     private var origin: String { SchoolCatalog.shared.origin }
-    private var baseURL: String { "\(origin)/student" }
+    private var baseURL: String { SchoolCatalog.shared.baseURL }
     private var loginURL: String { "\(baseURL)/login" }
-    private var homeURL: String { "\(baseURL)/home" }
+    private var homeURL: String {
+        SchoolCatalog.shared.definition?.auth?.resolvedSuccessPrefixes.first ?? "\(baseURL)/home"
+    }
 
     /// Port of `AuthRepository.login`.
     ///

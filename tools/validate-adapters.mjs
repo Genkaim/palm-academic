@@ -102,6 +102,28 @@ function validateDefinition(assetPath) {
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(definition.author.email),
   assetPath, "author.email 缺失或格式无效");
   requireValue(isHttpsUrl(definition.baseUrl), assetPath, "baseUrl 必须是无凭据的 HTTPS 地址");
+  if (definition.auth !== undefined) {
+    const auth = definition.auth;
+    const type = auth?.type ?? "salted-sha1";
+    requireValue(type === "salted-sha1" || type === "web", assetPath,
+      "auth.type 仅支持 salted-sha1 或 web");
+    if (type === "web") {
+      requireValue(isHttpsUrl(auth.loginUrl), assetPath, "auth.loginUrl 必须是 HTTPS 地址");
+      requireValue(Array.isArray(auth.successUrlPrefixes) && auth.successUrlPrefixes.length > 0 &&
+        auth.successUrlPrefixes.every(isHttpsUrl), assetPath,
+      "auth.successUrlPrefixes 必须是非空 HTTPS 地址数组");
+      if (auth.sessionCookieHosts !== undefined) {
+        requireValue(Array.isArray(auth.sessionCookieHosts) &&
+          auth.sessionCookieHosts.every((host) => typeof host === "string" && /^[A-Za-z0-9.-]+$/.test(host)),
+        assetPath, "auth.sessionCookieHosts 包含无效主机");
+      }
+      if (auth.sessionCookieNames !== undefined) {
+        requireValue(Array.isArray(auth.sessionCookieNames) &&
+          auth.sessionCookieNames.every((name) => typeof name === "string" && name.trim()),
+        assetPath, "auth.sessionCookieNames 必须是字符串数组");
+      }
+    }
+  }
   requireValue(Array.isArray(definition.groups), assetPath, "groups 必须是数组");
   const monitor = definition.monitor;
   if (requireValue(monitor && typeof monitor === "object", assetPath, "monitor 不能为空")) {

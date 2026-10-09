@@ -85,6 +85,20 @@ struct SchoolDefinition: Codable {
     let readerAdapter: String
     let groups: [PortalGroup]
     let monitor: MonitorPayload
+    let auth: AuthPayload?
+
+    struct AuthPayload: Codable {
+        let type: String?
+        let loginUrl: String?
+        let successUrlPrefixes: [String]?
+        let sessionCookieHosts: [String]?
+        let sessionCookieNames: [String]?
+
+        var isWebOnly: Bool { type == "web" }
+        var resolvedSuccessPrefixes: [String] { successUrlPrefixes ?? [] }
+        var resolvedCookieHosts: [String] { sessionCookieHosts ?? [] }
+        var resolvedCookieNames: [String] { sessionCookieNames ?? ["SESSION"] }
+    }
 
     struct MonitorPayload: Codable {
         let coursePagePath: String?

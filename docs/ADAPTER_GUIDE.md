@@ -2,6 +2,26 @@
 
 PalmAcademic 的 Android 渲染层与学校网页解析逻辑彼此独立。每所学校必须拥有一个定义文件和一个完整、独立的脚本；脚本不得依赖其他学校的脚本。
 
+## 最快测试方式：直接在 App 内导入本地规则
+
+适配器不需要先合并到仓库、等待云端刷新，也不需要为了改一行 JS 重新编译 App。准备下面两份文件后，可直接在 Android 与 iOS 上测试：
+
+1. 一份学校定义 JSON，包含登录方式、功能列表、四个重绘入口、后台检查配置和作者信息。
+2. 一份对应的 adapter JS，暴露 `window.PalmAcademicAdapter` 并通过 `PalmAcademicHost.publish(...)` 发布重绘数据。
+3. 在登录页点“选择学校”→“导入本地规则”，先选择 JSON，再选择 JS。
+4. 导入成功后，在学校列表选择带“本地”标记的学校并登录；修改规则后，先删除同名本地学校，再重新导入这两个文件。
+
+本地导入规则保存在 App 自己的独立目录中：刷新云端学校规则不会覆盖、替换或删除它。只有本地导入的学校可以删除；内置和云端学校保持只读。学校行右侧的 `i` 可查看规则作者与联系方式。
+
+导入时 App 会校验 JSON/JS、四个 `nativeType`、HTTPS 地址和作者信息，并把 JSON 中的 `readerAdapter` 重写成本机安全路径。因此两份待选文件可以放在“文件”、下载目录、LocalSend 或其他文稿提供器中，JS 文件名不要求与 JSON 中的路径相同。
+
+仓库提供了一套可直接导入的 Web-only 示例：
+
+- [`examples/local-adapters/genkaim-top.json`](../examples/local-adapters/genkaim-top.json)
+- [`examples/local-adapters/genkaim-top-reader.js`](../examples/local-adapters/genkaim-top-reader.js)
+
+该示例的学校目标为 `https://genkaim.top`，选中后会直接打开 `https://cas.cupk.edu.cn/` 网页登录（需要你本人的统一身份认证账号）；登录成功回到融合门户后，普通功能只放了“融合门户首页”和“服务大厅”两个入口，另外四个重绘演示分别读取首页真实可见的任务计数（`.todoBox`）、应用系统（`#thirdSystem .microserSort a`）、网上服务（`#hallList li`）和常用服务（`#resource li a`），覆盖四种原生重绘数据结构。示例只读取页面，不包含账号、Cookie、Token 或任何固定的个人数据。
+
 ## 适配主线：只需要重点编写两份文件
 
 | 文件 | 负责什么 | 不负责什么 |
@@ -122,7 +142,7 @@ app/src/main/assets/
 | `id` / `name` / `author` | 该校定义标识、显示名和维护者联系方式；`id` 在仓库内唯一 |
 | `baseUrl` | 教务系统学生端基地址，必须为 HTTPS |
 | `readerAdapter` | 指向该校唯一且完整的 `adapters/<school>-reader.js` |
-| `auth` | 登录协议说明；当前只是元数据，新协议仍需扩展 Android 登录实现 |
+| `auth` | 登录协议。`salted-sha1` 沿用密码登录；`web` 可配置 CAS/SSO 网页登录地址、成功落点和会话 Cookie 主机 |
 | `groups` | 首页菜单；普通入口只写 `title`/`path`，四个重绘入口额外写 `quick: true` 和 `nativeType` |
 | `monitor` | 后台检查的数据接口模板，以及从入口页/最终 URL 提取学期 ID、学生 ID 的正则 |
 
@@ -130,7 +150,23 @@ app/src/main/assets/
 
 后台检查必须请求真正包含数据的只读接口，不能只填写菜单入口页。课表接口应返回课程/教学班/安排，成绩接口应返回实际成绩行，考试接口应返回实际考试行。日志只保存解析后的前后 JSON 用于肉眼比较，不保存完整 HTML；请求状态、最终 URL 和脱敏后的诊断信息单独记录。接口结构不同的学校只修改自己的定义与独立脚本，Android 通用层不写学校域名、表格 class 或固定 ID。
 
-当前 Android 登录实现支持项目已有的 salted-SHA1 流程。`auth` 仅用于说明适配所需协议，尚不会自动生成新的登录实现；不同登录协议仍需同步扩展 Android 登录代码。
+当前双端支持项目已有的 salted-SHA1 密码流程，以及由学校规则配置的 Web-only/CAS 流程。未提供 `auth.loginUrl` 时保持原来的 `<origin>/student/login` 行为。
+
+CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会优先直接打开 `loginUrl`；WebView 进入任一 `successUrlPrefixes` 后视为登录完成，并只从 `sessionCookieHosts` 指定的站点捕获会话。`sessionCookieNames` 为空数组表示接受成功落点主机写入的任意非空 Cookie；若学校的会话 Cookie 名称稳定，建议明确列出，例如 `SESSION` 或 `JSESSIONID`。
+
+```json
+{
+  "auth": {
+    "type": "web",
+    "loginUrl": "https://cas.example.edu.cn/",
+    "successUrlPrefixes": ["https://portal.example.edu.cn/portal/"],
+    "sessionCookieHosts": ["portal.example.edu.cn"],
+    "sessionCookieNames": ["JSESSIONID"]
+  }
+}
+```
+
+`baseUrl` 仍表示规则的目标站点与相对功能路径基准；CAS 和登录后的门户不在同一域名时，功能项与 `monitor` 路径可以填写完整 HTTPS URL。不要把带 `sid`、票据、Token 或账号信息的临时 URL 写入规则。
 
 ### school JSON 中的四个快捷入口
 

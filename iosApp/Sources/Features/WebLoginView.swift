@@ -23,8 +23,15 @@ struct WebLoginView: View {
 
     /// The portal serves the login form here; the Android activity loads the same path.
     private var loginURL: String {
+        if let configured = state.definition?.auth?.loginUrl, !configured.isEmpty {
+            return configured
+        }
         let origin = SchoolCatalog.shared.origin
         return "\(origin)/student/login"
+    }
+
+    private var authenticatedURLPrefixes: [String] {
+        state.definition?.auth?.resolvedSuccessPrefixes ?? []
     }
 
     /// Authenticated landings. Arriving at either one is the success signal -- Android keys off
@@ -39,6 +46,7 @@ struct WebLoginView: View {
 
             WebLoginWebView(
                 url: loginURL,
+                authenticatedURLPrefixes: authenticatedURLPrefixes,
                 authenticatedPaths: authenticatedPaths,
                 isDark: state.isDark,
                 onProgress: { progress = $0 },
@@ -182,7 +190,10 @@ struct WebLoginView: View {
     /// the login itself had succeeded. Only a genuinely missing SESSION cookie is a failure.
     private func adoptWebSession() async {
         didFinish = true
-        let captured = await SessionStore.shared.captureFromWebView()
+        let captured = await SessionStore.shared.captureFromWebView(
+            cookieHosts: state.definition?.auth?.resolvedCookieHosts,
+            acceptedCookieNames: state.definition?.auth?.resolvedCookieNames
+        )
         guard captured else {
             didFinish = false
             statusMessage = "未获取到登录会话，请在网页中完成登录后重试"
@@ -197,6 +208,7 @@ struct WebLoginView: View {
 /// without tearing the web view down on every state change.
 private struct WebLoginWebView: UIViewRepresentable {
     let url: String
+    let authenticatedURLPrefixes: [String]
     let authenticatedPaths: [String]
     let isDark: Bool
     let onProgress: (Double) -> Void
@@ -308,6 +320,10 @@ private struct WebLoginWebView: UIViewRepresentable {
             let urlString = webView.url?.absoluteString ?? ""
             let path = Self.normalizedPath(urlString)
 
+            if parent.authenticatedURLPrefixes.contains(where: urlString.hasPrefix) {
+                finishAuthentication()
+                return
+            }
             if parent.authenticatedPaths.contains(path) {
                 finishAuthentication()
                 return

@@ -111,6 +111,10 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var authenticated by mutableStateOf(false)
         private set
+    var webLoginOnly by mutableStateOf(
+        runCatching { SchoolAdapterRepository.load(application).auth.webOnly }.getOrDefault(false)
+    )
+        private set
 
     private val auth = AuthRepository()
     private var loginJob: Job? = null
@@ -164,6 +168,9 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         val changed = SchoolAdapterRepository.select(getApplication(), schoolId)
         hasSelectedSchool = SchoolAdapterRepository.hasSelectedSchool(getApplication())
         selectedSchoolId = schoolId
+        webLoginOnly = runCatching {
+            SchoolAdapterRepository.load(getApplication()).auth.webOnly
+        }.getOrDefault(false)
         rememberedCredential = PasswordCredentialStore.load(getApplication(), schoolId)
         error = null
         if (changed) {
@@ -250,7 +257,9 @@ class MainActivity : PortalActivity() {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             result.data?.getStringExtra(SchoolSelectionActivity.EXTRA_RESULT_SCHOOL_ID)
-                ?.let(model::selectSchool)
+                ?.let { schoolId ->
+                    model.selectSchool(schoolId)
+                }
         }
     }
 
@@ -299,6 +308,9 @@ private fun LoginRoute(
             delay(110)
             openHome()
         }
+    }
+    LaunchedEffect(model.hasSelectedSchool, model.webLoginOnly) {
+        if (model.hasSelectedSchool && model.webLoginOnly) openWebLogin()
     }
     Box(
         Modifier

@@ -33,11 +33,13 @@ class WebLoginActivity : PortalActivity() {
     private lateinit var webView: WebView
     private lateinit var progress: ProgressBar
     private lateinit var status: TextView
+    private lateinit var school: SchoolDefinition
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         useContinuousSystemBars()
+        school = SchoolAdapterRepository.load(this)
 
         val density = resources.displayMetrics.density
         val colors = portalViewColors(this)
@@ -49,7 +51,7 @@ class WebLoginActivity : PortalActivity() {
         }
         val toolbar = Toolbar(this).apply {
             title = "网页登录"
-            subtitle = Uri.parse(PortalConfig.ORIGIN).authority.orEmpty()
+            subtitle = Uri.parse(PortalConfig.LOGIN).authority.orEmpty()
             setNavigationIcon(R.drawable.ic_arrow_back)
             setNavigationOnClickListener { finishPortalActivity() }
             background = GradientDrawable(
@@ -146,8 +148,15 @@ class WebLoginActivity : PortalActivity() {
 
             override fun onPageFinished(view: WebView, finishedUrl: String?) {
                 CookieManager.getInstance().flush()
-                if (finishedUrl?.startsWith(PortalConfig.HOME) == true) {
-                    PortalSessionStore.captureFromWebView()
+                val authenticated = finishedUrl?.let { url ->
+                    school.auth.accepts(url) || (
+                        school.auth.successUrlPrefixes.isEmpty() && url.startsWith(PortalConfig.HOME)
+                    )
+                } == true
+                if (authenticated && PortalSessionStore.captureFromWebView(
+                        school.auth.sessionCookieHosts,
+                        school.auth.sessionCookieNames
+                    )) {
                     setResult(Activity.RESULT_OK)
                     finish()
                     @Suppress("DEPRECATION")
@@ -157,8 +166,8 @@ class WebLoginActivity : PortalActivity() {
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val uri = request.url
-                val portal = Uri.parse(PortalConfig.ORIGIN)
-                return uri.scheme != portal.scheme || uri.host != portal.host || uri.port != portal.port
+                val allowedHosts = school.auth.allowedHosts(school.baseUrl)
+                return uri.scheme != "https" || uri.host !in allowedHosts
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {

@@ -185,6 +185,7 @@ final class SchoolCatalog: ObservableObject {
         }
         selectedSchoolID = schoolID
         cachedDefinition = nil
+        definition = nil
         adapterScriptCache.removeAll()
         UserDefaults.standard.set(schoolID, forKey: Self.selectedSchoolKey)
         NotificationPreferences.shared.clearSnapshots()
@@ -420,6 +421,27 @@ final class SchoolCatalog: ObservableObject {
         guard let email = author["email"] as? String,
               Self.emailPattern.firstMatch(in: email, range: NSRange(email.startIndex..., in: email)) != nil else {
             throw PortalError.invalidSchoolDefinition
+        }
+        if let auth = root["auth"] as? [String: Any] {
+            let type = auth["type"] as? String ?? "salted-sha1"
+            guard type == "salted-sha1" || type == "web" else {
+                throw PortalError.invalidSchoolDefinition
+            }
+            if type == "web" {
+                guard let loginURL = auth["loginUrl"] as? String,
+                      loginURL.hasPrefix("https://"),
+                      let prefixes = auth["successUrlPrefixes"] as? [String],
+                      !prefixes.isEmpty,
+                      prefixes.allSatisfy({ $0.hasPrefix("https://") }) else {
+                    throw PortalError.invalidSchoolDefinition
+                }
+                if let hosts = auth["sessionCookieHosts"] as? [String] {
+                    let validHost = try! NSRegularExpression(pattern: "^[A-Za-z0-9.-]+$")
+                    guard hosts.allSatisfy({ host in
+                        validHost.firstMatch(in: host, range: NSRange(host.startIndex..., in: host)) != nil
+                    }) else { throw PortalError.invalidSchoolDefinition }
+                }
+            }
         }
         guard let adapter = root["readerAdapter"] as? String else { throw PortalError.invalidSchoolDefinition }
         try requireSafeAssetPath(adapter, prefix: "adapters/", suffix: ".js")

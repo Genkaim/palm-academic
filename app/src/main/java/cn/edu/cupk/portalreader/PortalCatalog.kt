@@ -35,12 +35,40 @@ object PortalConfig {
     val ORIGIN: String
         get() = if (BuildConfig.LOCAL_MOCK_ENABLED) BuildConfig.PORTAL_ORIGIN
         else SchoolAdapterRepository.activeOrigin()
-    val BASE: String get() = "$ORIGIN/student"
-    val LOGIN: String get() = "$BASE/login"
-    val HOME: String get() = "$BASE/home"
+    val BASE: String get() = SchoolAdapterRepository.activeDefinitionOrNull()?.baseUrl ?: "$ORIGIN/student"
+    val LOGIN: String get() = SchoolAdapterRepository.activeDefinitionOrNull()?.auth?.loginUrl ?: "$BASE/login"
+    val HOME: String get() = SchoolAdapterRepository.activeDefinitionOrNull()?.auth
+        ?.successUrlPrefixes?.firstOrNull() ?: "$BASE/home"
+    val SESSION_SCOPE: String get() = SchoolAdapterRepository.activeDefinitionOrNull()?.auth
+        ?.sessionCookieHosts?.firstOrNull()?.let { "https://$it/" } ?: BASE
+    val SESSION_PATH: String get() = if (
+        SchoolAdapterRepository.activeDefinitionOrNull()?.auth?.sessionCookieHosts.isNullOrEmpty()
+    ) "/student" else "/"
     val COURSE_TABLE: String get() = "$BASE/for-std/course-table"
     val GRADE: String get() = "$BASE/for-std/grade/sheet"
     val EXAM: String get() = "$BASE/for-std/exam-arrange"
+}
+
+data class PortalAuthDefinition(
+    val type: String = "salted-sha1",
+    val loginUrl: String? = null,
+    val successUrlPrefixes: List<String> = emptyList(),
+    val sessionCookieHosts: List<String> = emptyList(),
+    val sessionCookieNames: List<String> = listOf("SESSION")
+) {
+    val webOnly: Boolean get() = type == "web"
+
+    fun accepts(url: String): Boolean = successUrlPrefixes.any { prefix -> url.startsWith(prefix) }
+
+    fun allowedHosts(baseUrl: String): Set<String> = buildSet {
+        listOfNotNull(loginUrl, baseUrl).forEach { value ->
+            runCatching { java.net.URI(value).host }.getOrNull()?.let(::add)
+        }
+        successUrlPrefixes.forEach { value ->
+            runCatching { java.net.URI(value).host }.getOrNull()?.let(::add)
+        }
+        addAll(sessionCookieHosts)
+    }
 }
 
 data class PortalItem(
@@ -183,7 +211,8 @@ data class SchoolDefinition(
     val readerConfigJson: String,
     val fallbackUnitTimes: Map<String, Pair<String, String>>,
     val groups: List<PortalGroup>,
-    val monitor: PortalMonitorDefinition
+    val monitor: PortalMonitorDefinition,
+    val auth: PortalAuthDefinition = PortalAuthDefinition()
 ) {
     val quickItems: List<PortalItem> get() = groups.flatMap { it.items }.filter { it.quick }
 }
@@ -208,6 +237,9 @@ object SchoolAdapterRepository {
     @Volatile
     private var cachedDefinition: SchoolDefinition? = null
     private val adapterScriptCache = ConcurrentHashMap<String, String>()
+
+    fun activeDefinitionOrNull(): SchoolDefinition? =
+        cachedDefinition?.takeIf { it.id == selectedSchoolId }
 
     fun initialize(context: Context) {
         profiles = readProfiles(context)
@@ -353,6 +385,7 @@ object SchoolAdapterRepository {
             root.optString("baseUrl").ifBlank { "${profile.origin}/student" }.trimEnd('/')
         }
         val monitorJson = root.optJSONObject("monitor") ?: JSONObject()
+        val authJson = root.optJSONObject("auth") ?: JSONObject()
         val groupsJson = root.getJSONArray("groups")
         val groups = buildList {
             for (groupIndex in 0 until groupsJson.length()) {
@@ -414,6 +447,19 @@ object SchoolAdapterRepository {
                         "[\"']dataId[\"']\\s*:\\s*[\"']?(\\d+)"
                     )
                 }
+            ),
+            auth = PortalAuthDefinition(
+                type = authJson.optString("type", "salted-sha1"),
+                loginUrl = authJson.optString("loginUrl").takeIf(String::isNotBlank),
+                successUrlPrefixes = authJson.optJSONArray("successUrlPrefixes")?.let { values ->
+                    (0 until values.length()).map(values::getString)
+                }.orEmpty(),
+                sessionCookieHosts = authJson.optJSONArray("sessionCookieHosts")?.let { values ->
+                    (0 until values.length()).map(values::getString)
+                }.orEmpty(),
+                sessionCookieNames = authJson.optJSONArray("sessionCookieNames")?.let { values ->
+                    (0 until values.length()).map(values::getString)
+                } ?: listOf("SESSION")
             )
         ).also { cachedDefinition = it }
     }
@@ -600,6 +646,27 @@ object SchoolAdapterRepository {
             ?: error("学校定义缺少 author")
         require(author.optString("name").isNotBlank()) { "学校定义缺少作者名称" }
         require(EMAIL_PATTERN.matches(author.optString("email"))) { "学校定义中的作者邮箱无效" }
+        root.optJSONObject("auth")?.let { auth ->
+            val type = auth.optString("type", "salted-sha1")
+            require(type == "salted-sha1" || type == "web") { "auth.type 仅支持 salted-sha1 或 web" }
+            if (type == "web") {
+                require(auth.optString("loginUrl").startsWith("https://")) { "auth.loginUrl 必须使用 HTTPS" }
+                val prefixes = auth.optJSONArray("successUrlPrefixes")
+                require(prefixes != null && prefixes.length() > 0) { "auth.successUrlPrefixes 不能为空" }
+                for (index in 0 until prefixes.length()) {
+                    require(prefixes.getString(index).startsWith("https://")) {
+                        "auth.successUrlPrefixes 必须使用 HTTPS"
+                    }
+                }
+                auth.optJSONArray("sessionCookieHosts")?.let { hosts ->
+                    for (index in 0 until hosts.length()) {
+                        require(hosts.getString(index).matches(Regex("^[A-Za-z0-9.-]+$"))) {
+                            "auth.sessionCookieHosts 包含无效主机"
+                        }
+                    }
+                }
+            }
+        }
         requireSafeAssetPath(root.getString("readerAdapter"), "adapters/", ".js")
         val monitor = root.optJSONObject("monitor") ?: error("学校定义缺少 monitor")
         listOf(

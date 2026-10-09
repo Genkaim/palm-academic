@@ -24,12 +24,30 @@ object PortalSessionStore {
         appContext = context.applicationContext
     }
 
-    fun captureFromWebView() {
-        if (!::appContext.isInitialized) return
-        val header = CookieManager.getInstance().getCookie(PortalConfig.BASE).orEmpty()
+    fun captureFromWebView(
+        cookieHosts: List<String> = emptyList(),
+        acceptedCookieNames: List<String> = listOf("SESSION")
+    ): Boolean {
+        if (!::appContext.isInitialized) return false
+        val scopes = cookieHosts.map { "https://$it/" }.ifEmpty { listOf(PortalConfig.BASE) }
+        val header = scopes.asSequence()
+            .map { CookieManager.getInstance().getCookie(it).orEmpty() }
+            .filter(String::isNotBlank)
+            .flatMap { it.split(';').asSequence() }
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinctBy { it.substringBefore('=').trim().lowercase() }
+            .joinToString("; ")
         // CookieManager can briefly return an empty value while WebView is starting.
         // Only an explicit logout/expiry path may clear the persisted session.
-        if (header.isNotBlank()) saveCookieHeader(header)
+        val names = header.split(';').map { it.substringBefore('=').trim() }
+        val accepted = header.isNotBlank() && (
+            acceptedCookieNames.isEmpty() || names.any { name ->
+                acceptedCookieNames.any { it.equals(name, ignoreCase = true) }
+            }
+        )
+        if (accepted) saveCookieHeader(header)
+        return accepted
     }
 
     fun saveCookieHeader(header: String) {
@@ -64,8 +82,7 @@ object PortalSessionStore {
             ?.takeIf { it.isNotBlank() }
     }
 
-    fun hasPersistedSession(): Boolean =
-        persistedCookieHeader()?.split(';')?.any { it.trim().startsWith("SESSION=") } == true
+    fun hasPersistedSession(): Boolean = persistedCookieHeader() != null
 
     fun restoreToWebView(onComplete: () -> Unit = {}): Boolean {
         if (!::appContext.isInitialized) return false
@@ -73,7 +90,7 @@ object PortalSessionStore {
         val cookies = header.split(';').map(String::trim).filter { it.contains('=') }
         if (cookies.isEmpty()) return false
         val manager = CookieManager.getInstance().apply { setAcceptCookie(true) }
-        val currentCookies = manager.getCookie(PortalConfig.BASE).orEmpty()
+        val currentCookies = manager.getCookie(PortalConfig.SESSION_SCOPE).orEmpty()
             .split(';')
             .map(String::trim)
             .filter { it.contains('=') }
@@ -98,10 +115,10 @@ object PortalSessionStore {
         cookies.forEach { cookie ->
             val name = cookie.substringBefore('=').trim()
             val httpOnly = if (name == "SESSION") "; HttpOnly" else ""
-            val secure = if (PortalConfig.ORIGIN.startsWith("https://")) "; Secure" else ""
+            val secure = if (PortalConfig.SESSION_SCOPE.startsWith("https://")) "; Secure" else ""
             manager.setCookie(
-                PortalConfig.BASE,
-                "$cookie; Path=/student$secure$httpOnly; SameSite=Lax"
+                PortalConfig.SESSION_SCOPE,
+                "$cookie; Path=${PortalConfig.SESSION_PATH}$secure$httpOnly; SameSite=Lax"
             ) {
                 if (remaining.decrementAndGet() == 0) {
                     manager.flush()

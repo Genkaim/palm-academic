@@ -41,6 +41,8 @@ struct LoginView: View {
     @State private var keyboardDuration: Double = 0.25
     /// Token handles for the keyboard frame notifications registered in `observeKeyboard`.
     @State private var keyboardObservers: [NSObjectProtocol] = []
+    /// Prevents a Web-only school from reopening its CAS sheet after the user explicitly backs out.
+    @State private var automaticWebLoginSchoolID: String?
 
     private enum Field: Hashable {
         case username
@@ -128,6 +130,7 @@ struct LoginView: View {
         .sheet(isPresented: $showingSchools) {
             SchoolPickerView { school in
                 state.selectSchool(school)
+                openAutomaticWebLoginIfNeeded()
             }
             .environmentObject(state)
         }
@@ -143,8 +146,18 @@ struct LoginView: View {
                 let granted = await NotificationPreferences.shared.requestAuthorization()
                 _ = granted
             }
+            openAutomaticWebLoginIfNeeded()
         }
         .onDisappear { stopObservingKeyboard() }
+    }
+
+    private func openAutomaticWebLoginIfNeeded() {
+        guard hasSchool,
+              let definition = SchoolCatalog.shared.loadDefinition(),
+              definition.auth?.isWebOnly == true,
+              automaticWebLoginSchoolID != definition.id else { return }
+        automaticWebLoginSchoolID = definition.id
+        Task { await state.beginWebLogin() }
     }
 
     // MARK: - Blocks
