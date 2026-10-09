@@ -75,6 +75,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -214,11 +215,12 @@ internal fun RefactoredLoginContent(
                     // on ONE leading row (was a centered 88dp hero above a displaySmall title).
                     // Only the mark/title size and placement change; nothing else on this screen.
                     //
-                    // The mark uses the launcher VECTOR foreground on the launcher blue, NOT
-                    // R.mipmap.ic_launcher: that resource is an <adaptive-icon> XML, and Compose's
-                    // painterResource supports only VectorDrawables/raster images -- loading it
-                    // here threw "Only VectorDrawables and rasterized asset types are supported"
-                    // and crashed the login screen.
+                    // The mark is the LAUNCHER ICON ITSELF: the adaptive icon's pale background
+                    // (R.color.launcher_background) plus its vector foreground, drawn to the same
+                    // 108dp canvas so the centered circle+book glyph sits exactly where it does on
+                    // the home screen. R.mipmap.ic_launcher cannot be used directly: it is an
+                    // <adaptive-icon> XML and Compose painterResource only accepts VectorDrawables
+                    // or raster images ("...asset types are supported" crash).
                     Row(
                         modifier = Modifier.fillMaxWidth().height(48.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -227,7 +229,7 @@ internal fun RefactoredLoginContent(
                             modifier = Modifier
                                 .size(28.dp)
                                 .clip(RoundedCornerShape(7.dp))
-                                .background(Color(0xFF2E55A8)),
+                                .background(colorResource(R.color.launcher_background)),
                             contentAlignment = Alignment.Center
                         ) {
                             Image(
