@@ -38,11 +38,13 @@ app/src/main/assets/
     └── <school>-reader.js  # 该校全部四个快捷入口的读取逻辑
 ```
 
-合并到仓库 `main` 分支后，用户可在 App 的“选择学校”页面刷新规则。App 不提供本地规则导入；适配必须经仓库审查后进入内置索引。
+合并到仓库 `main` 分支后，用户可在 App 的“选择学校”页面刷新规则。测试中的适配也可以在该页面选择“导入本地规则”，依次选择 school JSON 与对应的 adapter JS；本地规则存放在独立目录，不会被云端内置规则刷新覆盖。
+
+本地导入使用 school JSON 的 `id` 作为列表 ID，要求只包含小写字母、数字和连字符，并且不能与内置、云端或其他本地学校重复。App 会将 `readerAdapter` 重写为本机安全路径，所以选择的 JS 文件名可以不同，但内容必须实现 `PalmAcademicAdapter`。如需自定义作息，可在 school JSON 顶层加入与索引相同结构的 `readerConfig`。本地学校可在列表中删除；内置与云端学校不可删除。每个学校右侧的详情按钮都会显示规则作者和邮箱。
 
 ## 1. 注册学校
 
-在 `schools/index.json` 的 `builtIn` 数组添加学校。schema v2 中的 `imported` 是旧版本兼容字段，必须保持空数组，当前 App 不读取它。
+在 `schools/index.json` 的 `builtIn` 数组添加学校。schema v2 中的 `imported` 是旧版本兼容字段，必须保持空数组；App 的本地导入索引保存在应用数据目录，不与仓库索引或云端缓存混用。
 
 ```json
 {

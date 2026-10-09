@@ -13,6 +13,8 @@ final class SchoolCatalog: ObservableObject {
     static let defaultSchoolID = "cupk"
     static let defaultOrigin = "https://eams.cupk.edu.cn"
     private static let remoteCacheDirectory = "remote-school-adapters"
+    private static let localCacheDirectory = "local-school-adapters"
+    private static let localIndexFile = "local-imports.json"
     private static let selectedSchoolKey = "active_school"
     private static let emailPattern = try! NSRegularExpression(
         pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$"
@@ -61,6 +63,117 @@ final class SchoolCatalog: ObservableObject {
 
     var origin: String { activeProfile?.origin ?? SchoolCatalog.defaultOrigin }
     var baseURL: String { definition?.baseUrl ?? "\(origin)/student" }
+
+    func authorInfo(for schoolID: String) -> SchoolAuthorInfo? {
+        guard let profile = profiles.first(where: { $0.id == schoolID }),
+              let root = readJSONObject(assetPath: profile.definitionAsset),
+              let author = root["author"] as? [String: Any] else { return nil }
+        return SchoolAuthorInfo(
+            schoolID: profile.id,
+            schoolName: profile.name,
+            authorName: ((author["name"] as? String)?.isEmpty == false)
+                ? (author["name"] as! String) : "未知",
+            contact: ((author["email"] as? String)?.isEmpty == false)
+                ? (author["email"] as! String) : "未提供",
+            isImported: profile.isImported
+        )
+    }
+
+    /// Imports two user-selected files into an app-owned store that cloud refresh never touches.
+    @discardableResult
+    func importLocalSchool(definitionData: Data, adapterData: Data) throws -> SchoolProfile {
+        guard definitionData.count <= 1_048_576 else {
+            throw localImportError("规则 JSON 不能超过 1 MB")
+        }
+        guard adapterData.count <= 5_242_880,
+              let adapterText = String(data: adapterData, encoding: .utf8),
+              !adapterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              adapterText.contains("PalmAcademicAdapter") else {
+            throw localImportError("适配器 JS 无效或超过 5 MB")
+        }
+        guard var root = try JSONSerialization.jsonObject(with: definitionData) as? [String: Any] else {
+            throw PortalError.invalidSchoolDefinition
+        }
+        try validateDefinition(root)
+        guard let id = root["id"] as? String,
+              id.range(of: "^[a-z0-9-]+$", options: .regularExpression) != nil else {
+            throw localImportError("学校 id 只能包含小写字母、数字和连字符")
+        }
+        guard !profiles.contains(where: { $0.id == id }) else {
+            throw localImportError("学校 id 已存在，请先删除同名本地规则")
+        }
+        guard let name = root["name"] as? String, !name.isEmpty,
+              let baseURL = root["baseUrl"] as? String,
+              var components = URLComponents(string: baseURL),
+              components.scheme == "https", components.host != nil else {
+            throw PortalError.invalidSchoolDefinition
+        }
+        components.path = ""
+        components.query = nil
+        components.fragment = nil
+        guard let origin = components.url?.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) else {
+            throw PortalError.invalidSchoolDefinition
+        }
+        let definitionAsset = "schools/local/\(id).json"
+        let adapterAsset = "adapters/local/\(id)-reader.js"
+        root["readerAdapter"] = adapterAsset
+
+        let readerConfig: SchoolProfile.ReaderConfig
+        if let raw = root["readerConfig"],
+           let data = try? JSONSerialization.data(withJSONObject: raw),
+           let decoded = try? JSONDecoder().decode(SchoolProfile.ReaderConfig.self, from: data) {
+            readerConfig = decoded
+        } else {
+            readerConfig = .init(scheduleProfiles: [])
+        }
+        let profile = SchoolProfile(
+            id: id,
+            name: name,
+            origin: origin,
+            definitionAsset: definitionAsset,
+            readerConfig: readerConfig,
+            isImported: true
+        )
+        let definitionOutput = try JSONSerialization.data(
+            withJSONObject: root,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        guard let definitionText = String(data: definitionOutput, encoding: .utf8) else {
+            throw PortalError.invalidSchoolDefinition
+        }
+        let cacheRoot = try localCacheRoot()
+        try writeLocalFile(cacheRoot: cacheRoot, assetPath: definitionAsset, content: definitionText)
+        try writeLocalFile(cacheRoot: cacheRoot, assetPath: adapterAsset, content: adapterText)
+        try writeLocalIndex(readLocalProfiles() + [profile])
+        profiles = try readProfiles()
+        cachedDefinition = nil
+        definition = nil
+        adapterScriptCache.removeAll()
+        return profile
+    }
+
+    /// Deletes only app-owned imports. Bundled and downloaded profiles remain read-only.
+    @discardableResult
+    func deleteLocalSchool(id: String) throws -> String {
+        guard let profile = profiles.first(where: { $0.id == id && $0.isImported }) else {
+            throw localImportError("只能删除本地导入的学校")
+        }
+        try writeLocalIndex(readLocalProfiles().filter { $0.id != id })
+        try? fileManager.removeItem(at: localFile(assetPath: profile.definitionAsset))
+        try? fileManager.removeItem(at: localFile(assetPath: "adapters/local/\(id)-reader.js"))
+        profiles = try readProfiles()
+        if selectedSchoolID == id {
+            selectedSchoolID = profiles.first { $0.id == Self.defaultSchoolID }?.id
+                ?? profiles.first?.id
+                ?? Self.defaultSchoolID
+            UserDefaults.standard.set(selectedSchoolID, forKey: Self.selectedSchoolKey)
+            NotificationPreferences.shared.clearSnapshots()
+        }
+        cachedDefinition = nil
+        definition = nil
+        adapterScriptCache.removeAll()
+        return selectedSchoolID
+    }
 
     /// Mirrors `SchoolAdapterRepository.select`: returns true when the active school changed.
     @discardableResult
@@ -186,9 +299,52 @@ final class SchoolCatalog: ObservableObject {
            (cachedObject["schemaVersion"] as? Int) == 2,
            let cachedIndex = try? parseIndex(cachedText) {
             // A newer bundled configVersion always wins over the downloaded overlay.
-            return bundled.configVersion > cachedIndex.configVersion ? bundled.builtIn : cachedIndex.builtIn
+            let builtIn = bundled.configVersion > cachedIndex.configVersion ? bundled.builtIn : cachedIndex.builtIn
+            return mergeWithLocalProfiles(builtIn)
         }
-        return bundled.builtIn
+        return mergeWithLocalProfiles(bundled.builtIn)
+    }
+
+    private func mergeWithLocalProfiles(_ builtIn: [SchoolProfile]) -> [SchoolProfile] {
+        let builtInIDs = Set(builtIn.map(\.id))
+        return builtIn + readLocalProfiles().filter { !builtInIDs.contains($0.id) }
+    }
+
+    private func readLocalProfiles() -> [SchoolProfile] {
+        guard let data = try? Data(contentsOf: localFile(assetPath: Self.localIndexFile)),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (root["schemaVersion"] as? Int) == 1,
+              let rawProfiles = root["schools"] as? [[String: Any]] else { return [] }
+        return rawProfiles.compactMap { try? SchoolProfile(fromJSONObject: $0, isImported: true) }
+    }
+
+    private func writeLocalIndex(_ localProfiles: [SchoolProfile]) throws {
+        let object: [String: Any] = [
+            "schemaVersion": 1,
+            "schools": localProfiles.map(profileJSONObject)
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw PortalError.invalidSchoolDefinition
+        }
+        try writeLocalFile(cacheRoot: localCacheRoot(), assetPath: Self.localIndexFile, content: text)
+    }
+
+    private func profileJSONObject(_ profile: SchoolProfile) -> [String: Any] {
+        [
+            "id": profile.id,
+            "name": profile.name,
+            "origin": profile.origin,
+            "definitionAsset": profile.definitionAsset,
+            "readerConfig": [
+                "scheduleProfiles": profile.readerConfig.scheduleProfiles.map { schedule in
+                    [
+                        "locationPattern": schedule.locationPattern as Any,
+                        "unitTimes": schedule.unitTimes
+                    ]
+                }
+            ]
+        ]
     }
 
     private func parseIndex(_ text: String) throws -> SchoolIndex {
@@ -345,6 +501,12 @@ final class SchoolCatalog: ObservableObject {
     }
 
     private func readJSONObject(assetPath: String) -> [String: Any]? {
+        let local = localFile(assetPath: assetPath)
+        if let text = try? String(contentsOf: local, encoding: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+           (try? validateDefinition(object)) != nil {
+            return object
+        }
         if let remote = remoteFile(assetPath: assetPath),
            let text = try? String(contentsOf: remote, encoding: .utf8),
            let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
@@ -360,6 +522,9 @@ final class SchoolCatalog: ObservableObject {
     }
 
     private func readConfiguredText(assetPath: String) -> String? {
+        if let text = try? String(contentsOf: localFile(assetPath: assetPath), encoding: .utf8) {
+            return text
+        }
         if let remote = remoteFile(assetPath: assetPath),
            let text = try? String(contentsOf: remote, encoding: .utf8) {
             return text
@@ -383,6 +548,41 @@ final class SchoolCatalog: ObservableObject {
     private func remoteFile(assetPath: String) -> URL? {
         guard let root = try? remoteCacheRoot() else { return nil }
         return root.appendingPathComponent(assetPath)
+    }
+
+    private func localCacheRoot() throws -> URL {
+        let support = try fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let root = support.appendingPathComponent(Self.localCacheDirectory, isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func localFile(assetPath: String) -> URL {
+        let root = (try? localCacheRoot())
+            ?? fileManager.temporaryDirectory.appendingPathComponent(Self.localCacheDirectory, isDirectory: true)
+        return root.appendingPathComponent(assetPath)
+    }
+
+    private func writeLocalFile(cacheRoot: URL, assetPath: String, content: String) throws {
+        let target = cacheRoot.appendingPathComponent(assetPath)
+        let rootPath = cacheRoot.standardizedFileURL.path
+        guard target.standardizedFileURL.path.hasPrefix(rootPath) else {
+            throw PortalError.invalidSchoolDefinition
+        }
+        try fileManager.createDirectory(
+            at: target.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try content.write(to: target, atomically: true, encoding: .utf8)
+    }
+
+    private func localImportError(_ message: String) -> NSError {
+        NSError(domain: "PalmAcademic.LocalRule", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     /// Port of `SchoolAdapterRepository.writeRemoteFile`: writes atomically and refuses to escape

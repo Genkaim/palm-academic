@@ -4,7 +4,10 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,15 +24,23 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +53,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.nio.charset.Charset
 import java.text.Collator
 import java.util.Locale
@@ -108,7 +121,20 @@ private fun SchoolSelectionContent(
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var schools by remember { mutableStateOf(SchoolAdapterRepository.options(context)) }
+    var currentSelectedId by remember { mutableStateOf(selectedSchoolId) }
     var refreshing by remember { mutableStateOf(false) }
+    var showingImport by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
+    var definitionUri by remember { mutableStateOf<Uri?>(null) }
+    var adapterUri by remember { mutableStateOf<Uri?>(null) }
+    var info by remember { mutableStateOf<SchoolAuthorInfo?>(null) }
+    var pendingDelete by remember { mutableStateOf<SchoolOption?>(null) }
+    val definitionPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { definitionUri = it }
+    val adapterPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { adapterUri = it }
     val groupedSchools = remember(schools) {
         schools.sortedWith { left, right ->
             schoolNameCollator.compare(left.name, right.name).takeIf { it != 0 }
@@ -129,6 +155,9 @@ private fun SchoolSelectionContent(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showingImport = true }) {
+                        Icon(Icons.Outlined.Add, "导入本地规则")
+                    }
                     PortalTopBarRefreshButton(
                         refreshing = refreshing,
                         onClick = {
@@ -185,14 +214,14 @@ private fun SchoolSelectionContent(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
-                                selected = school.id == selectedSchoolId,
+                                selected = school.id == currentSelectedId,
                                 onClick = { onSelected(school.id) }
                             )
                             Spacer(Modifier.size(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     school.name,
-                                    fontWeight = if (school.id == selectedSchoolId) {
+                                    fontWeight = if (school.id == currentSelectedId) {
                                         FontWeight.SemiBold
                                     } else FontWeight.Normal
                                 )
@@ -201,6 +230,20 @@ private fun SchoolSelectionContent(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                            }
+                            IconButton(onClick = {
+                                info = SchoolAdapterRepository.authorInfo(context, school.id)
+                            }) {
+                                Icon(Icons.Outlined.Info, "查看作者和联系方式")
+                            }
+                            if (school.isImported) {
+                                IconButton(onClick = { pendingDelete = school }) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        "删除本地规则",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
                             }
                         }
                     }
@@ -236,4 +279,156 @@ private fun SchoolSelectionContent(
             }
         }
     }
+
+    if (showingImport) {
+        ModalBottomSheet(onDismissRequest = { if (!importing) showingImport = false }) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("导入本地规则", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "依次选择学校定义 JSON 和对应的适配器 JS。导入内容仅保存在本机，不会被云端刷新覆盖。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                LocalRuleFileButton(
+                    title = "学校定义 JSON",
+                    fileName = definitionUri?.let { displayName(context, it) },
+                    onClick = { definitionPicker.launch(arrayOf("application/json", "text/plain")) }
+                )
+                LocalRuleFileButton(
+                    title = "适配器 JavaScript",
+                    fileName = adapterUri?.let { displayName(context, it) },
+                    onClick = {
+                        adapterPicker.launch(
+                            arrayOf("text/javascript", "application/javascript", "text/plain")
+                        )
+                    }
+                )
+                Button(
+                    onClick = {
+                        val json = definitionUri ?: return@Button
+                        val script = adapterUri ?: return@Button
+                        importing = true
+                        scope.launch {
+                            val result = runCatching {
+                                withContext(Dispatchers.IO) {
+                                    val definitionText = context.contentResolver.openInputStream(json)
+                                        ?.bufferedReader()?.use { it.readText() }
+                                        ?: error("无法读取规则 JSON")
+                                    val adapterText = context.contentResolver.openInputStream(script)
+                                        ?.bufferedReader()?.use { it.readText() }
+                                        ?: error("无法读取适配器 JS")
+                                    SchoolAdapterRepository.importLocalSchool(
+                                        context.applicationContext,
+                                        definitionText,
+                                        adapterText
+                                    )
+                                }
+                            }
+                            importing = false
+                            result.onSuccess { imported ->
+                                schools = SchoolAdapterRepository.options(context)
+                                definitionUri = null
+                                adapterUri = null
+                                showingImport = false
+                                Toast.makeText(
+                                    context,
+                                    "已导入 ${imported.name}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }.onFailure { error ->
+                                Toast.makeText(
+                                    context,
+                                    error.message ?: "导入失败，请检查两个文件",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    },
+                    enabled = definitionUri != null && adapterUri != null && !importing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (importing) "正在校验…" else "校验并导入")
+                }
+                Spacer(Modifier.size(12.dp))
+            }
+        }
+    }
+
+    info?.let { author ->
+        AlertDialog(
+            onDismissRequest = { info = null },
+            icon = { Icon(Icons.Outlined.Info, null) },
+            title = { Text(author.schoolName) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("作者：${author.authorName}")
+                    Text("联系方式：${author.contact}")
+                    Text(if (author.isImported) "来源：本地导入" else "来源：内置 / 云端")
+                }
+            },
+            confirmButton = { TextButton(onClick = { info = null }) { Text("完成") } }
+        )
+    }
+
+    pendingDelete?.let { school ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除本地规则？") },
+            text = { Text("将从本机删除“${school.name}”的 JSON 与 JS 文件，此操作不会影响云端规则。") },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    runCatching {
+                        currentSelectedId = SchoolAdapterRepository.deleteLocalSchool(context, school.id)
+                        schools = SchoolAdapterRepository.options(context)
+                    }.onSuccess {
+                        Toast.makeText(context, "已删除本地规则", Toast.LENGTH_SHORT).show()
+                    }.onFailure {
+                        Toast.makeText(context, it.message ?: "删除失败", Toast.LENGTH_SHORT).show()
+                    }
+                    pendingDelete = null
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun LocalRuleFileButton(
+    title: String,
+    fileName: String?,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.AutoMirrored.Outlined.InsertDriveFile, null)
+            Spacer(Modifier.size(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.Medium)
+                Text(
+                    fileName ?: "点按选择文件",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+private fun displayName(context: android.content.Context, uri: Uri): String {
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { cursor ->
+            if (cursor.moveToFirst()) return cursor.getString(0)
+        }
+    return uri.lastPathSegment ?: "已选择文件"
 }

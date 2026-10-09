@@ -140,6 +140,8 @@ struct SchoolProfile: Codable, Identifiable, Hashable {
     let origin: String
     let definitionAsset: String
     let readerConfig: ReaderConfig
+    /// Local imports live outside the cloud-managed cache and are the only removable profiles.
+    let isImported: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, name, origin, definitionAsset, readerConfig
@@ -180,17 +182,26 @@ struct SchoolProfile: Codable, Identifiable, Hashable {
         origin = try container.decode(String.self, forKey: .origin)
         definitionAsset = try container.decode(String.self, forKey: .definitionAsset)
         readerConfig = try container.decodeIfPresent(ReaderConfig.self, forKey: .readerConfig) ?? ReaderConfig(scheduleProfiles: [])
+        isImported = false
     }
 
-    init(id: String, name: String, origin: String, definitionAsset: String, readerConfig: ReaderConfig) {
+    init(
+        id: String,
+        name: String,
+        origin: String,
+        definitionAsset: String,
+        readerConfig: ReaderConfig,
+        isImported: Bool = false
+    ) {
         self.id = id
         self.name = name
         self.origin = origin
         self.definitionAsset = definitionAsset
         self.readerConfig = readerConfig
+        self.isImported = isImported
     }
 
-    init(fromJSONObject object: [String: Any]) throws {
+    init(fromJSONObject object: [String: Any], isImported: Bool = false) throws {
         guard let id = object["id"] as? String,
               let name = object["name"] as? String,
               let origin = object["origin"] as? String,
@@ -210,7 +221,8 @@ struct SchoolProfile: Codable, Identifiable, Hashable {
             name: name,
             origin: origin.hasSuffix("/") ? String(origin.dropLast()) : origin,
             definitionAsset: definitionAsset,
-            readerConfig: readerConfig
+            readerConfig: readerConfig,
+            isImported: isImported
         )
     }
 
@@ -262,6 +274,16 @@ struct SchoolIndex: Codable {
 struct SchoolRefreshResult {
     let schoolCount: Int
     let downloadedFileCount: Int
+}
+
+struct SchoolAuthorInfo: Identifiable {
+    let schoolID: String
+    let schoolName: String
+    let authorName: String
+    let contact: String
+    let isImported: Bool
+
+    var id: String { schoolID }
 }
 
 enum PortalError: LocalizedError {

@@ -8,7 +8,13 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-data class SchoolOption(val id: String, val name: String)
+data class SchoolOption(val id: String, val name: String, val isImported: Boolean)
+data class SchoolAuthorInfo(
+    val schoolName: String,
+    val authorName: String,
+    val contact: String,
+    val isImported: Boolean
+)
 data class SchoolRefreshResult(val schoolCount: Int, val downloadedFileCount: Int)
 
 private data class SchoolProfile(
@@ -16,7 +22,8 @@ private data class SchoolProfile(
     val name: String,
     val origin: String,
     val definitionAsset: String,
-    val readerConfig: JSONObject
+    val readerConfig: JSONObject,
+    val isImported: Boolean = false
 )
 
 private data class SchoolIndex(
@@ -188,6 +195,8 @@ object SchoolAdapterRepository {
     private const val INDEX_ASSET = "schools/index.json"
     private const val REMOTE_REPOSITORY_ROOT = "app/src/main/assets"
     private const val REMOTE_CACHE_DIRECTORY = "remote-school-adapters"
+    private const val LOCAL_CACHE_DIRECTORY = "local-school-adapters"
+    private const val LOCAL_INDEX_FILE = "local-imports.json"
     private const val DEFAULT_SCHOOL_ID = "cupk"
     private const val DEFAULT_ORIGIN = "https://eams.cupk.edu.cn"
     private val EMAIL_PATTERN = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")
@@ -211,7 +220,93 @@ object SchoolAdapterRepository {
 
     fun options(context: Context): List<SchoolOption> {
         ensureInitialized(context)
-        return profiles.map { SchoolOption(it.id, it.name) }
+        return profiles.map { SchoolOption(it.id, it.name, it.isImported) }
+    }
+
+    fun authorInfo(context: Context, schoolId: String): SchoolAuthorInfo? {
+        ensureInitialized(context)
+        val profile = profiles.firstOrNull { it.id == schoolId } ?: return null
+        val root = runCatching { readJsonConfig(context, profile.definitionAsset) }.getOrNull()
+            ?: return null
+        val author = root.optJSONObject("author") ?: return null
+        return SchoolAuthorInfo(
+            schoolName = profile.name,
+            authorName = author.optString("name").ifBlank { "未知" },
+            contact = author.optString("email").ifBlank { "未提供" },
+            isImported = profile.isImported
+        )
+    }
+
+    /** Imports a validated school definition and its matching JavaScript adapter. */
+    fun importLocalSchool(
+        context: Context,
+        definitionText: String,
+        adapterText: String
+    ): SchoolOption {
+        ensureInitialized(context)
+        require(definitionText.toByteArray().size <= 1_048_576) { "规则 JSON 不能超过 1 MB" }
+        require(adapterText.toByteArray().size <= 5_242_880) { "适配器 JS 不能超过 5 MB" }
+        require(adapterText.isNotBlank() && "PalmAcademicAdapter" in adapterText) {
+            "适配器 JS 缺少 PalmAcademicAdapter"
+        }
+
+        val definition = JSONObject(definitionText)
+        validateDefinition(definition)
+        val id = definition.optString("id")
+        require(id.matches(Regex("[a-z0-9-]+"))) { "学校 id 只能包含小写字母、数字和连字符" }
+        require(profiles.none { it.id == id }) { "学校 id 已存在，请先删除同名本地规则" }
+        val name = definition.optString("name")
+        require(name.isNotBlank()) { "学校名称不能为空" }
+        val baseUrl = definition.getString("baseUrl")
+        val origin = java.net.URI(baseUrl).let { uri ->
+            require(uri.scheme == "https" && !uri.host.isNullOrBlank()) { "学校 baseUrl 无效" }
+            "https://${uri.rawAuthority}"
+        }
+        val definitionAsset = "schools/local/$id.json"
+        val adapterAsset = "adapters/local/$id-reader.js"
+        definition.put("readerAdapter", adapterAsset)
+        val profile = SchoolProfile(
+            id = id,
+            name = name,
+            origin = origin,
+            definitionAsset = definitionAsset,
+            readerConfig = definition.optJSONObject("readerConfig") ?: JSONObject(),
+            isImported = true
+        )
+
+        val root = localCacheRoot(context)
+        writeLocalFile(root, definitionAsset, definition.toString(2))
+        writeLocalFile(root, adapterAsset, adapterText)
+        val locals = readLocalProfiles(context) + profile
+        writeLocalIndex(root, locals)
+        profiles = readProfiles(context)
+        cachedDefinition = null
+        adapterScriptCache.clear()
+        return SchoolOption(profile.id, profile.name, true)
+    }
+
+    /** Removes only user-imported rules; bundled and cloud-managed schools are immutable. */
+    fun deleteLocalSchool(context: Context, schoolId: String): String {
+        ensureInitialized(context)
+        val profile = profiles.firstOrNull { it.id == schoolId && it.isImported }
+            ?: error("只能删除本地导入的学校")
+        val remaining = readLocalProfiles(context).filterNot { it.id == schoolId }
+        writeLocalIndex(localCacheRoot(context), remaining)
+        listOf(profile.definitionAsset).forEach { localFile(context, it).delete() }
+        // The canonical adapter path is deterministic even if the definition was already removed.
+        localFile(context, "adapters/local/$schoolId-reader.js").delete()
+        profiles = readProfiles(context)
+        if (selectedSchoolId == schoolId) {
+            selectedSchoolId = profiles.firstOrNull { it.id == DEFAULT_SCHOOL_ID }?.id
+                ?: profiles.firstOrNull()?.id
+                ?: DEFAULT_SCHOOL_ID
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(KEY_ACTIVE_SCHOOL, selectedSchoolId).commit()
+            PortalNotificationPreferences.clearSnapshots(context)
+        }
+        cachedDefinition = null
+        adapterScriptCache.clear()
+        return selectedSchoolId
     }
 
     fun activeSchoolId(): String = selectedSchoolId
@@ -385,7 +480,19 @@ object SchoolAdapterRepository {
             ?: error("学校配置为空")
 
     private fun readProfiles(context: Context): List<SchoolProfile> {
-        return currentIndex(context).builtIn
+        val builtIn = currentIndex(context).builtIn
+        val builtInIds = builtIn.mapTo(mutableSetOf()) { it.id }
+        return builtIn + readLocalProfiles(context).filter { it.id !in builtInIds }
+    }
+
+    private fun readLocalProfiles(context: Context): List<SchoolProfile> {
+        val file = File(localCacheRoot(context), LOCAL_INDEX_FILE)
+        if (!file.isFile) return emptyList()
+        return runCatching {
+            val root = JSONObject(file.readText())
+            require(root.optInt("schemaVersion") == 1)
+            parseProfileArray(root.optJSONArray("schools") ?: JSONArray(), isImported = true)
+        }.getOrDefault(emptyList())
     }
 
     private fun currentIndex(context: Context): SchoolIndex {
@@ -420,17 +527,17 @@ object SchoolAdapterRepository {
             }
             else -> error("不支持的学校配置版本")
         }
-        val builtIn = parseProfileArray(builtInArray)
+        val builtIn = parseProfileArray(builtInArray, isImported = false)
         require(builtIn.map { it.id }.distinct().size == builtIn.size) {
             "内置学校 id 重复"
         }
         return SchoolIndex(builtIn, root.optInt("configVersion", 1))
     }
 
-    private fun parseProfileArray(array: JSONArray): List<SchoolProfile> =
-        (0 until array.length()).map { parseProfile(array.getJSONObject(it)) }
+    private fun parseProfileArray(array: JSONArray, isImported: Boolean): List<SchoolProfile> =
+        (0 until array.length()).map { parseProfile(array.getJSONObject(it), isImported) }
 
-    private fun parseProfile(item: JSONObject): SchoolProfile {
+    private fun parseProfile(item: JSONObject, isImported: Boolean): SchoolProfile {
         val id = item.getString("id")
         val origin = item.getString("origin").trimEnd('/')
         val definitionAsset = item.getString("definitionAsset")
@@ -443,7 +550,8 @@ object SchoolAdapterRepository {
             name = item.getString("name"),
             origin = origin,
             definitionAsset = definitionAsset,
-            readerConfig = item.optJSONObject("readerConfig") ?: JSONObject()
+            readerConfig = item.optJSONObject("readerConfig") ?: JSONObject(),
+            isImported = isImported
         )
     }
 
@@ -463,6 +571,10 @@ object SchoolAdapterRepository {
     }
 
     private fun readJsonConfig(context: Context, assetPath: String): JSONObject {
+        val local = localFile(context, assetPath)
+        if (local.isFile) {
+            return JSONObject(local.readText()).also(::validateDefinition)
+        }
         val remote = remoteFile(context, assetPath)
         if (remote.isFile) {
             runCatching { return JSONObject(remote.readText()).also(::validateDefinition) }
@@ -473,6 +585,8 @@ object SchoolAdapterRepository {
     }
 
     private fun readConfiguredText(context: Context, assetPath: String): String {
+        val local = localFile(context, assetPath)
+        if (local.isFile) return local.readText()
         val remote = remoteFile(context, assetPath)
         if (remote.isFile) return remote.readText()
         return context.assets.open(assetPath).bufferedReader().use { it.readText() }
@@ -537,6 +651,31 @@ object SchoolAdapterRepository {
 
     private fun remoteFile(context: Context, assetPath: String): File =
         File(File(context.filesDir, REMOTE_CACHE_DIRECTORY), assetPath)
+
+    private fun localCacheRoot(context: Context): File =
+        File(context.filesDir, LOCAL_CACHE_DIRECTORY).also(File::mkdirs)
+
+    private fun localFile(context: Context, assetPath: String): File =
+        File(localCacheRoot(context), assetPath)
+
+    private fun writeLocalIndex(cacheRoot: File, localProfiles: List<SchoolProfile>) {
+        val root = JSONObject().apply {
+            put("schemaVersion", 1)
+            put("schools", JSONArray().apply { localProfiles.forEach { put(it.toJson()) } })
+        }
+        writeLocalFile(cacheRoot, LOCAL_INDEX_FILE, root.toString(2))
+    }
+
+    private fun writeLocalFile(cacheRoot: File, assetPath: String, content: String) {
+        val target = File(cacheRoot, assetPath)
+        val rootPath = cacheRoot.canonicalFile.toPath()
+        require(target.canonicalFile.toPath().startsWith(rootPath)) { "本地规则写入路径无效" }
+        target.parentFile?.mkdirs()
+        val temporary = File(target.parentFile, "${target.name}.tmp")
+        temporary.writeText(content)
+        if (target.exists() && !target.delete()) error("无法替换本地规则：$assetPath")
+        if (!temporary.renameTo(target)) error("无法保存本地规则：$assetPath")
+    }
 
     private fun writeRemoteFile(cacheRoot: File, assetPath: String, content: String) {
         val target = File(cacheRoot, assetPath)

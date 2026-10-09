@@ -133,10 +133,14 @@ compile() {
   # -wmo makes the compiler treat the inputs as one module, which is required for the
   # cross-file type information this app relies on. -c stops before the link step, and with
   # whole-module output a single -o is accepted even though there are many sources.
+  # Swift 6.4 otherwise emits swift_coroFrameAlloc, a runtime entry point introduced after the
+  # iOS 16.5 SDK used by this Windows cross-build. The older allocation path is ABI-compatible
+  # with the deployment target and avoids requiring an unavailable Apple compatibility pack.
   "$SWIFTC" \
     -target "arm64-apple-ios$MIN_IOS" \
     -sdk "$SDK" \
     -swift-version 5 \
+    -Xfrontend -disable-emit-type-malloc-for-coro-frame \
     "${glass_flag[@]}" \
     -O \
     -c \

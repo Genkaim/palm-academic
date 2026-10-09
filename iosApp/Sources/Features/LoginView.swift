@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Port of `LoginScreen.kt`.
 ///
@@ -543,9 +544,13 @@ struct LoginView: View {
 struct SchoolPickerView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var state: AppState
+    @ObservedObject private var catalog = SchoolCatalog.shared
     @State private var selection: String?
     @State private var isRefreshing = false
     @State private var statusMessage: String?
+    @State private var showingImport = false
+    @State private var authorInfo: SchoolAuthorInfo?
+    @State private var pendingDelete: SchoolProfile?
     let onSelect: (SchoolProfile) -> Void
     /// Whether the picker provides its own `NavigationStack` and a 取消 button. The login sheet
     /// presents it standalone and needs both; the settings screen pushes it inside its own stack,
@@ -568,7 +573,7 @@ struct SchoolPickerView: View {
     }
 
     @MainActor
-    private var schools: [SchoolProfile] { SchoolCatalog.shared.options }
+    private var schools: [SchoolProfile] { catalog.options }
 
     @MainActor
     private var sections: [(key: String, items: [SchoolProfile])] {
@@ -626,6 +631,14 @@ struct SchoolPickerView: View {
                 }
             }
             ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    showingImport = true
+                } label: {
+                    Image(systemName: "tray.and.arrow.down")
+                }
+                .accessibilityLabel("导入本地规则")
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 // Icon-only, like every other in-app refresh control.
                 Button {
                     Task { await refresh() }
@@ -645,34 +658,111 @@ struct SchoolPickerView: View {
             onSelect(school)
             dismiss()
         }
+        .sheet(isPresented: $showingImport) {
+            LocalRuleImportView { imported in
+                statusMessage = "已导入 \(imported.name)"
+            }
+        }
+        .sheet(item: $authorInfo) { info in
+            NavigationStack {
+                List {
+                    Section("学校") {
+                        Text(info.schoolName)
+                        LabeledContent("来源", value: info.isImported ? "本地导入" : "内置 / 云端")
+                    }
+                    Section("规则维护者") {
+                        LabeledContent("作者", value: info.authorName)
+                        if let mail = URL(string: "mailto:\(info.contact)"), info.contact.contains("@") {
+                            Link(info.contact, destination: mail)
+                        } else {
+                            LabeledContent("联系方式", value: info.contact)
+                        }
+                    }
+                }
+                .navigationTitle("规则信息")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") { authorInfo = nil }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+        }
+        .alert("删除本地规则？", isPresented: Binding(
+            get: { pendingDelete != nil },
+            set: { if !$0 { pendingDelete = nil } }
+        ), presenting: pendingDelete) { school in
+            Button("取消", role: .cancel) { pendingDelete = nil }
+            Button("删除", role: .destructive) { delete(school) }
+        } message: { school in
+            Text("将从本机删除“\(school.name)”的 JSON 与 JS 文件，不影响云端规则。")
+        }
     }
 
     private func row(for school: SchoolProfile) -> some View {
-        Button {
-            selection = school.id
-        } label: {
-            HStack(alignment: .center, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(school.name)
-                        .font(.body.weight(school.id == selection ? .semibold : .regular))
-                        .foregroundStyle(.primary)
-                    Text(school.id)
+        HStack(spacing: 4) {
+            Button {
+                selection = school.id
+            } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(school.name)
+                            .font(.body.weight(school.id == selection ? .semibold : .regular))
+                            .foregroundStyle(.primary)
+                        HStack(spacing: 6) {
+                            Text(school.id)
+                            if school.isImported {
+                                Text("本地")
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        }
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    if school.id == selection {
+                        Image(systemName: "checkmark")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .accessibilityHidden(true)
+                    }
                 }
-                Spacer(minLength: 8)
-                if school.id == selection {
-                    Image(systemName: "checkmark")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .accessibilityHidden(true)
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(school.id == selection ? "当前选择" : "")
+
+            Button {
+                authorInfo = catalog.authorInfo(for: school.id)
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.body)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("查看作者和联系方式")
+
+            if school.isImported {
+                Button(role: .destructive) {
+                    pendingDelete = school
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.body)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("删除本地规则")
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if school.isImported {
+                Button(role: .destructive) { pendingDelete = school } label: {
+                    Label("删除", systemImage: "trash")
                 }
             }
-            .padding(.vertical, 2)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityHint(school.id == selection ? "当前选择" : "")
     }
 
     private func refresh() async {
@@ -680,6 +770,149 @@ struct SchoolPickerView: View {
         defer { isRefreshing = false }
         await state.refreshFromGitHub()
         statusMessage = state.errorMessage ?? state.sessionNotice
+    }
+
+    private func delete(_ school: SchoolProfile) {
+        defer { pendingDelete = nil }
+        do {
+            let activeID = try catalog.deleteLocalSchool(id: school.id)
+            if selection == school.id { selection = activeID }
+            statusMessage = "已删除本地规则"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+}
+
+/// The second-level import menu. Each document is chosen independently so the user can verify
+/// the pair before validation writes either one into the app-owned rule store.
+private struct LocalRuleImportView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var catalog = SchoolCatalog.shared
+    @State private var definitionURL: URL?
+    @State private var adapterURL: URL?
+    @State private var choosingDefinition = false
+    @State private var choosingAdapter = false
+    @State private var errorMessage: String?
+    @State private var importing = false
+    let onImported: (SchoolProfile) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    fileRow(
+                        title: "学校定义 JSON",
+                        fileName: definitionURL?.lastPathComponent,
+                        systemImage: "doc.text",
+                        action: { choosingDefinition = true }
+                    )
+                    fileRow(
+                        title: "适配器 JavaScript",
+                        fileName: adapterURL?.lastPathComponent,
+                        systemImage: "curlybraces",
+                        action: { choosingAdapter = true }
+                    )
+                } footer: {
+                    Text("两个文件将复制到本机独立存储；刷新云端内置规则不会覆盖本地导入。学校 ID 与现有条目冲突时会拒绝导入。")
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage).foregroundStyle(.red)
+                    }
+                }
+
+                Section {
+                    Button {
+                        importFiles()
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if importing { ProgressView().padding(.trailing, 6) }
+                            Text(importing ? "正在校验…" : "校验并导入")
+                            Spacer()
+                        }
+                    }
+                    .disabled(definitionURL == nil || adapterURL == nil || importing)
+                }
+            }
+            .navigationTitle("导入本地规则")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+        .fileImporter(
+            isPresented: $choosingDefinition,
+            allowedContentTypes: [.json, .plainText],
+            allowsMultipleSelection: false
+        ) { result in
+            handle(result, target: &definitionURL)
+        }
+        .fileImporter(
+            isPresented: $choosingAdapter,
+            allowedContentTypes: [.javaScript, .plainText],
+            allowsMultipleSelection: false
+        ) { result in
+            handle(result, target: &adapterURL)
+        }
+    }
+
+    private func fileRow(
+        title: String,
+        fileName: String?,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).foregroundStyle(.primary)
+                    Text(fileName ?? "点按选择文件")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: systemImage)
+            }
+        }
+    }
+
+    private func handle(_ result: Result<[URL], Error>, target: inout URL?) {
+        switch result {
+        case .success(let urls):
+            target = urls.first
+            errorMessage = nil
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func importFiles() {
+        guard let definitionURL, let adapterURL else { return }
+        importing = true
+        defer { importing = false }
+        do {
+            let definition = try securityScopedData(from: definitionURL)
+            let adapter = try securityScopedData(from: adapterURL)
+            let imported = try catalog.importLocalSchool(
+                definitionData: definition,
+                adapterData: adapter
+            )
+            onImported(imported)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func securityScopedData(from url: URL) throws -> Data {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return try Data(contentsOf: url, options: [.mappedIfSafe])
     }
 }
 

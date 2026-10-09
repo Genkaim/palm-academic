@@ -358,6 +358,7 @@ private struct PortalWebView: UIViewRepresentable {
             self.parent = parent
         }
 
+        @MainActor
         func load(_ webView: WKWebView, homeURL: String) {
             retryWork?.cancel()
             retryWork = nil
