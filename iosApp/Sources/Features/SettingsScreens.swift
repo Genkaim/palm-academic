@@ -790,12 +790,13 @@ struct AboutScreen: View {
         List {
             Section {
                 VStack(spacing: 10) {
-                    Image(systemName: "building.columns")
-                        .font(.system(size: 52, weight: .light))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 120, height: 120)
-                        .background(Circle().fill(PortalPalette.surface))
-                        .clipShape(Circle())
+                    // The actual app logo (same artwork as the home-screen icon), clipped to the
+                    // iOS continuous-corner squircle -- not a generic column glyph on a plate.
+                    Image("BrandLogo")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 96, height: 96)
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     Text("掌上教务")
                         .font(.largeTitle.weight(.bold))
                         .multilineTextAlignment(.center)
