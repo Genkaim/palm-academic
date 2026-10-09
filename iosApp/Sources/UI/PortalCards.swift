@@ -115,6 +115,7 @@ extension PortalNavigationRow where Trailing == EmptyView {
 /// taller than it looks on the phone the design came from.
 struct QuickEntryCard: View {
     let items: [PortalItem]
+    let transitionNamespace: Namespace.ID
     /// Hands the chosen entry back so the caller can push it. Navigation cannot be done from in
     /// here: this card is deliberately not a `NavigationLink`, and the stack it belongs to types
     /// its destinations as `PortalRoute`, not `PortalItem`.
@@ -180,6 +181,38 @@ struct QuickEntryCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(TabPressStyle(scale: 0.96))
+        .portalZoomSource(sourceID: item.id, namespace: transitionNamespace)
+    }
+}
+
+extension View {
+    /// On SDKs that expose NavigationTransition, the tapped quick-entry cell grows into its native
+    /// redraw page like an app icon opening. Older SDK builds keep the ordinary NavigationStack
+    /// transition, so the iOS 16 deployment target remains valid.
+    @ViewBuilder
+    func portalZoomSource(sourceID: String, namespace: Namespace.ID) -> some View {
+        #if USE_SYSTEM_GLASS
+        if #available(iOS 18.0, *) {
+            self.matchedTransitionSource(id: sourceID, in: namespace)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func portalZoomDestination(sourceID: String, namespace: Namespace.ID) -> some View {
+        #if USE_SYSTEM_GLASS
+        if #available(iOS 18.0, *) {
+            self.navigationTransition(.zoom(sourceID: sourceID, in: namespace))
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }
 

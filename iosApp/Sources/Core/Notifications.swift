@@ -56,7 +56,7 @@ struct PortalPollHistoryDetail: Codable, Identifiable {
 enum PortalPollHistory {
     private static let entriesKey = "poll_history_entries"
     private static let limit = 60
-    private static let lastAcknowledgedChangeKey = "poll_history_last_acknowledged_change"
+    private static let acknowledgedPrefix = "poll_history_read_"
     static let didChangeNotification = Notification.Name("portalPollHistoryDidChange")
 
     struct UnreadChange: Equatable {
@@ -82,7 +82,9 @@ enum PortalPollHistory {
 
     static func clear() {
         UserDefaults.standard.removeObject(forKey: entriesKey)
-        UserDefaults.standard.removeObject(forKey: lastAcknowledgedChangeKey)
+        for type in ["schedule", "grade", "exam", "program"] {
+            UserDefaults.standard.removeObject(forKey: acknowledgedPrefix + type)
+        }
         publishChange()
     }
 
@@ -112,9 +114,14 @@ enum PortalPollHistory {
     }
 
     static func latestUnreadChange() -> UnreadChange? {
-        let acknowledgedAt = UserDefaults.standard.object(forKey: lastAcknowledgedChangeKey) as? Date ?? .distantPast
-        for entry in load() where entry.timestamp > acknowledgedAt {
-            if let detail = entry.details.first(where: { $0.changed }) {
+        for entry in load() {
+            if let detail = entry.details.first(where: { detail in
+                guard detail.changed else { return false }
+                let type = nativeType(for: detail.category)
+                guard !type.isEmpty else { return false }
+                let readAt = UserDefaults.standard.object(forKey: acknowledgedPrefix + type) as? Date ?? .distantPast
+                return entry.timestamp > readAt
+            }) {
                 return UnreadChange(
                     entryID: entry.id,
                     nativeType: nativeType(for: detail.category),
@@ -125,10 +132,12 @@ enum PortalPollHistory {
         return nil
     }
 
-    static func acknowledge(changeID _: UUID) {
-        // Mark every earlier entry as read too. A single UUID would make the next oldest changed
-        // record reappear immediately after the newest notice is opened.
-        UserDefaults.standard.set(Date(), forKey: lastAcknowledgedChangeKey)
+    static func acknowledge(changeID: UUID) {
+        guard let entry = load().first(where: { $0.id == changeID }),
+              let detail = entry.details.first(where: { $0.changed }) else { return }
+        let type = nativeType(for: detail.category)
+        guard !type.isEmpty else { return }
+        UserDefaults.standard.set(entry.timestamp, forKey: acknowledgedPrefix + type)
         publishChange()
     }
 
@@ -190,7 +199,6 @@ final class NotificationPreferences: ObservableObject {
         static let schedule = "notify_schedule"
         static let grade = "notify_grade"
         static let exam = "notify_exam"
-        static let program = "notify_program"
         static let authFailureNotified = "auth_failure_notified"
         static let interval = "interval"
     }
@@ -198,10 +206,9 @@ final class NotificationPreferences: ObservableObject {
     private let defaults = UserDefaults.standard
 
     @Published var monitorEnabled: Bool { didSet { defaults.set(monitorEnabled, forKey: Key.monitorEnabled); reschedule() } }
-    @Published var scheduleEnabled: Bool { didSet { defaults.set(scheduleEnabled, forKey: Key.schedule) } }
-    @Published var gradeEnabled: Bool { didSet { defaults.set(gradeEnabled, forKey: Key.grade) } }
-    @Published var examEnabled: Bool { didSet { defaults.set(examEnabled, forKey: Key.exam) } }
-    @Published var programEnabled: Bool { didSet { defaults.set(programEnabled, forKey: Key.program) } }
+    @Published var scheduleEnabled: Bool { didSet { defaults.set(scheduleEnabled, forKey: Key.schedule); reschedule() } }
+    @Published var gradeEnabled: Bool { didSet { defaults.set(gradeEnabled, forKey: Key.grade); reschedule() } }
+    @Published var examEnabled: Bool { didSet { defaults.set(examEnabled, forKey: Key.exam); reschedule() } }
     @Published var intervalMinutes: Int { didSet { defaults.set(intervalMinutes, forKey: Key.interval); reschedule() } }
 
     private init() {
@@ -209,13 +216,12 @@ final class NotificationPreferences: ObservableObject {
         scheduleEnabled = defaults.object(forKey: Key.schedule) as? Bool ?? true
         gradeEnabled = defaults.object(forKey: Key.grade) as? Bool ?? true
         examEnabled = defaults.object(forKey: Key.exam) as? Bool ?? true
-        programEnabled = defaults.object(forKey: Key.program) as? Bool ?? true
         let stored = defaults.integer(forKey: Key.interval)
         intervalMinutes = stored > 0 ? stored : 30
     }
 
     var anyEnabled: Bool {
-        scheduleEnabled || gradeEnabled || examEnabled || programEnabled
+        scheduleEnabled || gradeEnabled || examEnabled
     }
 
     func isEnabled(_ key: String) -> Bool {
@@ -227,9 +233,11 @@ final class NotificationPreferences: ObservableObject {
     }
 
     func shouldNotifyAuthenticationFailure() -> Bool {
-        let notified = defaults.bool(forKey: Key.authFailureNotified)
+        !defaults.bool(forKey: Key.authFailureNotified)
+    }
+
+    func markAuthenticationFailureNotified() {
         defaults.set(true, forKey: Key.authFailureNotified)
-        return !notified
     }
 
     // MARK: - Snapshots
@@ -249,6 +257,15 @@ final class NotificationPreferences: ObservableObject {
         for type in ["schedule", "grade", "exam", "program"] {
             defaults.removeObject(forKey: Self.snapshotPrefix + type)
         }
+        [
+            "course_hash", "course_semester_id", "course_semantic_hash_v3",
+            "course_semantic_semester_id_v3", "course_business_snapshot_v1",
+            "course_business_semester_id_v1", "course_has_entries", "course_parsed_json_v2",
+            "course_raw_v1", "grade_hash", "grade_business_snapshot_v1", "grade_parsed_json_v2",
+            "grade_raw_v1", "exam_rows", "exam_rows_v2", "exam_business_snapshot_v1",
+            "exam_parsed_json_v2", "exam_raw_v1"
+        ].forEach { defaults.removeObject(forKey: $0) }
+        defaults.set(false, forKey: Key.authFailureNotified)
     }
 
     // MARK: - Scheduling
@@ -259,7 +276,7 @@ final class NotificationPreferences: ObservableObject {
 
     func reschedule() {
         PortalMonitor.shared.cancel()
-        guard monitorEnabled else { return }
+        guard monitorEnabled, anyEnabled else { return }
         PortalMonitor.shared.schedule(intervalMinutes: intervalMinutes)
     }
 }

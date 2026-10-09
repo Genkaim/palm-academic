@@ -71,7 +71,7 @@ enum PortalSnapshot {
                attributes.range(
                    of: "class\\s*=\\s*[\"'][^\"']*\\b\(NSRegularExpression.escapedPattern(for: className))\\b[^\"']*[\"']",
                    options: [.regularExpression, .caseInsensitive]
-               ) != nil {
+               ) == nil {
                 return nil
             }
             let body = String(html[bodyRange])
@@ -133,6 +133,23 @@ enum PortalSnapshot {
         }.compactMap { $0 })
     }
 
+    static func parsedHTMLHasRows(_ html: String) -> Bool {
+        parseTables(html).contains { !$0.rows.isEmpty }
+    }
+
+    static func materialPageHasData(_ json: String, nativeType: String) -> Bool {
+        guard let page = MaterialPageParser.parse(json) else { return false }
+        return QuickEntryBaseline.hasData(page: page, nativeType: nativeType)
+    }
+
+    static func historyDisplayContent(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("<") || trimmed.range(of: "<html", options: .caseInsensitive) != nil {
+            return parsedDataJSON(html: value, type: "legacy-html")
+        }
+        return value
+    }
+
     /// Port of `PortalSnapshot.courseDataJson`.
     ///
     /// Only fields that can change the student's actual timetable survive. Volatile keys such as
@@ -161,7 +178,7 @@ enum PortalSnapshot {
             // here made a valid logged-in response look empty in the change log.
             result["payload"] = sanitizeCourseValue(root)
         }
-        guard let encoded = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted]),
+        guard let encoded = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]),
               let text = String(data: encoded, encoding: .utf8) else { return "{}" }
         return text
     }
@@ -247,73 +264,326 @@ enum PortalSnapshot {
 
 /// Port of the change-description helpers in `PortalLogDetails.kt`.
 enum PortalLogDetails {
-    /// Port of `PortalLogDetails.rowsFor`.
+    private static let courseTitleKeys: Set<String> = ["coursename", "lessonname", "coursefullname", "lessonfullname"]
+    private static let courseCodeKeys: Set<String> = ["coursecode", "lessoncode", "code"]
+    private static let courseIDKeys: Set<String> = ["lessonid", "courseid", "id"]
+    private static let weekdayKeys: Set<String> = ["weekday", "dayofweek", "weekdays", "day"]
+    private static let startSectionKeys: Set<String> = ["startunit", "startsection", "startperiod", "beginunit", "beginsection"]
+    private static let endSectionKeys: Set<String> = ["endunit", "endsection", "endperiod", "finishunit", "finishsection"]
+    private static let weekKeys: Set<String> = ["weeks", "weekindices", "weekindexes", "weeklist"]
+    private static let roomKeys: Set<String> = ["room", "roomname", "classroom", "classroomname", "location", "place"]
+    private static let teacherKeys: Set<String> = ["teacher", "teachers", "teachername", "teachernames", "instructor", "instructors"]
+    private static let timeKeys: Set<String> = ["time", "coursetime", "scheduletime", "timeperiod"]
+
     static func rows(for nativeType: String, json: String) -> [String] {
-        guard let data = json.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        if nativeType == "schedule" {
+            let rendered = materialRows(json, nativeType: nativeType)
+            return rendered.isEmpty ? courseRows(json) : rendered
+        }
+        return materialRows(json, nativeType: nativeType)
+    }
 
-        switch nativeType {
-        case "schedule":
-            // A timetable is compared as ordered lesson labels per weekday.
-            var rows: [String] = []
-            for case let section as [String: Any] in (root["sections"] as? [[String: Any]] ?? []) where section["type"] as? String == "schedule" {
-                for case let day as [String: Any] in (section["days"] as? [[String: Any]] ?? []) {
-                    let dayName = day["name"] as? String ?? ""
-                    for case let lesson as [String: Any] in (day["lessons"] as? [[String: Any]] ?? []) {
-                        let title = lesson["title"] as? String ?? ""
-                        let schedule = lesson["schedule"] as? [String: Any]
-                        let weeks = schedule?["weeks"] as? String ?? ""
-                        let location = schedule?["location"] as? String ?? ""
-                        let teacher = schedule?["teacher"] as? String ?? ""
-                        rows.append("\(dayName)|\(title)|\(weeks)|\(location)|\(teacher)")
+    static func courseRows(_ payload: String) -> [String] {
+        guard let data = payload.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        var lessons: [[String: Any]] = []
+        collectLessonObjects(root, parentKey: "", destination: &lessons)
+        let formatted = normalizeRows(lessons.flatMap(formatLesson))
+        if !formatted.isEmpty { return formatted }
+        var lessonIDs: [String] = []
+        collectValues(for: "lessonids", in: root, destination: &lessonIDs)
+        return Array(Set(lessonIDs)).sorted().map { "课程 ID：\($0)" }
+    }
+
+    static func materialRows(_ content: String, nativeType: String?) -> [String] {
+        if let page = MaterialPageParser.parse(content), !page.sections.isEmpty {
+            var result: [String] = []
+            for section in page.sections {
+                switch section {
+                case .schedule(_, _, let days):
+                    for day in days {
+                        result.append(contentsOf: day.lessons.map { formatScheduleCard(day: day.name, card: $0) })
                     }
+                case .cards(let title, let cards):
+                    result.append(contentsOf: cards.map { formatCard(sectionTitle: title, card: $0, nativeType: nativeType) })
+                case .table(let title, let headers, let rows):
+                    result.append(contentsOf: rows.map { formatTableRow(title: title, headers: headers, row: $0) })
+                case .stats(let title, let items):
+                    for item in items where !item.label.isEmpty || !item.value.isEmpty {
+                        result.append(trimSeparators("\(title)｜\(item.label)：\(item.value)"))
+                    }
+                case .fields(let title, let fields):
+                    if !fields.isEmpty {
+                        result.append(trimSeparators(([title] + fields.map { "\($0.label)：\($0.value)" })
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                            .joined(separator: "｜")))
+                    }
+                case .text(let title, let paragraphs):
+                    result.append(contentsOf: paragraphs.filter { !$0.isEmpty }.map { trimSeparators("\(title)｜\($0)") })
+                case .links:
+                    break
+                case .program(let title, let completed, let required, let modules):
+                    var summary: [String] = []
+                    if !completed.isEmpty { summary.append("已修学分：\(completed)") }
+                    if !required.isEmpty { summary.append("要求学分：\(required)") }
+                    if !summary.isEmpty { result.append(trimSeparators(([title] + summary).joined(separator: "｜"))) }
+                    result.append(contentsOf: programRows(modules))
                 }
             }
-            return rows
-        case "grade", "exam", "program":
-            var rows: [String] = []
-            for case let section as [String: Any] in (root["sections"] as? [[String: Any]] ?? []) {
-                if let tableRows = section["rows"] as? [[String]] {
-                    rows.append(contentsOf: tableRows.map { $0.joined(separator: " | ") })
-                }
-                for case let card in (section["cards"] as? [[String: Any]] ?? []) {
-                    let title = card["title"] as? String ?? ""
-                    let subtitle = card["subtitle"] as? String ?? ""
-                    let fields = (card["fields"] as? [[String: Any]] ?? [])
-                        .map { "\($0["label"] as? String ?? ""):\($0["value"] as? String ?? "")" }
-                        .joined(separator: " | ")
-                    rows.append("\(title)|\(subtitle)|\(fields)")
-                }
-                for case let stat in (section["items"] as? [[String: Any]] ?? []) {
-                    rows.append("\(stat["label"] as? String ?? ""):\(stat["value"] as? String ?? "")")
-                }
+            let normalized = normalizeRows(result)
+            if !normalized.isEmpty { return normalized }
+        }
+
+        guard let data = content.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tables = root["tables"] as? [[String: Any]] else { return [] }
+        var result: [String] = []
+        for table in tables {
+            let headers = table["headers"] as? [String] ?? []
+            for row in table["rows"] as? [[String]] ?? [] {
+                result.append(formatTableRow(title: "", headers: headers, row: row))
             }
-            return rows
-        default:
-            return []
+        }
+        return normalizeRows(result)
+    }
+
+    static func encode(_ rows: [String]) -> String {
+        let rows = normalizeRows(rows)
+        guard let data = try? JSONSerialization.data(withJSONObject: rows),
+              let text = String(data: data, encoding: .utf8) else { return "[]" }
+        return text
+    }
+
+    static func describe(previousSnapshot: String?, currentRows: [String], changed: Bool) -> String {
+        let current = normalizeRows(currentRows)
+        guard let previousSnapshot else { return currentData(current) }
+        let previous = decode(previousSnapshot)
+        guard changed else { return currentData(current) }
+        let previousSet = Set(previous)
+        let currentSet = Set(current)
+        let added = current.filter { !previousSet.contains($0) }
+        let removed = previous.filter { !currentSet.contains($0) }
+        var parts: [String] = []
+        if !added.isEmpty { parts.append("新增或变更后（\(added.count) 项）：\n" + bulletRows(added)) }
+        if !removed.isEmpty { parts.append("移除或变更前（\(removed.count) 项）：\n" + bulletRows(removed)) }
+        if parts.isEmpty {
+            parts.append("业务快照发生变化，但已识别的展示字段一致。\n" + currentData(current))
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private static func currentData(_ rows: [String]) -> String {
+        "当前数据（\(rows.count) 项）：\n" + (rows.isEmpty ? "• 暂无可展示的具体条目" : bulletRows(rows))
+    }
+
+    private static func bulletRows(_ rows: [String]) -> String { rows.map { "• \($0)" }.joined(separator: "\n") }
+
+    private static func decode(_ value: String) -> [String] {
+        guard let data = value.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [String] else { return [] }
+        return normalizeRows(rows)
+    }
+
+    private static func formatScheduleCard(day: String, card: MaterialCardItem) -> String {
+        let details: [String]
+        if let schedule = card.schedule {
+            details = [
+                day,
+                sectionText(start: schedule.startSection, end: schedule.endSection),
+                schedule.weeks.isEmpty ? nil : "第\(schedule.weeks)周",
+                schedule.startTime.isEmpty ? nil : (schedule.endTime.isEmpty ? schedule.startTime : "\(schedule.startTime)-\(schedule.endTime)"),
+                schedule.location.isEmpty ? nil : "地点：\(schedule.location)",
+                schedule.teacher.isEmpty ? nil : "教师：\(schedule.teacher)"
+            ].compactMap { $0 }
+        } else {
+            details = card.fields.compactMap { $0.value.isEmpty ? nil : "\($0.label)：\($0.value)" }
+        }
+        return trimSeparators(([courseName(card.title, card.subtitle)] + details).joined(separator: "｜"))
+    }
+
+    private static func formatCard(sectionTitle: String, card: MaterialCardItem, nativeType: String?) -> String {
+        let accentLabel = nativeType == "grade" ? "成绩" : (nativeType == "exam" ? "状态" : "结果")
+        var details: [String] = []
+        if !sectionTitle.isEmpty { details.append(sectionTitle) }
+        details.append(courseName(card.title, card.subtitle))
+        if !card.accent.isEmpty { details.append("\(accentLabel)：\(card.accent)") }
+        details.append(contentsOf: card.fields.compactMap { $0.value.isEmpty ? nil : "\($0.label)：\($0.value)" })
+        return trimSeparators(details.joined(separator: "｜"))
+    }
+
+    private static func formatTableRow(title: String, headers: [String], row: [String]) -> String {
+        let values = row.enumerated().compactMap { index, value -> String? in
+            guard !value.isEmpty else { return nil }
+            if headers.indices.contains(index), !headers[index].isEmpty { return "\(headers[index])：\(value)" }
+            return value
+        }
+        return trimSeparators(([title] + values).joined(separator: "｜"))
+    }
+
+    private static func programRows(_ modules: [ProgramModule]) -> [String] {
+        modules.flatMap { module in
+            var result: [String] = []
+            if !module.title.isEmpty || !module.requirements.isEmpty {
+                result.append(trimSeparators(([module.title] + module.requirements).joined(separator: "｜")))
+            }
+            result.append(contentsOf: module.courses.map { formatTableRow(title: module.title, headers: module.headers, row: $0) })
+            result.append(contentsOf: programRows(module.children))
+            return result
         }
     }
 
-    /// Port of `PortalLogDetails.describe`.
-    static func describe(previousSnapshot: String?, currentRows: [String], changed: Bool) -> String {
-        guard changed, let previousSnapshot else {
-            return currentRows.isEmpty ? "未识别到数据" : "已建立初始数据"
+    private static func formatLesson(_ lesson: [String: Any]) -> [String] {
+        let title = directText(lesson, keys: courseTitleKeys)
+        guard !title.isEmpty else { return [] }
+        let code = directText(lesson, keys: courseCodeKeys)
+        let identifier = directText(lesson, keys: courseIDKeys)
+        let base = courseName(title, code.isEmpty ? identifier : code)
+        var schedules: [[String: Any]] = []
+        for (key, value) in lesson {
+            let normalized = normalizeKey(key)
+            if (normalized.contains("schedule") || normalized.contains("arrange")) && !normalized.contains("department") {
+                collectScheduleObjects(value, destination: &schedules)
+            }
         }
-        guard let previousData = previousSnapshot.data(using: .utf8),
-              let previousRoot = try? JSONSerialization.jsonObject(with: previousData) as? [String: Any] else {
-            return "已更新"
+        if schedules.isEmpty, hasScheduleFields(lesson) { schedules.append(lesson) }
+        if schedules.isEmpty { return [base] }
+        return schedules.map { schedule in
+            let details: [String?] = [
+                formatWeekday(findValue(schedule, keys: weekdayKeys)),
+                sectionText(start: findText(schedule, keys: startSectionKeys), end: findText(schedule, keys: endSectionKeys)),
+                formatWeeks(findValue(schedule, keys: weekKeys)),
+                optional(findText(schedule, keys: timeKeys)),
+                optional(findText(schedule, keys: roomKeys)).map { "地点：\($0)" },
+                optional(findNames(schedule, keys: teacherKeys)).map { "教师：\($0)" }
+            ]
+            return trimSeparators(([base] + details.compactMap { $0 }).joined(separator: "｜"))
         }
-        let previousRows = rows(
-            for: (previousRoot["type"] as? String) ?? "",
-            json: previousSnapshot
-        )
-        let added = currentRows.filter { !previousRows.contains($0) }
-        let removed = previousRows.filter { !currentRows.contains($0) }
-        var parts: [String] = []
-        if !added.isEmpty { parts.append("新增 \(added.count) 项") }
-        if !removed.isEmpty { parts.append("移除 \(removed.count) 项") }
-        return parts.isEmpty ? "内容更新" : parts.joined(separator: "，")
     }
+
+    private static func collectLessonObjects(_ value: Any, parentKey: String, destination: inout [[String: Any]]) {
+        if let object = value as? [String: Any] {
+            if !directText(object, keys: courseTitleKeys).isEmpty { destination.append(object) }
+            for (key, child) in object { collectLessonObjects(child, parentKey: normalizeKey(key), destination: &destination) }
+        } else if let array = value as? [Any] {
+            for child in array {
+                if let object = child as? [String: Any],
+                   (parentKey.contains("lesson") || parentKey.contains("course")),
+                   !directText(object, keys: courseTitleKeys).isEmpty { destination.append(object) }
+                collectLessonObjects(child, parentKey: parentKey, destination: &destination)
+            }
+        }
+    }
+
+    private static func collectScheduleObjects(_ value: Any, destination: inout [[String: Any]]) {
+        if let object = value as? [String: Any] {
+            if hasScheduleFields(object) { destination.append(object) }
+            else { for child in object.values { collectScheduleObjects(child, destination: &destination) } }
+        } else if let array = value as? [Any] {
+            for child in array { collectScheduleObjects(child, destination: &destination) }
+        }
+    }
+
+    private static func collectValues(for target: String, in value: Any, destination: inout [String]) {
+        if let object = value as? [String: Any] {
+            for (key, child) in object {
+                if normalizeKey(key) == target {
+                    if let array = child as? [Any] { destination.append(contentsOf: array.map(scalarText).filter { !$0.isEmpty }) }
+                    else if !scalarText(child).isEmpty { destination.append(scalarText(child)) }
+                } else { collectValues(for: target, in: child, destination: &destination) }
+            }
+        } else if let array = value as? [Any] {
+            for child in array { collectValues(for: target, in: child, destination: &destination) }
+        }
+    }
+
+    private static func hasScheduleFields(_ object: [String: Any]) -> Bool {
+        let keys = Set(object.keys.map(normalizeKey))
+        return !keys.intersection(weekdayKeys.union(startSectionKeys).union(weekKeys).union(roomKeys)).isEmpty
+    }
+
+    private static func directText(_ object: [String: Any], keys: Set<String>) -> String {
+        for (key, value) in object where keys.contains(normalizeKey(key)) { return scalarText(value) }
+        return ""
+    }
+
+    private static func findValue(_ object: [String: Any], keys: Set<String>) -> Any? {
+        for (key, value) in object where keys.contains(normalizeKey(key)) { return value }
+        return nil
+    }
+
+    private static func findText(_ object: [String: Any], keys: Set<String>) -> String { scalarText(findValue(object, keys: keys)) }
+
+    private static func findNames(_ object: [String: Any], keys: Set<String>) -> String {
+        guard let value = findValue(object, keys: keys) else { return "" }
+        return Array(Set(extractNames(value))).joined(separator: "/")
+    }
+
+    private static func extractNames(_ value: Any) -> [String] {
+        if let text = value as? String { return optional(text).map { [$0] } ?? [] }
+        if let number = value as? NSNumber { return [number.stringValue] }
+        if let object = value as? [String: Any] {
+            let direct = directText(object, keys: ["name", "teachername", "fullname"])
+            return direct.isEmpty ? object.values.flatMap(extractNames) : [direct]
+        }
+        if let array = value as? [Any] { return array.flatMap(extractNames) }
+        return []
+    }
+
+    private static func formatWeekday(_ value: Any?) -> String? {
+        let text = scalarText(value)
+        guard !text.isEmpty else { return nil }
+        if let number = Int(text), (1...7).contains(number) {
+            return ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][number - 1]
+        }
+        return text
+    }
+
+    private static func sectionText(start: String, end: String) -> String? {
+        guard !start.isEmpty || !end.isEmpty else { return nil }
+        let range = start.isEmpty ? end : (end.isEmpty || start == end ? start : "\(start)-\(end)")
+        return "第\(range)节"
+    }
+
+    private static func formatWeeks(_ value: Any?) -> String? {
+        guard let value else { return nil }
+        let numbers = (value as? [Any] ?? []).compactMap { Int(scalarText($0)) }.sorted()
+        if numbers.isEmpty { return optional(scalarText(value)).map { "第\($0)周" } }
+        var ranges: [String] = []
+        var start = numbers[0], end = numbers[0]
+        for week in numbers.dropFirst() {
+            if week == end + 1 { end = week }
+            else { ranges.append(start == end ? "\(start)" : "\(start)-\(end)"); start = week; end = week }
+        }
+        ranges.append(start == end ? "\(start)" : "\(start)-\(end)")
+        return "第\(ranges.joined(separator: "、"))周"
+    }
+
+    private static func courseName(_ title: String, _ code: String) -> String {
+        code.isEmpty || code == title ? title : "\(title)（\(code)）"
+    }
+
+    private static func scalarText(_ value: Any?) -> String {
+        if value == nil || value is NSNull { return "" }
+        if let text = value as? String { return text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if let number = value as? NSNumber { return number.stringValue }
+        return ""
+    }
+
+    private static func normalizeRows(_ rows: [String]) -> [String] {
+        Array(Set(rows.map { trimSeparators($0.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)) }
+            .filter { !$0.isEmpty })).sorted()
+    }
+
+    private static func trimSeparators(_ value: String) -> String {
+        value.trimmingCharacters(in: CharacterSet(charactersIn: "｜· ：").union(.whitespacesAndNewlines))
+    }
+
+    private static func normalizeKey(_ value: String) -> String {
+        String(value.filter { $0.isLetter || $0.isNumber }).lowercased()
+    }
+
+    private static func optional(_ value: String) -> String? { value.isEmpty ? nil : value }
 }
 
 /// Port of `QuickEntryBaseline.kt`.
@@ -331,13 +601,13 @@ enum QuickEntryBaseline {
 
     static func complete(schoolID: String, snapshots: [(item: PortalItem, json: String)]) {
         guard UserDefaults.standard.string(forKey: pendingSchoolKey) == schoolID else { return }
-        // The caller's own count, not a fixed four. A school that declares a different number of
-        // quick entries still gets its baseline recorded, and the log line reports what was actually
-        // stored rather than a number that happens to match the usual four.
-        guard !snapshots.isEmpty else { return }
+        // Android completes this warm-up only after all four native entries have published real
+        // data. A partial cache must stay pending, otherwise the missing page can be mistaken for
+        // a legitimate empty baseline by the first background comparison.
+        guard snapshots.count == 4 else { return }
         PortalPollHistory.append(PortalPollHistoryEntry(
             timestamp: Date(),
-            status: "首次登录基线已建立（\(snapshots.count) 项）",
+            status: "首次登录基线已建立（4 项）",
             notificationTriggered: false,
             details: snapshots.map { snapshot in
                 PortalPollHistoryDetail(

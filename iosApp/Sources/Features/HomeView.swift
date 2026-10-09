@@ -17,6 +17,7 @@ struct HomeView: View {
     /// the way Android acknowledges the notice and then opens the matching quick entry.
     @State private var path: [PortalRoute] = []
     @State private var historyVersion = 0
+    @Namespace private var quickEntryTransition
 
     private var definition: SchoolDefinition? { state.definition }
 
@@ -59,7 +60,7 @@ struct HomeView: View {
 
                 if !visibleQuickItems.isEmpty {
                     Section {
-                        QuickEntryCard(items: visibleQuickItems) { item in
+                        QuickEntryCard(items: visibleQuickItems, transitionNamespace: quickEntryTransition) { item in
                             path = [.item(item)]
                         }
                             // The card brings its own surface and its cells are plain buttons, so
@@ -139,6 +140,7 @@ struct HomeView: View {
                     // whatever the adapter happened to publish for a DOM it was not written for.
                     if item.quick == true {
                         MaterialPageScreen(item: item)
+                            .portalZoomDestination(sourceID: item.id, namespace: quickEntryTransition)
                     } else {
                         OriginalPortalScreen(item: item)
                     }

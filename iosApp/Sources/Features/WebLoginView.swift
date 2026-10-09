@@ -123,7 +123,7 @@ struct WebLoginView: View {
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
             }
-            .buttonStyle(TabPressStyle(scale: 0.9))
+            .buttonStyle(TabPressStyle())
         }
         .frame(width: 44, height: 44)
         .accessibilityLabel("返回")

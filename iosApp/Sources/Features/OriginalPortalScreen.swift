@@ -16,6 +16,8 @@ import WebKit
 /// same approach, so both platforms enter a subsection the way the portal intends.
 struct OriginalPortalScreen: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: PortalItem
 
     @State private var phase: Phase = .loading
@@ -69,33 +71,15 @@ struct OriginalPortalScreen: View {
                 failureView(reason)
                     .transition(.opacity)
             }
+
+            // Non-redrawn pages use the same floating glass chrome as web login: a round back
+            // control, a compact title capsule, and an independent refresh control at top-right.
+            topChrome
         }
-        .navigationTitle(item.title)
-        .navigationBarTitleDisplayMode(.inline)
-        // Drop the nav bar's chrome so the portal page paints behind the status bar.
-        .toolbarBackground(.hidden, for: .navigationBar)
-        // Before `.toolbar`, not after: a modifier written after the toolbar builder is parsed as a
-        // trailing closure for the builder's own `Visibility` parameter, which is not what this is.
-        .animation(.easeInOut(duration: 0.2), value: phase)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    refreshToken &+= 1
-                    phase = .loading
-                } label: {
-                    // Loading state rides the toolbar button instead of a top hint: the page is
-                    // already on screen behind a fresh navigation, so a glyph that rotates while
-                    // the portal answers reads as "this is where the loading lives".
-                    if case .loading = phase {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 16, weight: .semibold))
-                    }
-                }
-                .accessibilityLabel("重新加载")
-            }
-        }
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
+        .statusBarHidden(false)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: phase)
         // The session prompt is the one alert that needs a decision, so it is asked for separately
         // from the menu-miss notice rather than folded into one dialog whose buttons would change
         // meaning.
@@ -105,6 +89,91 @@ struct OriginalPortalScreen: View {
         } message: {
             Text("教务系统登录状态已过期或账号凭据已变更，请重新登录。")
         }
+    }
+
+    private var topChrome: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                SystemGlassSurface(shape: Circle(), interactive: true) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(PortalPalette.onSurface)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(TabPressStyle())
+                }
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("返回")
+
+                SystemGlassSurface(shape: Capsule(style: .continuous), interactive: false) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(item.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(PortalPalette.onSurface)
+                            .lineLimit(1)
+                        if let host = URL(string: targetURL)?.host {
+                            Text(host)
+                                .font(.caption2)
+                                .foregroundStyle(PortalPalette.secondaryText)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                }
+                .frame(height: 44)
+
+                Spacer(minLength: 0)
+
+                SystemGlassSurface(shape: Circle(), interactive: true) {
+                    Button {
+                        refreshToken &+= 1
+                        phase = .loading
+                    } label: {
+                        Group {
+                            if case .loading = phase {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(PortalPalette.onSurface)
+                            }
+                        }
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                    }
+                    .buttonStyle(TabPressStyle())
+                }
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("重新加载")
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
+
+            if case .loading = phase {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .frame(height: 3)
+                    .padding(.horizontal, 14)
+            }
+        }
+        .background(
+            LinearGradient(
+                colors: [
+                    PortalPalette.plainSurface.opacity(0.82),
+                    PortalPalette.plainSurface.opacity(0.55),
+                    PortalPalette.plainSurface.opacity(0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 132)
+            .ignoresSafeArea(edges: .top),
+            alignment: .top
+        )
     }
 
     private func failureView(_ reason: String) -> some View {

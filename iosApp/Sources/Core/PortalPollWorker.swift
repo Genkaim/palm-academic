@@ -110,149 +110,195 @@ final class PortalPollWorker {
 
         let semester = semesterId ?? ""
         let student = studentId ?? ""
-        var notifiedAny = false
+        var partiallyUnavailable = false
 
         if scheduleEnabled {
             let url = monitor.courseDataURL(baseURL: school.baseUrl, semesterId: semester, studentId: student)
-            let response = await get(url)
+            let response = await get(url, referer: coursePage.finalURL, ajax: true)
             if response.isAuthenticationFailure {
                 let notified = await notifyAuthenticationFailure()
                 details.append(response.historyDetail(category: "课表", summary: "登录状态失效"))
-                details.append(PortalPollHistoryDetail(
-                    category: "登录状态",
-                    summary: "课表数据返回登录页或未授权状态",
-                    notificationTriggered: notified
-                ))
+                details.append(authenticationDetail(notified: notified, reason: "课表数据接口返回登录页或未授权状态"))
                 finish("登录已过期")
                 return false
             }
-            guard response.isSuccessful else {
+            if !response.isSuccessful {
                 details.append(response.historyDetail(category: "课表", summary: "请求失败"))
-                finish("检查完成（课表暂不可用）")
-                return false
+                partiallyUnavailable = true
+            } else if response.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                details.append(response.historyDetail(
+                    category: "课表",
+                    summary: "响应格式无法识别",
+                    technicalDetails: "课表数据响应为空。"
+                ))
+                partiallyUnavailable = true
+            } else {
+                let rendered = renderedSnapshotOrResponse(school: school, nativeType: "schedule", responseBody: response.body)
+                details.append(await updateCourseSnapshot(semesterID: semester, response: response, renderedContent: rendered))
             }
-            let canonical = PortalSnapshot.courseDataJSON(payload: response.body, semesterId: semester)
-            let comparison = compareAndStore(canonical: canonical, nativeType: "schedule", responseCode: response.statusCode)
-            details.append(comparison.detail)
-            notifiedAny = notifiedAny || comparison.detail.notificationTriggered
         }
 
         if gradeEnabled {
             let url = monitor.gradeDataURL(baseURL: school.baseUrl, semesterId: semester, studentId: student)
-            let response = await get(url)
-            if response.isSuccessful {
-                let canonical = gradeOrExamSnapshot(body: response.body, type: "grade")
-                let comparison = compareAndStore(canonical: canonical, nativeType: "grade", responseCode: response.statusCode)
-                details.append(comparison.detail)
-                notifiedAny = notifiedAny || comparison.detail.notificationTriggered
-            } else {
+            let response = await getNativePage(
+                school: school,
+                nativeType: "grade",
+                dataURL: url,
+                initialReferer: coursePage.finalURL
+            )
+            if response.isAuthenticationFailure {
+                let notified = await notifyAuthenticationFailure()
+                details.append(response.historyDetail(category: "成绩", summary: "登录状态失效"))
+                details.append(authenticationDetail(notified: notified, reason: "成绩页面返回登录页或未授权状态"))
+                finish("登录已过期")
+                return false
+            } else if !response.isSuccessful {
                 details.append(response.historyDetail(category: "成绩", summary: "请求失败"))
+                partiallyUnavailable = true
+            } else {
+                let parsed = renderedSnapshotOrResponse(school: school, nativeType: "grade", responseBody: response.body)
+                details.append(await updateContentSnapshot(nativeType: "grade", response: response, parsedContent: parsed))
             }
         }
 
         if examEnabled {
             let url = monitor.examDataURL(baseURL: school.baseUrl, semesterId: semester, studentId: student)
-            let response = await get(url)
-            if response.isSuccessful {
-                let canonical = gradeOrExamSnapshot(body: response.body, type: "exam")
-                let comparison = compareAndStore(canonical: canonical, nativeType: "exam", responseCode: response.statusCode)
-                details.append(comparison.detail)
-                notifiedAny = notifiedAny || comparison.detail.notificationTriggered
-            } else {
+            let response = await getNativePage(
+                school: school,
+                nativeType: "exam",
+                dataURL: url,
+                initialReferer: coursePage.finalURL
+            )
+            if response.isAuthenticationFailure {
+                let notified = await notifyAuthenticationFailure()
+                details.append(response.historyDetail(category: "考试", summary: "登录状态失效"))
+                details.append(authenticationDetail(notified: notified, reason: "考试页面返回登录页或未授权状态"))
+                finish("登录已过期")
+                return false
+            } else if !response.isSuccessful {
                 details.append(response.historyDetail(category: "考试", summary: "请求失败"))
+                partiallyUnavailable = true
+            } else {
+                let parsed = renderedSnapshotOrResponse(school: school, nativeType: "exam", responseBody: response.body)
+                let tableRows = PortalSnapshot.tableRows(response.body)
+                if tableRows.isEmpty,
+                   PortalSnapshot.visibleDocument(response.body).isEmpty,
+                   !PortalSnapshot.materialPageHasData(parsed, nativeType: "exam") {
+                    details.append(response.historyDetail(
+                        category: "考试",
+                        summary: "未识别到考试内容",
+                        technicalDetails: "响应为空，未更新考试基线。"
+                    ))
+                    partiallyUnavailable = true
+                } else {
+                    details.append(await updateContentSnapshot(
+                        nativeType: "exam",
+                        response: response,
+                        parsedContent: parsed,
+                        fallbackRows: tableRows.sorted()
+                    ))
+                }
             }
         }
 
-        finish(notifiedAny ? "检测到教务信息变更" : "检查完成（无变化）")
-        return notifiedAny
+        preferences.clearAuthenticationFailureMarker()
+        UserDefaults.standard.set(Date(), forKey: "last_checked")
+        finish(partiallyUnavailable ? "检查完成（部分项目不可用）" : "检查完成")
+        return details.contains(where: \.notificationTriggered)
     }
 
     // MARK: - Snapshot comparison
 
-    private struct ComparisonResult {
-        let detail: PortalPollHistoryDetail
+    private func renderedSnapshotOrResponse(school: SchoolDefinition, nativeType: String, responseBody: String) -> String {
+        let responseSnapshot = PortalSnapshot.parsedDataJSON(html: responseBody, type: nativeType)
+        if PortalSnapshot.parsedHTMLHasRows(responseBody) { return responseSnapshot }
+        guard let item = school.quickItems.first(where: { $0.nativeType == nativeType }) else { return responseSnapshot }
+        let url = item.url(baseURL: school.baseUrl)
+        guard let cached = MaterialPageCache.loadRaw(url: url),
+              PortalSnapshot.materialPageHasData(cached, nativeType: nativeType) else { return responseSnapshot }
+        return PortalSnapshot.historyDisplayContent(cached)
     }
 
-    private func gradeOrExamSnapshot(body: String, type: String) -> String {
-        let normalized = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.hasPrefix("{") || normalized.hasPrefix("[") {
-            var text = PortalSnapshot.parsedDataJSON(html: body, type: type)
-            // Carry the type so `describe` can re-read the rows from the stored snapshot.
-            if var object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] {
-                object["type"] = type
-                if let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
-                   let updated = String(data: data, encoding: .utf8) {
-                    text = updated
-                }
-            }
-            return text
-        }
-        return PortalSnapshot.parsedDataJSON(html: body, type: type)
-    }
-
-    /// Compares the canonical payload against the stored snapshot and raises a notification only
-    /// when the student-visible content actually changed.
-    private func compareAndStore(canonical: String, nativeType: String, responseCode: Int) -> ComparisonResult {
-        let preferences = NotificationPreferences.shared
-        let previous = preferences.snapshot(for: nativeType)
-
-        // The first successful observation establishes a baseline and must stay silent.
-        guard let previous else {
-            preferences.storeSnapshot(canonical, for: nativeType)
-            return ComparisonResult(detail: PortalPollHistoryDetail(
-                category: QuickEntryBaseline.category(for: nativeType),
-                summary: "已建立初始基线",
-                notificationEnabled: true,
-                responseCode: responseCode
-            ))
-        }
-
-        let previousHash = PortalSnapshot.stableHash(previous)
-        let currentHash = PortalSnapshot.stableHash(canonical)
-        guard previousHash != currentHash else {
-            return ComparisonResult(detail: PortalPollHistoryDetail(
-                category: QuickEntryBaseline.category(for: nativeType),
-                summary: "无变化",
-                notificationEnabled: true,
-                responseCode: responseCode
-            ))
-        }
-
-        let currentRows = PortalLogDetails.rows(for: nativeType, json: canonical)
-        let previousRows = PortalLogDetails.rows(for: nativeType, json: previous)
-        let changed = currentRows != previousRows
-        let difference = PortalLogDetails.describe(
-            previousSnapshot: previous,
-            currentRows: currentRows,
-            changed: changed
-        )
-        preferences.storeSnapshot(canonical, for: nativeType)
-
-        // A payload that lost its data (server returned an empty shell) is not a real change.
-        guard !currentRows.isEmpty else {
-            return ComparisonResult(detail: PortalPollHistoryDetail(
-                category: QuickEntryBaseline.category(for: nativeType),
-                summary: "内容为空，未推送",
-                changed: false,
-                difference: difference,
-                notificationEnabled: true,
-                responseCode: responseCode
-            ))
-        }
-
-        let notified = postChangeNotification(
-            category: QuickEntryBaseline.category(for: nativeType),
-            summary: difference
-        )
-        return ComparisonResult(detail: PortalPollHistoryDetail(
-            category: QuickEntryBaseline.category(for: nativeType),
-            summary: changed ? "内容有更新" : "响应内容变化",
+    private func updateCourseSnapshot(semesterID: String, response: Response, renderedContent: String) async -> PortalPollHistoryDetail {
+        let defaults = UserDefaults.standard
+        let parsed = PortalSnapshot.courseDataJSON(payload: response.body, semesterId: semesterID)
+        let rawRows = PortalLogDetails.courseRows(response.body)
+        let currentRows = rawRows.isEmpty ? PortalLogDetails.materialRows(renderedContent, nativeType: "schedule") : rawRows
+        let snapshot = currentRows.isEmpty
+            ? "fallback:\(PortalSnapshot.stableHash(parsed))"
+            : PortalLogDetails.encode(currentRows)
+        let key = "course_business_snapshot_v1"
+        let previous = defaults.string(forKey: key)
+        let oldSemester = defaults.string(forKey: "course_business_semester_id_v1")
+        let hasEntries = PortalSnapshot.hasCourseEntries(response.body)
+        let changed = previous != nil
+            && (previous != snapshot || (oldSemester != nil && oldSemester != semesterID && hasEntries))
+        defaults.set(snapshot, forKey: key)
+        defaults.set(semesterID, forKey: "course_business_semester_id_v1")
+        defaults.set(hasEntries, forKey: "course_has_entries")
+        ["course_hash", "course_semester_id", "course_semantic_hash_v3", "course_semantic_semester_id_v3", "course_parsed_json_v2", "course_raw_v1"]
+            .forEach { defaults.removeObject(forKey: $0) }
+        let notified = changed && NotificationPreferences.shared.scheduleEnabled
+            ? await postChangeNotification(category: "课表", summary: "检测到课表新增或课程安排发生变化，请及时查看。")
+            : false
+        return PortalPollHistoryDetail(
+            category: "课表",
+            summary: previous == nil ? "已建立初始数据" : (changed ? "检测到变动" : "无变化"),
             changed: changed,
             notificationTriggered: notified,
-            difference: difference,
-            notificationEnabled: true,
-            responseCode: responseCode
-        ))
+            difference: PortalLogDetails.describe(
+                previousSnapshot: previous?.hasPrefix("[") == true ? previous : nil,
+                currentRows: currentRows,
+                changed: changed
+            ),
+            notificationEnabled: NotificationPreferences.shared.scheduleEnabled,
+            responseCode: response.statusCode
+        )
+    }
+
+    private func updateContentSnapshot(
+        nativeType: String,
+        response: Response,
+        parsedContent: String,
+        fallbackRows: [String] = []
+    ) async -> PortalPollHistoryDetail {
+        let defaults = UserDefaults.standard
+        let materialRows = PortalLogDetails.materialRows(parsedContent, nativeType: nativeType)
+        let currentRows = materialRows.isEmpty ? fallbackRows : materialRows
+        let snapshot = currentRows.isEmpty
+            ? "fallback:\(PortalSnapshot.stableHash(parsedContent))"
+            : PortalLogDetails.encode(currentRows)
+        let key = "\(nativeType)_business_snapshot_v1"
+        let previous = defaults.string(forKey: key)
+        let changed = previous != nil && previous != snapshot
+        defaults.set(snapshot, forKey: key)
+        let legacyKeys = nativeType == "grade"
+            ? ["grade_hash", "grade_parsed_json_v2", "grade_raw_v1"]
+            : ["exam_rows", "exam_rows_v2", "exam_parsed_json_v2", "exam_raw_v1"]
+        legacyKeys.forEach { defaults.removeObject(forKey: $0) }
+        let enabled = nativeType == "grade"
+            ? NotificationPreferences.shared.gradeEnabled
+            : NotificationPreferences.shared.examEnabled
+        let category = QuickEntryBaseline.category(for: nativeType)
+        let message = nativeType == "grade"
+            ? "检测到课程成绩新增或已有成绩发生变化，请及时查看。"
+            : "检测到考试新增或已有考试安排发生变化，请及时查看。"
+        let notified = changed && enabled
+            ? await postChangeNotification(category: category, summary: message)
+            : false
+        return PortalPollHistoryDetail(
+            category: category,
+            summary: previous == nil ? "已建立初始数据" : (changed ? "检测到变动" : "无变化"),
+            changed: changed,
+            notificationTriggered: notified,
+            difference: PortalLogDetails.describe(
+                previousSnapshot: previous?.hasPrefix("[") == true ? previous : nil,
+                currentRows: currentRows,
+                changed: changed
+            ),
+            notificationEnabled: enabled,
+            responseCode: response.statusCode
+        )
     }
 
     // MARK: - Notifications
@@ -261,6 +307,7 @@ final class PortalPollWorker {
         let preferences = NotificationPreferences.shared
         let shouldNotify = preferences.shouldNotifyAuthenticationFailure()
         guard shouldNotify else { return false }
+        guard await notificationsAvailable() else { return false }
         let content = UNMutableNotificationContent()
         content.title = "登录已过期"
         content.body = "掌上教务需要重新登录教务系统"
@@ -271,11 +318,27 @@ final class PortalPollWorker {
             content: content,
             trigger: nil
         )
-        try? await UNUserNotificationCenter.current().add(request)
-        return true
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            preferences.markAuthenticationFailureNotified()
+            return true
+        } catch {
+            return false
+        }
     }
 
-    private func postChangeNotification(category: String, summary: String) -> Bool {
+    private func authenticationDetail(notified: Bool, reason: String) -> PortalPollHistoryDetail {
+        PortalPollHistoryDetail(
+            category: "登录状态",
+            summary: "登录已过期",
+            notificationTriggered: notified,
+            technicalDetails: "\(reason)。登录失效通知\(notified ? "已发送" : "未发送或此前已发送")。",
+            notificationEnabled: true
+        )
+    }
+
+    private func postChangeNotification(category: String, summary: String) async -> Bool {
+        guard await notificationsAvailable() else { return false }
         let content = UNMutableNotificationContent()
         content.title = "\(category)有更新"
         content.body = summary
@@ -287,8 +350,22 @@ final class PortalPollWorker {
             content: content,
             trigger: nil
         )
-        UNUserNotificationCenter.current().add(request)
-        return true
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func notificationsAvailable() async -> Bool {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: - Networking
@@ -297,8 +374,9 @@ final class PortalPollWorker {
         let body: String
         let finalURL: String
         let statusCode: Int
+        let errorDescription: String?
 
-        var isSuccessful: Bool { (200..<400).contains(statusCode) }
+        var isSuccessful: Bool { (200...299).contains(statusCode) }
 
         /// Login-page detection goes through `AuthRepository`, which is main-actor isolated.
         @MainActor
@@ -317,24 +395,32 @@ final class PortalPollWorker {
                 category: category,
                 summary: summary,
                 notificationTriggered: notificationTriggered,
-                technicalDetails: technicalDetails ?? "HTTP \(statusCode) · \(finalURL)",
+                technicalDetails: technicalDetails ?? errorDescription ?? "HTTP \(statusCode) · \(finalURL)",
                 responseCode: statusCode
             )
         }
     }
 
-    private func get(_ urlString: String) async -> Response {
+    private func get(_ urlString: String, referer: String? = nil, ajax: Bool = false) async -> Response {
         guard let url = URL(string: urlString) else {
-            return Response(body: "", finalURL: urlString, statusCode: -1)
+            return Response(body: "", finalURL: urlString, statusCode: -1, errorDescription: "URL 无效：\(urlString)")
         }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.setValue(
+            ajax
+                ? "application/json,text/javascript,*/*;q=0.8"
+                : "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+            forHTTPHeaderField: "Accept"
+        )
         request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
         request.setValue(
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
                 + "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
             forHTTPHeaderField: "User-Agent"
         )
+        if let referer, !referer.isEmpty { request.setValue(referer, forHTTPHeaderField: "Referer") }
+        if ajax { request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With") }
         do {
             let (data, response) = try await PortalHTTP.session.data(for: request)
             let http = response as? HTTPURLResponse
@@ -344,11 +430,40 @@ final class PortalPollWorker {
             return Response(
                 body: body,
                 finalURL: http?.url?.absoluteString ?? urlString,
-                statusCode: http?.statusCode ?? -1
+                statusCode: http?.statusCode ?? -1,
+                errorDescription: nil
             )
         } catch {
-            return Response(body: "", finalURL: urlString, statusCode: -1)
+            return Response(
+                body: "",
+                finalURL: urlString,
+                statusCode: -1,
+                errorDescription: "GET \(urlString) 失败：\(error.localizedDescription)"
+            )
         }
+    }
+
+    /// Some EAMS controllers establish server-side state only after the user opens their entry
+    /// page. Mirror the interactive flow before requesting a separate data URL.
+    private func getNativePage(
+        school: SchoolDefinition,
+        nativeType: String,
+        dataURL: String,
+        initialReferer: String
+    ) async -> Response {
+        guard let item = school.quickItems.first(where: { $0.nativeType == nativeType }) else {
+            return await get(dataURL, referer: initialReferer)
+        }
+        let entryURL = item.url(baseURL: school.baseUrl)
+        let entry = await get(entryURL, referer: initialReferer)
+        if !entry.isSuccessful || entry.isAuthenticationFailure { return entry }
+        if canonicalURL(entry.finalURL) == canonicalURL(dataURL) { return entry }
+        return await get(dataURL, referer: entry.finalURL)
+    }
+
+    private func canonicalURL(_ value: String) -> String {
+        let withoutFragment = value.split(separator: "#", maxSplits: 1).first.map(String.init) ?? value
+        return withoutFragment.hasSuffix("/") ? String(withoutFragment.dropLast()) : withoutFragment
     }
 
     // MARK: - Identifier extraction

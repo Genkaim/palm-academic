@@ -99,6 +99,7 @@ final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelega
 
 struct RootView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -112,7 +113,7 @@ struct RootView: View {
                 MainShellView()
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: state.phase)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: state.phase)
     }
 }
 
@@ -125,16 +126,10 @@ struct MainShellView: View {
 
     var body: some View {
         MainShellContainer(state: state, animated: !reduceMotion)
+            // Extend the shell itself so its dynamic background paints beneath the status bar and
+            // home indicator. The controls still respect their safe-area anchors below.
+            .ignoresSafeArea(.container, edges: [.top, .bottom])
             .ignoresSafeArea(.keyboard, edges: .bottom)
-            // Fades the status bar out as the search pill takes over the bar, then back in when
-            // it closes. The system's own search experience behaves the same way: when the search
-            // surface opens, the chrome around it (including the status bar) recedes. Driving the
-            // fade off the same `isSearchPresented` flag the bar uses keeps the two in lockstep.
-            //
-            // The animation parameter to `statusBarHidden` is iOS 17+, and the deployment target is
-            // 16.0; the system already cross-fades the bar on value change, so the absence is purely
-            // cosmetic and matches what the spring backdrop on the search pill already provides.
-            .statusBarHidden(state.isSearchPresented)
             .background {
                 // The baseline fetch lives here rather than inside `HomeView`. It is what populates the
                 // cache every page reads on entry, so tying it to the home page meant the warm-up never
@@ -206,6 +201,7 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
     /// True while a button-driven turn animates, so a second tap landing mid-turn does not start
     /// another one.
     private var isTurning = false
+    private var pendingIndex: Int?
 
     init(state: AppState, animated: Bool) {
         self.state = state
@@ -268,8 +264,15 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
         // either one off. `systemGroupedBackground` is dynamic, so it tracks light/dark mode.
         view.backgroundColor = UIColor.systemGroupedBackground
 
-        pager.dataSource = self
-        pager.delegate = self
+        // This pager is now a controller container only. There is deliberately no previous/next
+        // data source, and the internal pan recognizer is disabled, so horizontal swipes cannot
+        // move or switch the page even briefly.
+        pager.dataSource = nil
+        pager.delegate = nil
+        pager.view.subviews.compactMap { $0 as? UIScrollView }.forEach {
+            $0.isScrollEnabled = false
+            $0.panGestureRecognizer.isEnabled = false
+        }
         // The pages paint their own backgrounds (the grouped list surfaces); the pager itself must
         // not add a white strip behind the slide between them. `isOpaque = false` is set as well:
         // a clear `backgroundColor` on a view still flagged opaque can still composite a black
@@ -297,13 +300,15 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
 
         barHost.view.backgroundColor = .clear
         barHost.view.isOpaque = false
+        barHost.view.clipsToBounds = false
+        barHost.view.layer.masksToBounds = false
         // The bar sizes itself to its content height and stays pinned to the shell's bottom edge;
         // the keyboard handler moves that constraint when the search field is focused.
         barHost.sizingOptions = [.intrinsicContentSize]
         addChild(barHost)
         barHost.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(barHost.view)
-        barBottomConstraint = barHost.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        barBottomConstraint = barHost.view.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         NSLayoutConstraint.activate([
             barHost.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             barHost.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -336,23 +341,40 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
     // MARK: - Turning
 
     private func turn(to index: Int) {
-        guard !isTurning, index != currentIndex, pageControllers.indices.contains(index) else { return }
-        let direction: UIPageViewController.NavigationDirection = index > currentIndex ? .forward : .reverse
+        guard pageControllers.indices.contains(index), index != currentIndex else { return }
+        if isTurning {
+            pendingIndex = index
+            return
+        }
         isTurning = true
         let finish: () -> Void = { [weak self] in
             guard let self else { return }
             isTurning = false
             currentIndex = index
+            if let pending = pendingIndex, pending != currentIndex {
+                pendingIndex = nil
+                turn(to: pending)
+            } else {
+                pendingIndex = nil
+            }
         }
-        // The pager's own scroll transition. An earlier version swapped the page underneath a
-        // snapshot and slid the snapshot off by hand, which read like an Android activity
-        // transition (the old screen slid away over a page that was already static). The
-        // built-in transition is the exact same motion a finger swipe drives -- both pages move
-        // together as one surface -- so bar taps and swipes feel like the same gesture.
-        pager.setViewControllers(
-            [pageControllers[index]],
-            direction: direction,
-            animated: animated,
+        let replace = {
+            self.pager.setViewControllers(
+                [self.pageControllers[index]],
+                direction: .forward,
+                animated: false
+            )
+        }
+        guard animated else {
+            replace()
+            finish()
+            return
+        }
+        UIView.transition(
+            with: pager.view,
+            duration: 0.22,
+            options: [.transitionCrossDissolve, .curveEaseOut, .beginFromCurrentState, .allowAnimatedContent],
+            animations: replace,
             completion: { _ in finish() }
         )
     }
@@ -366,7 +388,7 @@ final class MainShellViewController: UIViewController, UIPageViewControllerDataS
         let overlap = max(0, view.bounds.maxY - frameInView.minY)
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
         let curve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt ?? 7
-        barBottomConstraint.constant = -overlap
+        barBottomConstraint.constant = -max(0, overlap - view.safeAreaInsets.bottom)
         UIView.animate(
             withDuration: duration,
             delay: 0,

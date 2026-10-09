@@ -266,7 +266,6 @@ struct NotificationSettingsScreen: View {
                 Toggle("课表", isOn: $notifications.scheduleEnabled)
                 Toggle("成绩", isOn: $notifications.gradeEnabled)
                 Toggle("考试", isOn: $notifications.examEnabled)
-                Toggle("培养方案", isOn: $notifications.programEnabled)
             } header: {
                 Text("通知类型")
             }

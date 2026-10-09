@@ -198,10 +198,12 @@ struct MaterialReaderView: UIViewRepresentable {
     }
 
     private static func javaScriptString(_ value: String) -> String {
-        guard let data = try? JSONSerialization.data(withJSONObject: [value], options: []),
-              let array = try? JSONSerialization.jsonObject(with: data) as? [String],
-              array.count == 1 else { return "\"\"" }
-        return array[0]
+        // `perform` needs JavaScript string *literals*, not the decoded Swift string. Returning
+        // `array[0]` here produced `perform(semester,2025)` instead of
+        // `perform("semester","2025")`, so every filter/action silently failed in WebKit.
+        guard let data = try? JSONEncoder().encode(value),
+              let literal = String(data: data, encoding: .utf8) else { return "\"\"" }
+        return literal
     }
 
     final class BridgeHandler: NSObject, WKScriptMessageHandler {

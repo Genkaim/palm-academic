@@ -68,12 +68,14 @@ struct SystemGlassSurface<Content: View, S: Shape>: View {
 /// On the search pill a long press lifts the entire pill -- a small scale-up plus a glow --
 /// so the bar mimics the way native iOS search affordances grow under sustained touch.
 struct TabPressStyle: ButtonStyle {
-    var scale: CGFloat = 0.94
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var scale: CGFloat = 0.97
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? scale : 1)
-            .animation(.spring(response: 0.28, dampingFraction: 0.62), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? scale : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .animation(.easeOut(duration: configuration.isPressed ? 0.16 : 0.10), value: configuration.isPressed)
     }
 }
 
@@ -129,8 +131,8 @@ struct FloatingHomeNavigation: View {
 
     /// One spring for the whole morph. The tab strip collapsing and the circle growing ride the
     /// SAME curve, which is what makes the motion read as one surface reconfiguring itself.
-    private let morphSpring: Animation = .spring(response: 0.45, dampingFraction: 0.78)
-    private let selectionSpring: Animation = .spring(response: 0.30, dampingFraction: 0.72)
+    private let morphSpring: Animation = .spring(response: 0.28, dampingFraction: 0.86)
+    private let selectionSpring: Animation = .spring(response: 0.22, dampingFraction: 0.9)
 
     private var shape: Capsule { Capsule(style: .continuous) }
 
@@ -146,7 +148,6 @@ struct FloatingHomeNavigation: View {
                 .frame(width: isSearchPresented ? 0 : Self.tabCapsuleWidth, height: Self.barHeight)
                 .opacity(isSearchPresented ? 0 : 1)
                 .allowsHitTesting(!isSearchPresented)
-                .clipped()
 
             searchSurface
                 .frame(
@@ -202,7 +203,8 @@ struct FloatingHomeNavigation: View {
                         .font(.title3.weight(.semibold))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .buttonStyle(TabPressStyle(scale: 0.9))
+                .buttonStyle(TabPressStyle())
+                .contentShape(Circle())
                 .opacity(isSearchPresented ? 0 : 1)
                 .allowsHitTesting(!isSearchPresented)
                 .accessibilityLabel("搜索教务功能")
@@ -244,7 +246,11 @@ struct FloatingHomeNavigation: View {
         let selected = state.selectedTab == item
         return Button {
             if state.isSearchPresented { state.dismissSearch() }
-            withAnimation(selectionSpring) { state.selectedTab = item }
+            if reduceMotion {
+                state.selectedTab = item
+            } else {
+                withAnimation(selectionSpring) { state.selectedTab = item }
+            }
         } label: {
             ZStack {
                 // One sliding highlight instead of two backgrounds toggling, so changing tabs
@@ -265,7 +271,7 @@ struct FloatingHomeNavigation: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }
-        .buttonStyle(TabPressStyle(scale: 0.92))
+        .buttonStyle(TabPressStyle())
         .accessibilityLabel(item.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
