@@ -7,6 +7,9 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.text.TextUtils
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -15,10 +18,12 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
-import android.widget.Toolbar
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -45,31 +50,23 @@ class OriginalPortalActivity : PortalActivity() {
         val density = resources.displayMetrics.density
         val colors = portalViewColors(this)
         val darkTheme = PortalThemePreferences.isDark(this)
-        val toolbarHeight = (64 * density).toInt()
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        val controlSize = (48 * density).toInt()
+        val controlGap = (10 * density).toInt()
+        val edgeMargin = (16 * density).toInt()
+        val chromeColor = if (darkTheme) {
+            Color.argb(232, 28, 28, 30)
+        } else {
+            Color.argb(238, 255, 255, 255)
+        }
+        fun chromeBackground(radius: Float) = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = radius
+            setColor(chromeColor)
+            setStroke((density * 0.75f).coerceAtLeast(1f).toInt(), Color.argb(38, 128, 128, 128))
+        }
+        val root = FrameLayout(this).apply {
             setBackgroundColor(colors.webBackground)
         }
-        val toolbar = Toolbar(this).apply {
-            this.title = title
-            setNavigationIcon(R.drawable.ic_arrow_back)
-            setNavigationOnClickListener { finish() }
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(
-                    colors.pageBackground,
-                    colors.pageBackground,
-                    (colors.pageBackground and 0x00FFFFFF) or 0x66000000,
-                    Color.TRANSPARENT
-                )
-            )
-            setTitleTextColor(colors.text)
-            navigationIcon?.setTint(colors.text)
-            elevation = 0f
-        }
-        root.addView(toolbar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, toolbarHeight))
-        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
-        root.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (3 * density).toInt()))
         webView = WebView(this).apply {
             setBackgroundColor(colors.webBackground)
             settings.javaScriptEnabled = true
@@ -87,13 +84,101 @@ class OriginalPortalActivity : PortalActivity() {
             settings.layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
             configurePortalWebDarkening(settings, darkTheme)
         }
-        root.addView(webView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(
+            webView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+        }
+        val progressParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            (3 * density).toInt()
+        ).apply {
+            gravity = Gravity.TOP
+            marginStart = edgeMargin
+            marginEnd = edgeMargin
+        }
+        root.addView(progress, progressParams)
+
+        val chrome = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val back = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_arrow_back)
+            drawable.setTint(colors.text)
+            background = chromeBackground(controlSize / 2f)
+            elevation = 8 * density
+            contentDescription = "返回"
+            setOnClickListener { finish() }
+        }
+        chrome.addView(back, LinearLayout.LayoutParams(controlSize, controlSize))
+
+        val titleView = TextView(this).apply {
+            text = title
+            setTextColor(colors.text)
+            textSize = 15f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER_VERTICAL
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            maxWidth = (resources.displayMetrics.widthPixels * 0.58f).toInt()
+            background = chromeBackground(controlSize / 2f)
+            elevation = 8 * density
+            setPadding((16 * density).toInt(), 0, (16 * density).toInt(), 0)
+        }
+        chrome.addView(
+            titleView,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, controlSize).apply {
+                marginStart = controlGap
+            }
+        )
+        chrome.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+
+        val refresh = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_refresh)
+            drawable.setTint(colors.text)
+            background = chromeBackground(controlSize / 2f)
+            elevation = 8 * density
+            contentDescription = "刷新"
+            setOnClickListener {
+                nativeNavigationStarted = false
+                progress.visibility = View.VISIBLE
+                if (!PortalSessionStore.restoreToWebView { webView.loadUrl(PortalConfig.HOME) }) {
+                    webView.loadUrl(PortalConfig.HOME)
+                }
+            }
+        }
+        chrome.addView(
+            refresh,
+            LinearLayout.LayoutParams(controlSize, controlSize).apply { marginStart = controlGap }
+        )
+        val chromeParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            controlSize
+        ).apply {
+            gravity = Gravity.TOP
+            marginStart = edgeMargin
+            marginEnd = edgeMargin
+        }
+        root.addView(chrome, chromeParams)
         setContentView(root)
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.setPadding(0, 0, 0, bars.bottom)
-            toolbar.setPadding(toolbar.paddingLeft, bars.top, toolbar.paddingRight, toolbar.paddingBottom)
-            toolbar.layoutParams = toolbar.layoutParams.apply { height = toolbarHeight + bars.top }
+            webView.setPadding(0, 0, 0, bars.bottom)
+            (chrome.layoutParams as FrameLayout.LayoutParams).apply {
+                topMargin = bars.top + (8 * density).toInt()
+                chrome.layoutParams = this
+            }
+            (progress.layoutParams as FrameLayout.LayoutParams).apply {
+                topMargin = bars.top + controlSize + (14 * density).toInt()
+                progress.layoutParams = this
+            }
             insets
         }
 

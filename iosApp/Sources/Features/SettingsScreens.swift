@@ -150,6 +150,7 @@ struct SettingsScreen: View {
                 )
             }
             .buttonStyle(.plain)
+            .accessibilityHint(expanded ? "双击收起详情" : "双击展开详情")
             .disabled(isCheckingRelease)
 
             NavigationLink {
@@ -463,10 +464,21 @@ struct NoticeHistoryScreen: View {
 
     private func historyRow(_ entry: PortalPollHistoryEntry) -> some View {
         let expanded = expandedEntryIDs.contains(entry.id)
-        return Button {
-            if expanded { expandedEntryIDs.remove(entry.id) } else { expandedEntryIDs.insert(entry.id) }
-        } label: {
-            VStack(alignment: .leading, spacing: 9) {
+        return VStack(alignment: .leading, spacing: 9) {
+            Button {
+                // Keep expansion out of the button's pressed transaction. Previously the entire
+                // detail tree was inserted while the row was still dimmed by ButtonStyle, which
+                // made long monospaced snapshots repeatedly re-rasterise and visibly shake.
+                var transaction = Transaction()
+                transaction.animation = nil
+                withTransaction(transaction) {
+                    if expanded {
+                        expandedEntryIDs.remove(entry.id)
+                    } else {
+                        expandedEntryIDs.insert(entry.id)
+                    }
+                }
+            } label: {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(entry.timestamp, format: .dateTime.year().month().day().hour().minute())
@@ -483,18 +495,22 @@ struct NoticeHistoryScreen: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(PortalPalette.secondaryText)
                 }
-                if expanded {
-                    Divider()
-                    ForEach(entry.details) { detail in
-                        detailRow(detail)
-                    }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                Divider()
+                ForEach(entry.details) { detail in
+                    detailRow(detail)
                 }
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityHint(expanded ? "双击收起详情" : "双击展开详情")
+        .padding(.vertical, 4)
+        // Long snapshot text gets its final width before drawing and never participates in an
+        // implicit insertion animation, eliminating the one-frame line-wrap oscillation.
+        .fixedSize(horizontal: false, vertical: true)
+        .transaction { $0.animation = nil }
     }
 
     private func detailRow(_ detail: PortalPollHistoryDetail) -> some View {

@@ -424,23 +424,6 @@ private struct PortalWebView: UIViewRepresentable {
             parent.onPhase(.failed(error.localizedDescription))
         }
 
-        /// Navigates straight to the item once the session exists.
-        ///
-        /// This is the actual navigation mechanism. The menu click is only an optimisation that
-        /// can additionally run the portal's own click handler; when the markup cannot be matched
-        /// the item still has to open, because the session cookie is already in place by this point
-        /// and a direct request is what the browser would have done anyway. Failing here -- which
-        /// is what the previous version did -- reported "未在教务菜单中找到" for items that were
-        /// listed in the menu all along.
-        private func openDirectly(_ webView: WKWebView) {
-            guard let url = URL(string: parent.targetURL) else {
-                parent.onPhase(.failed("页面地址无效"))
-                return
-            }
-            menuNavigationStarted = true
-            webView.load(URLRequest(url: url))
-        }
-
         private func attemptMenu(in webView: WKWebView) {
             webView.evaluateJavaScript(parent.menuScript) { [weak self] value, _ in
                 guard let self else { return }
@@ -448,11 +431,15 @@ private struct PortalWebView: UIViewRepresentable {
                     self.menuNavigationStarted = true
                     return
                 }
-                // The portal may still be rendering its menu, so one retry is worth it before
-                // giving up on the click. It is not worth failing over: the session already exists
-                // at this point, so the item opens either way.
+                // The portal may still be rendering its menu, so retry on the same escalating
+                // delay as Android. Never replace this with a direct URL load: the requested
+                // behaviour is the portal's own native menu click, because its click handler owns
+                // the page shell, permission setup and route initialisation.
                 guard self.menuAttempts < Self.maximumMenuAttempts else {
-                    self.openDirectly(webView)
+                    // Match Android: leave the untouched portal home visible when no menu node can
+                    // be matched. A direct deep link here would be precisely the path this screen
+                    // exists to avoid.
+                    self.parent.onPhase(.ready)
                     return
                 }
                 self.menuAttempts += 1

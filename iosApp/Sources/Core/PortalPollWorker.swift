@@ -649,7 +649,7 @@ final class PortalPollWorker: @unchecked Sendable {
 @MainActor
 enum PortalBackgroundScheduler {
     static func register() {
-        BGTaskScheduler.shared.register(
+        let registered = BGTaskScheduler.shared.register(
             forTaskWithIdentifier: PortalMonitor.refreshTaskIdentifier,
             using: nil
         ) { task in
@@ -671,6 +671,9 @@ enum PortalBackgroundScheduler {
                 work.cancel()
                 refreshTask.setTaskCompleted(success: false)
             }
+        }
+        if !registered {
+            NSLog("portal monitor registration failed for \(PortalMonitor.refreshTaskIdentifier)")
         }
     }
 }

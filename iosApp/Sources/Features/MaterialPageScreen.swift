@@ -1136,19 +1136,21 @@ struct MaterialPageScreen: View {
             return
         }
         let profile = state.selectedSchool?.fallbackUnitTimes ?? [:]
-        let entries = ScheduleExport.entries(
-            semesterStartDate: semesterStart,
-            days: days,
-            unitTimes: profile
-        )
-        guard !entries.isEmpty else {
+        guard days.contains(where: { !$0.lessons.isEmpty }) else {
             exports = [:]
             return
         }
         let schoolID = SchoolCatalog.shared.selectedSchoolID
         var produced: [ScheduleExport.Format: URL] = [:]
         for format in ScheduleExport.Format.allCases {
-            if let url = ScheduleExport.write(format, semester: semester, entries: entries, schoolID: schoolID) {
+            if let url = ScheduleExport.write(
+                format,
+                semester: semester,
+                semesterStartDate: semesterStart,
+                days: days,
+                unitTimes: profile,
+                schoolID: schoolID
+            ) {
                 produced[format] = url
             }
         }

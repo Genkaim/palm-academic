@@ -245,9 +245,10 @@ private fun NotificationSettingsContent(onBack: () -> Unit, onOpenHistory: () ->
             item {
                 var manualChecking by remember { mutableStateOf(false) }
                 NotificationSection(title = "记录") {
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     NotificationGroupedCard(
+                        position = NotificationGroupPosition.FIRST,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
                             .clickable(enabled = !manualChecking) {
                                 scope.launch {
                                     manualChecking = true
@@ -289,10 +290,9 @@ private fun NotificationSettingsContent(onBack: () -> Unit, onOpenHistory: () ->
                             }
                         }
                     }
-                    Spacer(Modifier.size(4.dp))
                     NotificationGroupedCard(
+                        position = NotificationGroupPosition.LAST,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
                             .clickable(onClick = onOpenHistory)
                     ) {
                         Row(
@@ -320,6 +320,7 @@ private fun NotificationSettingsContent(onBack: () -> Unit, onOpenHistory: () ->
                                 tint = MaterialTheme.colorScheme.outline
                             )
                         }
+                    }
                     }
                 }
             }
@@ -362,11 +363,13 @@ private fun NotificationSection(
 @Composable
 private fun NotificationGroupedCard(
     modifier: Modifier = Modifier,
+    position: NotificationGroupPosition = NotificationGroupPosition.ONLY,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val shape = notificationGroupShape(position)
     Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        modifier = modifier.fillMaxWidth().clip(shape),
+        shape = shape,
         colors = CardDefaults.cardColors(containerColor = PortalCardBackground),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
@@ -382,22 +385,7 @@ private fun NotificationTogglePanel(
     backdrop: com.kyant.backdrop.Backdrop,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    val shape = when (position) {
-        NotificationGroupPosition.ONLY -> RoundedCornerShape(18.dp)
-        NotificationGroupPosition.FIRST -> RoundedCornerShape(
-            topStart = 18.dp,
-            topEnd = 18.dp,
-            bottomStart = 6.dp,
-            bottomEnd = 6.dp
-        )
-        NotificationGroupPosition.MIDDLE -> RoundedCornerShape(6.dp)
-        NotificationGroupPosition.LAST -> RoundedCornerShape(
-            topStart = 6.dp,
-            topEnd = 6.dp,
-            bottomStart = 18.dp,
-            bottomEnd = 18.dp
-        )
-    }
+    val shape = notificationGroupShape(position)
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = shape,
@@ -426,6 +414,23 @@ private fun NotificationTogglePanel(
         }
     }
 }
+
+private fun notificationGroupShape(position: NotificationGroupPosition): RoundedCornerShape = when (position) {
+        NotificationGroupPosition.ONLY -> RoundedCornerShape(18.dp)
+        NotificationGroupPosition.FIRST -> RoundedCornerShape(
+            topStart = 18.dp,
+            topEnd = 18.dp,
+            bottomStart = 6.dp,
+            bottomEnd = 6.dp
+        )
+        NotificationGroupPosition.MIDDLE -> RoundedCornerShape(6.dp)
+        NotificationGroupPosition.LAST -> RoundedCornerShape(
+            topStart = 6.dp,
+            topEnd = 6.dp,
+            bottomStart = 18.dp,
+            bottomEnd = 18.dp
+        )
+    }
 
 @Composable
 private fun NotificationIntervalControl(

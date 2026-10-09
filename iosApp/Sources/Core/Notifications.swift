@@ -268,6 +268,9 @@ final class NotificationPreferences: ObservableObject {
         static let exam = "notify_exam"
         static let authFailureNotified = "auth_failure_notified"
         static let interval = "interval"
+        /// Builds before 0.4.6 defaulted the master worker switch to false, unlike Android, so a
+        /// user could enable all three categories and still never enqueue a background job.
+        static let automaticMonitorMigration = "automatic_monitor_migration_v2"
     }
 
     private let defaults = UserDefaults.standard
@@ -279,7 +282,15 @@ final class NotificationPreferences: ObservableObject {
     @Published var intervalMinutes: Int { didSet { defaults.set(intervalMinutes, forKey: Key.interval); reschedule() } }
 
     private init() {
-        monitorEnabled = defaults.object(forKey: Key.monitorEnabled) as? Bool ?? false
+        if defaults.bool(forKey: Key.automaticMonitorMigration) {
+            monitorEnabled = defaults.object(forKey: Key.monitorEnabled) as? Bool ?? true
+        } else {
+            // One-time repair of the old broken default. Once migrated, an explicit user toggle is
+            // respected on every later launch.
+            monitorEnabled = true
+            defaults.set(true, forKey: Key.monitorEnabled)
+            defaults.set(true, forKey: Key.automaticMonitorMigration)
+        }
         scheduleEnabled = defaults.object(forKey: Key.schedule) as? Bool ?? true
         gradeEnabled = defaults.object(forKey: Key.grade) as? Bool ?? true
         examEnabled = defaults.object(forKey: Key.exam) as? Bool ?? true

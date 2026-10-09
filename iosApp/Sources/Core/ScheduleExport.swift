@@ -1,27 +1,28 @@
 import Foundation
 
-/// Port of the schedule exporters in `MaterialPortalActivity.kt`: iCalendar, WakeUp CSV and the
-/// raw JSON.
-///
-/// All three read the same inputs -- the semester's start date, the day list, and the per-section
-/// clock times from the school profile's `unitTimes` -- because a calendar entry without real times
-/// is worse than no entry at all: it shows up at the wrong hour and silently misleads.
+/// Schedule exporters kept intentionally equivalent to Android's `MaterialPortalActivity`.
+/// iCalendar expands every teaching week into its own event, WakeUp keeps the official seven
+/// column import shape, and JSON preserves the adapter's day/field hierarchy.
 enum ScheduleExport {
-    /// One resolved lesson, independent of which format it is about to be rendered into.
+    struct Occurrence {
+        let week: Int
+        let startDate: Date
+        let endDate: Date
+    }
+
     struct Entry {
         let title: String
         let code: String
         let teacher: String
         let location: String
-        /// 1 = Monday ... 7 = Sunday, matching the iCalendar `BYDAY` codes' offset.
+        /// 1 = Monday ... 7 = Sunday.
         let weekday: Int
-        let startDate: Date
-        let endDate: Date
-        let firstWeek: Int
-        let lastWeek: Int
+        let startSection: String
+        let endSection: String
+        let weeks: String
+        let occurrences: [Occurrence]
     }
 
-    /// The export formats the Android client offers, in the same order.
     enum Format: String, CaseIterable, Identifiable {
         case iCalendar
         case wakeUpCSV
@@ -54,138 +55,184 @@ enum ScheduleExport {
         }
     }
 
-    // MARK: - Entry resolution
-
-    /// Flattens the published schedule into dated entries.
-    ///
-    /// `unitTimes` maps a section name to its start and end clock time; a lesson that names sections
-    /// the school never defined falls back to the times the reader published on the lesson itself,
-    /// and only then to a placeholder, so a missing profile degrades one entry rather than the file.
     static func entries(
         semesterStartDate: String,
         days: [ScheduleDay],
         unitTimes: [String: (start: String, end: String)]
     ) -> [Entry] {
-        let start = Self.parseISODate(semesterStartDate) ?? Self.startOfCurrentWeek()
+        let semesterStart = parseISODate(semesterStartDate) ?? startOfCurrentWeek()
         var result: [Entry] = []
 
         for (dayIndex, day) in days.enumerated() {
-            let weekday = Self.weekdayIndex(from: day.name) ?? dayIndex + 1
+            let weekday = weekdayIndex(from: day.name) ?? dayIndex + 1
             guard (1...7).contains(weekday) else { continue }
 
             for lesson in day.lessons {
-                guard let schedule = lesson.schedule else { continue }
-                let times = Self.resolveTimes(schedule, unitTimes: unitTimes)
-                let weeks = Self.parseWeeks(schedule.weeks)
-
-                result.append(
-                    Entry(
-                        title: lesson.title,
-                        code: lesson.subtitle,
-                        teacher: schedule.teacher,
-                        location: schedule.location,
+                guard let schedule = resolvedSchedule(for: lesson) else { continue }
+                let times = resolveTimes(schedule, unitTimes: unitTimes)
+                let weeks = expandWeeks(schedule.weeks)
+                let resolvedWeeks = weeks.isEmpty ? [1] : weeks
+                let occurrences = resolvedWeeks.map { week in
+                    let day = date(
+                        inWeek: week,
                         weekday: weekday,
-                        startDate: Self.date(inWeek: weeks.lowerBound, weekday: weekday, semesterStart: start, time: times.start),
-                        endDate: Self.date(inWeek: weeks.upperBound, weekday: weekday, semesterStart: start, time: times.end),
-                        firstWeek: weeks.lowerBound,
-                        lastWeek: weeks.upperBound
+                        semesterStart: semesterStart,
+                        time: times.start
                     )
-                )
+                    return Occurrence(
+                        week: week,
+                        startDate: day,
+                        endDate: date(
+                            inWeek: week,
+                            weekday: weekday,
+                            semesterStart: semesterStart,
+                            time: times.end
+                        )
+                    )
+                }
+                result.append(Entry(
+                    title: lesson.title,
+                    code: lesson.subtitle,
+                    teacher: schedule.teacher,
+                    location: schedule.location,
+                    weekday: weekday,
+                    startSection: schedule.startSection,
+                    endSection: schedule.endSection,
+                    weeks: schedule.weeks,
+                    occurrences: occurrences
+                ))
             }
         }
         return result
     }
 
-    // MARK: - Renderers
-
-    static func render(_ format: Format, semester: String, entries: [Entry]) -> String {
+    static func render(
+        _ format: Format,
+        semester: String,
+        semesterStartDate: String,
+        days: [ScheduleDay],
+        unitTimes: [String: (start: String, end: String)]
+    ) -> String {
+        let resolvedEntries = entries(
+            semesterStartDate: semesterStartDate,
+            days: days,
+            unitTimes: unitTimes
+        )
         switch format {
-        case .iCalendar: return ics(semester: semester, entries: entries)
-        case .wakeUpCSV: return wakeUpCSV(semester: semester, entries: entries)
-        case .json: return json(semester: semester, entries: entries)
+        case .iCalendar:
+            return ics(semester: semester, entries: resolvedEntries)
+        case .wakeUpCSV:
+            return wakeUpCSV(entries: resolvedEntries)
+        case .json:
+            return json(semester: semester, semesterStartDate: semesterStartDate, days: days)
         }
     }
 
     private static func ics(semester: String, entries: [Entry]) -> String {
-        let stamp = Self.icsStamp(Date())
+        let stamp = utcStamp(Date())
         let name = semester.isEmpty ? "掌上教务课表" : semester
-        var out = """
-        BEGIN:VCALENDAR\r
-        VERSION:2.0\r
-        PRODID:-//PalmAcademic//Schedule//ZH-CN\r
-        CALSCALE:GREGORIAN\r
-        METHOD:PUBLISH\r
-        X-WR-CALNAME:\(escape(name))\r
-        X-WR-TIMEZONE:Asia/Shanghai\r
+        var output = "BEGIN:VCALENDAR\r\n"
+        output += "VERSION:2.0\r\n"
+        output += "PRODID:-//PalmAcademic//Schedule//ZH-CN\r\n"
+        output += "CALSCALE:GREGORIAN\r\n"
+        output += "METHOD:PUBLISH\r\n"
+        output += "X-WR-CALNAME:\(escape(name))\r\n"
+        output += "X-WR-TIMEZONE:Asia/Shanghai\r\n"
+        output += "BEGIN:VTIMEZONE\r\nTZID:Asia/Shanghai\r\n"
+        output += "BEGIN:STANDARD\r\nDTSTART:19700101T000000\r\n"
+        output += "TZOFFSETFROM:+0800\r\nTZOFFSETTO:+0800\r\nTZNAME:CST\r\n"
+        output += "END:STANDARD\r\nEND:VTIMEZONE\r\n"
 
-        """
         for entry in entries {
-            out += "BEGIN:VEVENT\r\n"
-            out += "UID:\(entry.startDate.timeIntervalSince1970)-\(abs(entry.title.hashValue))@palmacademic\r\n"
-            out += "DTSTAMP:\(stamp)\r\n"
-            out += "DTSTART;TZID=Asia/Shanghai:\(icsStamp(entry.startDate))\r\n"
-            out += "DTEND;TZID=Asia/Shanghai:\(icsStamp(entry.endDate))\r\n"
-            out += "SUMMARY:\(escape(entry.title))\r\n"
-            if !entry.code.isEmpty { out += "DESCRIPTION:\(escape(entry.code))\r\n" }
-            if !entry.teacher.isEmpty { out += "X-TEACHER:\(escape(entry.teacher))\r\n" }
-            if !entry.location.isEmpty { out += "LOCATION:\(escape(entry.location))\r\n" }
-            var rrule = "RRULE:FREQ=WEEKLY;BYDAY=\(byDay(entry.weekday))"
-            if entry.lastWeek >= entry.firstWeek {
-                rrule += ";UNTIL=\(icsStamp(Self.date(inWeek: entry.lastWeek, weekday: entry.weekday, semesterStart: Self.startOfCurrentWeek(), time: "23:59")))"
+            for occurrence in entry.occurrences {
+                let uidSource = [
+                    semester, String(entry.weekday), entry.title, entry.code, entry.weeks,
+                    entry.startSection, entry.endSection, entry.teacher, entry.location,
+                    String(occurrence.week)
+                ].joined(separator: "|")
+                let description = [
+                    entry.code,
+                    sectionDescription(start: entry.startSection, end: entry.endSection),
+                    entry.weeks.isEmpty ? "" : "第\(entry.weeks)周",
+                    entry.teacher.isEmpty ? "" : "老师：\(entry.teacher)"
+                ].filter { !$0.isEmpty }.joined(separator: " | ")
+
+                output += "BEGIN:VEVENT\r\n"
+                output += "UID:\(stableHash(uidSource))-\(occurrence.week)@palmacademic\r\n"
+                output += "DTSTAMP:\(stamp)\r\n"
+                output += "DTSTART;TZID=Asia/Shanghai:\(localStamp(occurrence.startDate))\r\n"
+                output += "DTEND;TZID=Asia/Shanghai:\(localStamp(occurrence.endDate))\r\n"
+                output += "SUMMARY:\(escape(entry.title))\r\n"
+                if !entry.location.isEmpty { output += "LOCATION:\(escape(entry.location))\r\n" }
+                output += "DESCRIPTION:\(escape(description))\r\n"
+                output += "END:VEVENT\r\n"
             }
-            out += rrule + "\r\n"
-            out += "END:VEVENT\r\n"
         }
-        out += "END:VCALENDAR\r\n"
-        return out
+        output += "END:VCALENDAR\r\n"
+        return output
     }
 
-    private static func wakeUpCSV(semester: String, entries: [Entry]) -> String {
-        // WakeUp reads a header row and one row per lesson; the semicolon separator is what the
-        // app's importer expects.
-        var rows = ["Title,Start Date,Start Time,End Date,End Time,Location,Notes"]
-        for entry in entries.sorted(by: { ($0.startDate, $0.title) < ($1.startDate, $1.title) }) {
+    private static func wakeUpCSV(entries: [Entry]) -> String {
+        var rows = ["课程名称,星期,开始节数,结束节数,老师,地点,周数"]
+        for entry in entries {
             rows.append([
-                csvField(entry.title),
-                dayFormatter.string(from: entry.startDate),
-                timeFormatter.string(from: entry.startDate),
-                dayFormatter.string(from: entry.endDate),
-                timeFormatter.string(from: entry.endDate),
-                csvField(entry.location),
-                csvField([entry.code, entry.teacher].filter { !$0.isEmpty }.joined(separator: " · "))
-            ].joined(separator: ","))
+                entry.title,
+                String(entry.weekday),
+                entry.startSection,
+                entry.endSection,
+                entry.teacher,
+                entry.location,
+                entry.weeks
+            ].map(csvField).joined(separator: ","))
         }
         return rows.joined(separator: "\n")
     }
 
-    private static func json(semester: String, entries: [Entry]) -> String {
-        let items = entries.map { entry -> [String: Any] in
-            var object: [String: Any] = [
-                "title": entry.title,
-                "weekday": entry.weekday,
-                "start": isoFormatter.string(from: entry.startDate),
-                "end": isoFormatter.string(from: entry.endDate),
-                "firstWeek": entry.firstWeek,
-                "lastWeek": entry.lastWeek
-            ]
-            if !entry.code.isEmpty { object["code"] = entry.code }
-            if !entry.teacher.isEmpty { object["teacher"] = entry.teacher }
-            if !entry.location.isEmpty { object["location"] = entry.location }
-            return object
+    private static func json(
+        semester: String,
+        semesterStartDate: String,
+        days: [ScheduleDay]
+    ) -> String {
+        let encodedDays: [[String: Any]] = days.map { day in
+            let lessons: [[String: Any]] = day.lessons.map { lesson in
+                let fields = Dictionary(lesson.fields.map { ($0.label, $0.value) }, uniquingKeysWith: { _, last in last })
+                return [
+                    "name": lesson.title,
+                    "code": lesson.subtitle,
+                    "fields": fields
+                ]
+            }
+            return ["day": day.name, "lessons": lessons]
         }
-        let root: [String: Any] = ["semester": semester, "lessons": items]
+        let root: [String: Any] = [
+            "semester": semester,
+            "semesterStartDate": semesterStartDate,
+            "days": encodedDays
+        ]
         guard let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]),
               let text = String(data: data, encoding: .utf8) else { return "{}" }
         return text
     }
 
-    // MARK: - Files
-
-    /// Writes an export into a temporary file so it can be handed to the share sheet.
-    static func write(_ format: Format, semester: String, entries: [Entry], schoolID: String) -> URL? {
-        let text = render(format, semester: semester, entries: entries)
-        let name = "课表-\(semester.isEmpty ? schoolID : semester).\(format.fileExtension)"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+    static func write(
+        _ format: Format,
+        semester: String,
+        semesterStartDate: String,
+        days: [ScheduleDay],
+        unitTimes: [String: (start: String, end: String)],
+        schoolID: String
+    ) -> URL? {
+        let text = render(
+            format,
+            semester: semester,
+            semesterStartDate: semesterStartDate,
+            days: days,
+            unitTimes: unitTimes
+        )
+        let baseName = semester.isEmpty ? schoolID : semester
+        let prefix = format == .wakeUpCSV ? "WakeUp课程表-" : ""
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(prefix)\(baseName).\(format.fileExtension)")
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             return url
@@ -194,73 +241,198 @@ enum ScheduleExport {
         }
     }
 
-    // MARK: - Parsing helpers
+    /// Android-compatible week expansion: supports ranges, comma/顿号-separated fragments, and
+    /// odd/even qualifiers such as `1-16单周`, `2-16（双）` and `1,3,5周`.
+    static func expandWeeks(_ value: String) -> [Int] {
+        var normalized = value
+            .replacingOccurrences(of: "（", with: "")
+            .replacingOccurrences(of: "）", with: "")
+            .replacingOccurrences(of: "(", with: "")
+            .replacingOccurrences(of: ")", with: "")
+            .replacingOccurrences(of: "周", with: "")
+        normalized = normalized.replacingOccurrences(of: "[~～—至]", with: "-", options: .regularExpression)
+        normalized = normalized.replacingOccurrences(of: "[,，;；]", with: "、", options: .regularExpression)
 
-    /// Accepts "1-16周", "1-16", "第1-16周" and single values, defaulting to a single week when
-    /// the text cannot be read rather than dropping the lesson.
-    static func parseWeeks(_ text: String) -> ClosedRange<Int> {
-        // `Scanner.scanIntegers` is not part of the Darwin Foundation surface, so the digits are
-        // pulled out directly. "1-16周", "第1-16周" and "1,2" all reduce to the same pair.
-        let numbers = text.compactMap { $0.wholeNumberValue }
-        if let first = numbers.first, let last = numbers.dropFirst().first, last >= first {
-            return first...last
+        let pattern = #"^(\d+)\s*(?:-\s*(\d+))?\s*(单|双)?$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        var weeks: Set<Int> = []
+        for rawToken in normalized.split(separator: "、") {
+            let token = String(rawToken).trimmingCharacters(in: .whitespacesAndNewlines)
+            let range = NSRange(token.startIndex..<token.endIndex, in: token)
+            guard let match = regex.firstMatch(in: token, range: range),
+                  let startRange = Range(match.range(at: 1), in: token),
+                  let start = Int(token[startRange]) else { continue }
+            let end: Int
+            if match.range(at: 2).location != NSNotFound,
+               let endRange = Range(match.range(at: 2), in: token),
+               let parsedEnd = Int(token[endRange]) {
+                end = parsedEnd
+            } else {
+                end = start
+            }
+            let parity: String
+            if match.range(at: 3).location != NSNotFound,
+               let parityRange = Range(match.range(at: 3), in: token) {
+                parity = String(token[parityRange])
+            } else {
+                parity = ""
+            }
+            for week in min(start, end)...max(start, end) where week > 0 {
+                if parity == "单", week.isMultiple(of: 2) { continue }
+                if parity == "双", !week.isMultiple(of: 2) { continue }
+                weeks.insert(week)
+            }
         }
-        if let only = numbers.first { return only...only }
-        return 1...1
+        return weeks.sorted()
     }
 
     private static func resolveTimes(
         _ schedule: MaterialCourseSchedule,
         unitTimes: [String: (start: String, end: String)]
     ) -> (start: String, end: String) {
-        if let mapped = unitTimes[schedule.startSection], let end = unitTimes[schedule.endSection] {
-            return (mapped.start, end.end)
-        }
-        let start = schedule.startTime.isEmpty ? "08:00" : schedule.startTime
-        let end = schedule.endTime.isEmpty ? "09:40" : schedule.endTime
-        return (start, end)
+        let times = defaultUnitTimes.merging(unitTimes) { _, schoolValue in schoolValue }
+        let explicitStart = schedule.startTime.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicitEnd = schedule.endTime.trimmingCharacters(in: .whitespacesAndNewlines)
+        let start = explicitStart.isEmpty ? times[schedule.startSection]?.start : explicitStart
+        let end = explicitEnd.isEmpty ? times[schedule.endSection]?.end : explicitEnd
+        return (start ?? "08:00", end ?? "09:40")
     }
 
+    /// Android also exports older adapter payloads whose structured `schedule` object is absent
+    /// but whose card fields still carry the same data. Keep that compatibility path here so CSV,
+    /// JSON and ICS do not silently disagree about how many lessons exist.
+    private static func resolvedSchedule(for lesson: MaterialCardItem) -> MaterialCourseSchedule? {
+        if let schedule = lesson.schedule { return schedule }
+        let fields = Dictionary(lesson.fields.map { ($0.label, $0.value) }, uniquingKeysWith: { _, last in last })
+        let raw = fields["时间与地点"] ?? ""
+        let sectionSource = fields["节次"] ?? raw
+        let sectionMatch = captures(#"(?:第\s*)?(\d+)\s*[-~～—至]\s*(\d+)\s*节?"#, in: sectionSource)
+        let singleSection = captures(#"(?:第\s*)?(\d+)\s*节"#, in: sectionSource)
+        let rangedStart = sectionMatch.flatMap { $0.first }.flatMap(nonEmpty)
+        let rangedEnd = sectionMatch.flatMap { $0.dropFirst().first }.flatMap(nonEmpty)
+        let single = singleSection.flatMap { $0.first }.flatMap(nonEmpty)
+        let startSection = fields["开始节数"].flatMap(nonEmpty)
+            ?? rangedStart
+            ?? single
+            ?? ""
+        let endSection = fields["结束节数"].flatMap(nonEmpty)
+            ?? rangedEnd
+            ?? single
+            ?? startSection
+        guard !startSection.isEmpty else { return nil }
+
+        let weeks = fields["周数"].flatMap(nonEmpty) ?? extractWeekText(from: raw)
+        let teacher = fields["老师"].flatMap(nonEmpty)
+            ?? fields["教师"].flatMap(nonEmpty)
+            ?? firstCapture(#"(?:教师|老师)\s*[:：]\s*([^·|,，;；]+)"#, in: raw)
+            ?? ""
+        let location = fields["地点"].flatMap(nonEmpty)
+            ?? fields["教室"].flatMap(nonEmpty)
+            ?? firstCapture(#"(?:地点|教室|上课地点)\s*[:：]\s*([^·|,，;；]+)"#, in: raw)
+            ?? ""
+        return MaterialCourseSchedule(
+            weeks: weeks,
+            startSection: startSection,
+            endSection: endSection,
+            teacher: teacher,
+            location: location,
+            startTime: fields["开始时间"] ?? "",
+            endTime: fields["结束时间"] ?? ""
+        )
+    }
+
+    private static func nonEmpty(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func captures(_ pattern: String, in value: String) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard let match = regex.firstMatch(in: value, range: range) else { return nil }
+        return (1..<match.numberOfRanges).map { index in
+            guard match.range(at: index).location != NSNotFound,
+                  let range = Range(match.range(at: index), in: value) else { return "" }
+            return String(value[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private static func firstCapture(_ pattern: String, in value: String) -> String? {
+        captures(pattern, in: value)?.first.flatMap(nonEmpty)
+    }
+
+    private static func extractWeekText(from value: String) -> String {
+        let pattern = #"(\d+)(?:\s*[-~～—至]\s*(\d+))?\s*(?:(单|双)\s*)?周\s*(?:[（(]?\s*(单|双)\s*[）)]?)?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return "" }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        var seen: Set<String> = []
+        return regex.matches(in: value, range: range).compactMap { match in
+            func group(_ index: Int) -> String {
+                guard match.range(at: index).location != NSNotFound,
+                      let range = Range(match.range(at: index), in: value) else { return "" }
+                return String(value[range])
+            }
+            guard let startRange = Range(match.range(at: 1), in: value) else { return nil }
+            let start = String(value[startRange])
+            let end = group(2)
+            let firstParity = group(3)
+            let secondParity = group(4)
+            return start + (end.isEmpty || end == start ? "" : "-\(end)") + (firstParity.isEmpty ? secondParity : firstParity)
+        }.filter { seen.insert($0).inserted }.joined(separator: "、")
+    }
+
+    private static let defaultUnitTimes: [String: (start: String, end: String)] = [
+        "1": ("09:30", "10:15"), "2": ("10:20", "11:05"),
+        "3": ("11:25", "12:10"), "4": ("12:15", "13:00"),
+        "5": ("13:05", "13:50"), "6": ("16:00", "16:45"),
+        "7": ("16:50", "17:35"), "8": ("17:55", "18:40"),
+        "9": ("18:45", "19:30"), "10": ("20:30", "21:15"),
+        "11": ("21:20", "22:05"), "12": ("22:10", "22:55")
+    ]
+
     private static func weekdayIndex(from name: String) -> Int? {
-        let cleaned = name.replacingOccurrences(of: "星期", with: "")
+        let cleaned = name
+            .replacingOccurrences(of: "星期", with: "")
             .replacingOccurrences(of: "周", with: "")
         let map = ["一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 7, "天": 7]
         if let digit = Int(cleaned), (1...7).contains(digit) { return digit }
-        for (character, index) in map {
-            if cleaned.contains(character) { return index }
-        }
-        return nil
+        return map.first(where: { cleaned.contains($0.key) })?.value
     }
 
     private static func parseISODate(_ text: String) -> Date? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        return formatter.date(from: text.trimmingCharacters(in: .whitespaces))
+        dayFormatter.date(from: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// The Monday of the current week, used when the semester start is unknown.
     static func startOfCurrentWeek() -> Date {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        calendar.timeZone = shanghaiTimeZone
+        calendar.firstWeekday = 2
         let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date())
         return calendar.date(from: components) ?? Date()
     }
 
-    private static func date(inWeek week: Int, weekday: Int, semesterStart: Date, time: String) -> Date {
+    private static func date(
+        inWeek week: Int,
+        weekday: Int,
+        semesterStart: Date,
+        time: String
+    ) -> Date {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        // `semesterStart` is the first Monday of term; weekday 1 is Monday itself.
+        calendar.timeZone = shanghaiTimeZone
         let offset = (max(week, 1) - 1) * 7 + (max(weekday, 1) - 1)
         let day = calendar.date(byAdding: .day, value: offset, to: semesterStart) ?? semesterStart
         let parts = time.split(separator: ":").compactMap { Int($0) }
-        let hour = parts.count > 0 ? parts[0] : 8
-        let minute = parts.count > 1 ? parts[1] : 0
-        return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
+        return calendar.date(
+            bySettingHour: parts.first ?? 8,
+            minute: parts.dropFirst().first ?? 0,
+            second: 0,
+            of: day
+        ) ?? day
     }
 
-    private static func byDay(_ weekday: Int) -> String {
-        ["MO", "TU", "WE", "TH", "FR", "SA", "SU"][max(1, min(7, weekday)) - 1]
+    private static func sectionDescription(start: String, end: String) -> String {
+        guard !start.isEmpty else { return "" }
+        return start == end || end.isEmpty ? "第\(start)节" : "第\(start)-\(end)节"
     }
 
     private static func escape(_ value: String) -> String {
@@ -268,38 +440,54 @@ enum ScheduleExport {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: ";", with: "\\;")
             .replacingOccurrences(of: ",", with: "\\,")
+            .replacingOccurrences(of: "\r", with: "")
             .replacingOccurrences(of: "\n", with: "\\n")
     }
 
     private static func csvField(_ value: String) -> String {
-        guard value.contains(",") || value.contains("\"") || value.contains("\n") else { return value }
-        return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
-    private static func icsStamp(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd'T'HHmmss"
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        return formatter.string(from: date)
+    private static func stableHash(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
     }
+
+    private static func localStamp(_ date: Date) -> String {
+        localDateTimeFormatter.string(from: date)
+    }
+
+    private static func utcStamp(_ date: Date) -> String {
+        utcDateTimeFormatter.string(from: date)
+    }
+
+    private static let shanghaiTimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.timeZone = shanghaiTimeZone
         return formatter
     }()
 
-    private static let timeFormatter: DateFormatter = {
+    private static let localDateTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss"
+        formatter.timeZone = shanghaiTimeZone
         return formatter
     }()
 
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    private static let utcDateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
         return formatter
     }()
 }

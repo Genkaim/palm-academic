@@ -46,6 +46,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         SessionStore.shared.restoreToCookieStorage()
         PortalMonitor.shared.configureChannel()
         PortalBackgroundScheduler.register()
+        // Android restores its unique WorkManager job whenever the process starts. iOS must do the
+        // equivalent after registering the handler; waiting until the next background transition
+        // leaves a freshly launched app with no pending request at all.
+        NotificationPreferences.shared.reschedule()
+        application.setMinimumBackgroundFetchInterval(UIApplication.backgroundFetchIntervalMinimum)
         UNUserNotificationCenter.current().delegate = NotificationCenterDelegate.shared
         return true
     }
@@ -73,6 +78,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         NotificationPreferences.shared.reschedule()
+    }
+
+    /// Legacy background fetch remains a useful fallback on iOS versions/devices that rarely grant
+    /// a BGAppRefreshTask. Both entry points run the exact same comparison worker and write the same
+    /// history record; the next BG request is re-enqueued regardless of the result.
+    func application(
+        _ application: UIApplication,
+        performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        Task {
+            let notified = await PortalPollWorker.shared.run()
+            await MainActor.run {
+                NotificationPreferences.shared.reschedule()
+                completionHandler(notified ? .newData : .noData)
+            }
+        }
     }
 }
 
