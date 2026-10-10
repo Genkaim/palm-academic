@@ -58,6 +58,23 @@ struct MaterialPageScreen: View {
         case sessionExpired
     }
 
+    init(item: PortalItem) {
+        self.item = item
+
+        // `.task` starts after SwiftUI has already drawn the destination once. Loading the disk
+        // cache there therefore guarantees a visible "正在获取…" frame even when a complete
+        // snapshot is available. Seed the two state properties while the destination is created
+        // so cached content is the very first frame of the navigation transition.
+        let targetURL = item.url(baseURL: SchoolCatalog.shared.baseURL)
+        let cached = MaterialPageCache.load(url: targetURL).flatMap { page in
+            QuickEntryBaseline.hasData(page: page, nativeType: item.nativeType) ? page : nil
+        }
+        _renderedPage = State(initialValue: cached)
+        _loadState = State(initialValue: cached == nil ? .loading : .loaded)
+        _animateContentEntrance = State(initialValue: false)
+        _isRefreshing = State(initialValue: cached != nil)
+    }
+
     private var page: MaterialPage? {
         if case .loaded = loadState { return renderedPage }
         return nil
@@ -196,7 +213,7 @@ struct MaterialPageScreen: View {
             }
         }
         .task {
-            if renderedPage == nil { await loadCachedThenFetch() }
+            await loadCachedThenFetch()
         }
         // A successful background revalidation (the trusted-session retry) lands here. The reader
         // was stuck on a stale page or the portal's login redirect, so bump the refresh token to
@@ -1077,9 +1094,9 @@ struct MaterialPageScreen: View {
             }
             prepareExports(for: cached)
             prepareProgramExpansion(for: cached)
-            // Distinguish "showing what we had" from "fetching", so a slow network does not look
-            // like a blank page and the refresh is visible rather than silent. The fetch below is
-            // the reader's own mount-time load; it runs behind this content.
+            // Keep the cached page visible while the reader's mount-time network load refreshes it.
+            // The toolbar spinner communicates that background work without returning to the
+            // full-screen loading state.
             isRefreshing = true
         } else {
             // Only a genuinely cold visit shows the full-screen loading state.

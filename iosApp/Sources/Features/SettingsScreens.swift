@@ -25,6 +25,7 @@ struct SettingsScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var release: GitHubRelease?
     @State private var isCheckingRelease = false
+    @State private var releaseCheckNotice: ReleaseCheckNotice?
     @State private var confirmSignOut = false
     @ObservedObject private var notifications = NotificationPreferences.shared
 
@@ -53,6 +54,24 @@ struct SettingsScreen: View {
                 Color.clear.frame(height: BottomClearance.height)
             }
             .task { await checkRelease() }
+            .alert(item: $releaseCheckNotice) { notice in
+                if let release = notice.release,
+                   let releaseURL = URL(string: release.htmlUrl) {
+                    return Alert(
+                        title: Text(notice.title),
+                        message: Text(notice.message),
+                        primaryButton: .default(Text("查看 Release")) {
+                            UIApplication.shared.open(releaseURL)
+                        },
+                        secondaryButton: .cancel(Text("稍后"))
+                    )
+                }
+                return Alert(
+                    title: Text(notice.title),
+                    message: Text(notice.message),
+                    dismissButton: .default(Text("好"))
+                )
+            }
         }
     }
 
@@ -220,7 +239,40 @@ struct SettingsScreen: View {
         guard force || release == nil else { return }
         isCheckingRelease = true
         defer { isCheckingRelease = false }
-        release = try? await GitHubRepository.latestRelease()
+        do {
+            let latest = try await GitHubRepository.latestRelease()
+            release = latest
+            guard force else { return }
+            if latest.isNewer(than: appVersion) {
+                let notes = latest.body?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let message = notes.flatMap { value in
+                    value.isEmpty ? nil : String(value.prefix(2000))
+                } ?? "新版本已发布，可前往 GitHub 查看并下载。"
+                releaseCheckNotice = ReleaseCheckNotice(
+                    title: "发现新版本 \(latest.tagName)",
+                    message: message,
+                    release: latest
+                )
+            } else {
+                releaseCheckNotice = ReleaseCheckNotice(
+                    title: "已是最新版本",
+                    message: "当前版本为 \(appVersion)，GitHub 最新版本为 \(latest.tagName)。"
+                )
+            }
+        } catch {
+            guard force else { return }
+            releaseCheckNotice = ReleaseCheckNotice(
+                title: "检查更新失败",
+                message: "\(error.localizedDescription)\n请检查网络后重试。"
+            )
+        }
+    }
+
+    private struct ReleaseCheckNotice: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+        var release: GitHubRelease? = nil
     }
 }
 

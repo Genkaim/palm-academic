@@ -191,7 +191,7 @@ struct HomeView: View {
             // (after a short delay) and offer a newer build. iOS cannot install an IPA in-app, so
             // the alert opens the Release page rather than downloading an APK.
             .task(id: state.isSignedIn) {
-                guard state.isSignedIn else { return }
+                guard state.isSignedIn, state.claimAutomaticReleaseCheck() else { return }
                 await Self.releaseCheckDelay
                 if let release = try? await GitHubRepository.latestRelease(),
                    release.isNewer(than: Self.appVersion),

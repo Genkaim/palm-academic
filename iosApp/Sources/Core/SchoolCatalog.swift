@@ -737,9 +737,16 @@ enum GitHubRepository {
         guard let url = URL(string: "https://api.github.com/repos/\(owner)/\(repository)/releases/latest") else {
             throw PortalError.invalidResponse
         }
-        var request = URLRequest(url: url)
+        // `releases/latest` changes without its URL changing. URLSession.shared may otherwise
+        // satisfy a manual check from its local cache and keep reporting the previous tag after a
+        // release is published. Android's OkHttp path revalidates this request; do the same here.
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.timeoutInterval = 20
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        request.setValue("PalmAcademic/\(version) (iOS)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw PortalError.requestFailed((response as? HTTPURLResponse)?.statusCode ?? -1)

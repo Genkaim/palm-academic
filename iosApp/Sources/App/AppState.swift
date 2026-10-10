@@ -81,6 +81,10 @@ final class AppState: ObservableObject {
     /// "checking" badge after the user has actually reached the home page or a real page.
     /// Mirrors Android cancelling `validationJob` in `markAuthenticated()`.
     private var sessionRevision = 0
+    /// HomeView can be rebuilt whenever the user changes tabs or returns from a pushed page. Keep
+    /// the automatic release-check claim at app-state lifetime instead of view lifetime so one app
+    /// launch can show at most one automatic update prompt. Manual checks do not use this flag.
+    private var automaticReleaseCheckClaimed = false
 
     var schools: [SchoolProfile] { SchoolCatalog.shared.options }
     var selectedSchool: SchoolProfile? { SchoolCatalog.shared.activeProfile }
@@ -90,6 +94,12 @@ final class AppState: ObservableObject {
     var supportsSilentPasswordReauthentication: Bool {
         definition?.auth?.isWebOnly != true && !captchaRequired &&
             CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID) != nil
+    }
+
+    func claimAutomaticReleaseCheck() -> Bool {
+        guard !automaticReleaseCheckClaimed else { return false }
+        automaticReleaseCheckClaimed = true
+        return true
     }
 
     func refreshCaptchaIfNeeded() async {
