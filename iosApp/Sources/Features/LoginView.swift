@@ -967,14 +967,20 @@ private struct LocalRuleImportView: View {
         }
         .fileImporter(
             isPresented: $choosingDefinition,
-            allowedContentTypes: [.json, .plainText],
+            // Accept any byte-based file, not just the exact .json UTI. Files inside third-party
+            // providers (LocalSend container, chat apps, USB-copied items) are sometimes typed as
+            // generic/dynamic UTIs on newer iOS, so a strict .json/.plainText filter greyed them
+            // out and they could not be tapped. public.data matches every real file but not
+            // folders; importLocalSchool validates the content and rejects non-JSON. Mirrors the
+            // MIME-open Android picker plus its own content validation.
+            allowedContentTypes: [.data],
             allowsMultipleSelection: false
         ) { result in
             handle(result, target: &definitionURL)
         }
         .fileImporter(
             isPresented: $choosingAdapter,
-            allowedContentTypes: [.javaScript, .plainText],
+            allowedContentTypes: [.data],
             allowsMultipleSelection: false
         ) { result in
             handle(result, target: &adapterURL)
@@ -1034,21 +1040,31 @@ private struct LocalRuleImportView: View {
     private func importFiles(overwriteExisting: Bool) {
         guard let definitionURL, let adapterURL else { return }
         importing = true
-        defer { importing = false }
+        let definitionData: Data
+        let adapterData: Data
         do {
-            let definition = try securityScopedData(from: definitionURL)
-            let adapter = try securityScopedData(from: adapterURL)
+            definitionData = try securityScopedData(from: definitionURL)
+            adapterData = try securityScopedData(from: adapterURL)
+        } catch {
+            importing = false
+            errorMessage = "无法读取所选文件，请确认点选的是 JSON / JS 文件本身，而不是文件夹。"
+            return
+        }
+        do {
             let imported = try catalog.importLocalSchool(
-                definitionData: definition,
-                adapterData: adapter,
+                definitionData: definitionData,
+                adapterData: adapterData,
                 overwriteExisting: overwriteExisting
             )
+            importing = false
             onImported(imported)
             dismiss()
         } catch let conflict as LocalRuleImportConflict where !overwriteExisting {
+            importing = false
             errorMessage = nil
             pendingOverwrite = conflict
         } catch {
+            importing = false
             errorMessage = error.localizedDescription
         }
     }
