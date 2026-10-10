@@ -445,7 +445,7 @@ final class SchoolCatalog: ObservableObject {
         }
         if let auth = root["auth"] as? [String: Any] {
             let type = auth["type"] as? String ?? "salted-sha1"
-            guard type == "salted-sha1" || type == "web" || type == "engine" else {
+            guard type == "salted-sha1" || type == "web" || type == "engine" || type == "script" else {
                 throw PortalError.invalidSchoolDefinition
             }
             if let captcha = auth["captcha"] as? [String: Any],
@@ -501,7 +501,7 @@ final class SchoolCatalog: ObservableObject {
                     }
                 }
             }
-            if type == "web" || type == "engine" {
+            if type == "web" || type == "engine" || type == "script" {
                 guard let loginURL = auth["loginUrl"] as? String,
                       loginURL.hasPrefix("https://"),
                       let prefixes = auth["successUrlPrefixes"] as? [String],
@@ -514,6 +514,13 @@ final class SchoolCatalog: ObservableObject {
                     guard hosts.allSatisfy({ host in
                         validHost.firstMatch(in: host, range: NSRange(host.startIndex..., in: host)) != nil
                     }) else { throw PortalError.invalidSchoolDefinition }
+                }
+            }
+            if type == "script" {
+                // loginScript may be omitted: the login adapter then shares the reader adapter
+                // file. When present it must stay inside the adapters directory.
+                if let path = auth["loginScript"] as? String, !path.isEmpty {
+                    try requireSafeAssetPath(path, prefix: "adapters/", suffix: ".js")
                 }
             }
         }

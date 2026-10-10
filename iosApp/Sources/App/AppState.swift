@@ -69,6 +69,9 @@ final class AppState: ObservableObject {
     /// revalidate in the background instead of throwing them back to the login form. Mirrors
     /// Android's `SessionTrustStore`.
     @Published private(set) var sessionTrusted: Bool = SessionTrustStore.shared.trusted
+    /// type=script 学校的 schema 驱动登录控制器（账号密码/短信/扫码，JS 沙箱）。
+    /// 仅在当前学校定义使用脚本登录时存在；为 nil 时登录页走经典密码表单。
+    @Published private(set) var scriptLogin: ScriptLoginController?
 
     private let auth = AuthRepository()
     /// The in-flight password-login retry loop. A new login attempt cancels the previous one so
@@ -144,6 +147,7 @@ final class AppState: ObservableObject {
         // credential was saved, which read as "记住密码 does nothing".
         loadRememberedCredential()
         _ = SchoolCatalog.shared.loadDefinition()
+        bindLoginMode()
         isDark = ThemePreferences.shared.mode == .dark
         SessionStore.shared.restoreToCookieStorage()
 
@@ -546,6 +550,10 @@ private func revalidateQuietly() async {
         // form on the same school.
         hasSelectedSchool = SchoolCatalog.shared.hasSelectedSchool
         loadRememberedCredential()
+        // 学校切换后登录方式可能不同（salted-sha1/web/script），重建脚本登录控制器。
+        scriptLogin?.close()
+        scriptLogin = nil
+        bindLoginMode()
         // The trust flag is read through a projection over the current school, so it flips
         // automatically to "false" the moment `selectedSchoolID` changes. Mirror that into the
         // published field so the home badge does not show a retry button on a brand-new school.
@@ -576,6 +584,41 @@ private func revalidateQuietly() async {
         } catch {
             errorMessage = "更新失败：\(error.localizedDescription)"
         }
+    }
+
+    /// Port of `MainActivity.bindLoginMode`：当前学校为 type=script 时挂载脚本登录控制器
+    /// （账号密码/短信/扫码），其它登录方式回到经典密码表单。
+    private func bindLoginMode() {
+        let loadedDefinition = SchoolCatalog.shared.loadDefinition()
+        guard loadedDefinition?.auth?.usesScript == true else {
+            scriptLogin?.close()
+            scriptLogin = nil
+            return
+        }
+        guard scriptLogin == nil else { return }
+        let remembered = CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID)
+        let controller = ScriptLoginController(
+            onAuthenticated: { [weak self] in
+                self?.onAuthenticationCompleted(freshLogin: true)
+            },
+            onRemember: { username, password in
+                CredentialStore.save(
+                    username: username,
+                    password: password,
+                    schoolID: SchoolCatalog.shared.selectedSchoolID
+                )
+            },
+            onForget: {
+                CredentialStore.clear(schoolID: SchoolCatalog.shared.selectedSchoolID)
+            }
+        )
+        scriptLogin = controller
+        if let remembered, !remembered.username.isEmpty {
+            // 预填账号必须在 start() 之前：bindMethod 会保留已有 username 并清空其余字段，
+            // 之后再写入可能与 schema 绑定发生竞态。密码只保存在钥匙串，不进入脚本值表。
+            controller.setValue("username", remembered.username)
+        }
+        if let loadedDefinition { controller.start(definition: loadedDefinition) }
     }
 
     private func loadRememberedCredential() {

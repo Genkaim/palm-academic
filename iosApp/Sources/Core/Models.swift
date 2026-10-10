@@ -96,12 +96,34 @@ struct SchoolDefinition: Codable {
         let sessionCookieNames: [String]?
         let captcha: CaptchaPayload?
         let engine: AuthEnginePayload?
+        /// Optional separate login adapter asset. When omitted the login adapter lives in the
+        /// same JS file as the reader adapter, so `type == "script"` alone gates script login
+        /// (mirrors Android `PortalAuthDefinition.usesScript`).
+        let loginScript: String?
 
         var isWebOnly: Bool { type == "web" }
         var usesEngine: Bool { type == "engine" && engine != nil }
+        var usesScript: Bool { type == "script" }
         var resolvedSuccessPrefixes: [String] { successUrlPrefixes ?? [] }
         var resolvedCookieHosts: [String] { sessionCookieHosts ?? [] }
+        /// An explicit empty array means "any session cookie is proof enough"; absence keeps the
+        /// historical default of `["SESSION"]`.
         var resolvedCookieNames: [String] { sessionCookieNames ?? ["SESSION"] }
+
+        /// Port of `PortalAuthDefinition.allowedHosts`: the only hosts the sandboxed login JS
+        /// may talk to, derived from the login URL, the school base URL, every success prefix
+        /// and every declared cookie host.
+        func allowedHosts(baseURL: String) -> Set<String> {
+            var hosts = Set<String>()
+            for candidate in [loginUrl, baseURL].compactMap({ $0 }) {
+                if let host = URL(string: candidate)?.host, !host.isEmpty { hosts.insert(host) }
+            }
+            for prefix in successUrlPrefixes ?? [] {
+                if let host = URL(string: prefix)?.host, !host.isEmpty { hosts.insert(host) }
+            }
+            sessionCookieHosts?.forEach { hosts.insert($0) }
+            return hosts
+        }
 
         struct CaptchaPayload: Codable {
             let required: Bool

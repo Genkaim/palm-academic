@@ -435,14 +435,8 @@ private fun LoginRoute(
                 .fillMaxSize()
                 .graphicsLayer { alpha = loginAlpha }
         ) {
-            val script = model.scriptLogin
-            if (script != null) {
-                val schoolName = model.schoolOptions
-                    .firstOrNull { it.id == model.selectedSchoolId }?.name.orEmpty()
-                ScriptLoginContent(script, schoolName, openSchoolSelection)
-            } else {
-                RefactoredLoginContent(model, openWebLogin, openSchoolSelection)
-            }
+            // 脚本学校与普通学校共用同一个登录页，脚本只在原页面上增量挂载新控件。
+            RefactoredLoginContent(model, openWebLogin, openSchoolSelection)
         }
     }
 }

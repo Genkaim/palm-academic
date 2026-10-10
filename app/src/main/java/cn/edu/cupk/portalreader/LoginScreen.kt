@@ -42,10 +42,13 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.OpenInBrowser
+import androidx.compose.material.icons.outlined.Phone
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.School
+import androidx.compose.material.icons.outlined.Sms
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -55,9 +58,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -88,6 +97,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
@@ -265,6 +275,12 @@ internal fun RefactoredLoginContent(
 
             if (model.hasSelectedSchool) {
                 item(key = "password-form") {
+                    val scriptLogin = model.scriptLogin
+                    if (scriptLogin != null) {
+                        // 脚本学校：沿用同一个登录页骨架，只把数据源换成 schema 驱动的
+                        // 控制器；多方式切换/短信/扫码/弹窗是仅此处新增的控件。
+                        ScriptLoginFormSection(scriptLogin, fieldColors, glassBackdrop)
+                    } else {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             LoginFormLabel("密码登录")
                             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -486,6 +502,7 @@ internal fun RefactoredLoginContent(
                                 }
                             }
                     }
+                    }
                 }
             }
         }
@@ -497,30 +514,50 @@ internal fun RefactoredLoginContent(
                 onSelectSchool = openSchoolSelection
             )
         } else {
+            val scriptLogin = model.scriptLogin
+            val scriptMethod = scriptLogin?.currentMethod()
+            val pageLoading = scriptLogin?.let {
+                it.busy || it.phase == ScriptLoginController.Phase.LOADING
+            } ?: model.loading
             LoginSecondaryActions(
                 modifier = Modifier.align(Alignment.BottomCenter),
                 selectedSchoolName = selectedSchoolName,
-                loading = model.loading,
+                loading = pageLoading,
                 secondaryActionAlpha = secondaryActionAlpha,
                 stationaryOffsetPx = stationaryOffsetPx,
                 onSelectSchool = openSchoolSelection,
                 onWebLogin = openWebLogin
             )
-            LoginPrimaryAction(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .height(54.dp)
-                    .graphicsLayer { translationY = loginTranslationYPx },
-                loading = model.loading,
-                canSubmit = username.isNotBlank() && password.isNotBlank() &&
-                    (!model.captchaRequired || (captcha.isNotBlank() && model.captchaImage != null)),
-                onPassword = {
-                    focusManager.clearFocus()
-                    model.login(username, password, rememberPassword, captcha)
-                }
-            )
+            // 扫码方式没有提交按钮：二维码确认后由脚本自动完成登录。
+            if (scriptLogin == null || scriptMethod?.kind != "qrcode") {
+                LoginPrimaryAction(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp)
+                        .height(54.dp)
+                        .graphicsLayer { translationY = loginTranslationYPx },
+                    loading = pageLoading,
+                    canSubmit = if (scriptLogin != null && scriptMethod != null) {
+                        scriptMethod.fields.none { field ->
+                            field.required && scriptLogin.values[field.id].isNullOrBlank()
+                        }
+                    } else {
+                        username.isNotBlank() && password.isNotBlank() &&
+                            (!model.captchaRequired || (captcha.isNotBlank() && model.captchaImage != null))
+                    },
+                    onPassword = {
+                        focusManager.clearFocus()
+                        if (scriptLogin != null) {
+                            scriptLogin.submit()
+                        } else {
+                            model.login(username, password, rememberPassword, captcha)
+                        }
+                    }
+                )
+            }
+            // 脚本登录新增的两类模态：按需验证码挑战、短信/扫码确定性失败。
+            scriptLogin?.let { ScriptLoginDialogs(it) }
         }
     }
     }
@@ -689,4 +726,431 @@ private fun LoginFormLabel(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         fontWeight = FontWeight.SemiBold
     )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 以下全部是 type=script 学校在原登录页上【新增】的控件：
+//   1) 登录方式分段切换（密码/短信/扫码，仅多方式时出现）
+//   2) schema 字段渲染（复用原 18/6 拼接输入框样式；短信验证码尾部的“获取验证码”
+//      是唯一新增的字段尾部控件，图形验证码尾部图片沿用原有样式）
+//   3) 扫码面板（替换输入框组，确认后脚本自动登录）
+//   4) 按需验证码挑战弹窗 与 短信/扫码“登录失败”弹窗
+// 原登录页的品牌行、布局、按钮、键盘抬升等均未改动。
+// ─────────────────────────────────────────────────────────────────────────────
+
+private enum class ScriptFieldPosition { FIRST, MIDDLE, LAST, SOLO }
+
+@Composable
+private fun ScriptLoginFormSection(
+    script: ScriptLoginController,
+    fieldColors: TextFieldColors,
+    backdrop: Backdrop
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (script.phase == ScriptLoginController.Phase.LOADING) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.size(12.dp))
+                Text(
+                    "正在准备登录…",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            return
+        }
+        script.initError?.let { message ->
+            ScriptErrorSurface(message)
+            return
+        }
+        val method = script.currentMethod() ?: return
+        // 方式切换菜单必须由脚本在 describe() 显式声明 methodSwitch:true 才出现。
+        if (script.methodSwitch && script.methods.size > 1) {
+            ScriptMethodTabs(script)
+        }
+        if (method.kind == "qrcode") {
+            ScriptQrPanel(script)
+        } else {
+            LoginFormLabel(method.label)
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                method.fields.forEachIndexed { index, field ->
+                    val position = when {
+                        method.fields.size == 1 -> ScriptFieldPosition.SOLO
+                        index == 0 -> ScriptFieldPosition.FIRST
+                        index == method.fields.lastIndex -> ScriptFieldPosition.LAST
+                        else -> ScriptFieldPosition.MIDDLE
+                    }
+                    ScriptField(script, field, position, fieldColors)
+                }
+            }
+            method.checkboxes.forEach { checkbox ->
+                ScriptCheckboxCard(
+                    label = checkbox.label,
+                    checked = script.checkboxes.getOrDefault(checkbox.id, checkbox.defaultChecked),
+                    onCheckedChange = { script.toggleCheckbox(checkbox.id) },
+                    backdrop = backdrop
+                )
+            }
+            script.error?.let { ScriptErrorSurface(it) }
+            script.status?.let { ScriptStatusSurface(it) }
+        }
+    }
+}
+
+@Composable
+private fun ScriptMethodTabs(script: ScriptLoginController) {
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        script.methods.forEachIndexed { index, method ->
+            SegmentedButton(
+                selected = method.id == script.methodId,
+                onClick = {
+                    val target = script.methods.getOrNull(index) ?: return@SegmentedButton
+                    script.selectMethod(target)
+                },
+                shape = SegmentedButtonDefaults.itemShape(index, script.methods.size)
+            ) {
+                Text(method.label, fontSize = 13.sp, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScriptField(
+    script: ScriptLoginController,
+    field: LoginScriptRuntime.Field,
+    position: ScriptFieldPosition,
+    fieldColors: TextFieldColors
+) {
+    val value = script.values[field.id].orEmpty()
+    val shape = when (position) {
+        ScriptFieldPosition.SOLO -> RoundedCornerShape(18.dp)
+        ScriptFieldPosition.FIRST -> RoundedCornerShape(
+            topStart = 18.dp, topEnd = 18.dp, bottomStart = 6.dp, bottomEnd = 6.dp
+        )
+        ScriptFieldPosition.LAST -> RoundedCornerShape(
+            topStart = 6.dp, topEnd = 6.dp, bottomStart = 18.dp, bottomEnd = 18.dp
+        )
+        ScriptFieldPosition.MIDDLE -> RoundedCornerShape(6.dp)
+    }
+    val isLast = position == ScriptFieldPosition.LAST || position == ScriptFieldPosition.SOLO
+    var reveal by remember(field.id, script.methodId) { mutableStateOf(false) }
+    TextField(
+        value = value,
+        onValueChange = { script.setValue(field.id, it) },
+        label = { Text(field.label) },
+        placeholder = field.placeholder.takeIf(String::isNotBlank)?.let { placeholderText ->
+            @Composable { Text(placeholderText) }
+        },
+        leadingIcon = {
+            Icon(
+                when (field.type) {
+                    "password" -> Icons.Outlined.Key
+                    "tel" -> Icons.Outlined.Phone
+                    "smsCode" -> Icons.Outlined.Sms
+                    "captcha" -> Icons.Outlined.Lock
+                    else -> Icons.Outlined.AccountCircle
+                },
+                null
+            )
+        },
+        trailingIcon = when (field.type) {
+            "password" -> {
+                {
+                    IconButton(onClick = { reveal = !reveal }) {
+                        Icon(
+                            if (reveal) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                            if (reveal) "隐藏密码" else "显示密码"
+                        )
+                    }
+                }
+            }
+            "captcha" -> {
+                { ScriptCaptchaImage(script, field) }
+            }
+            "smsCode" -> {
+                { ScriptSmsSendButton(script, field) }
+            }
+            else -> null
+        },
+        singleLine = true,
+        visualTransformation = if (field.type == "password" && !reveal) {
+            PasswordVisualTransformation()
+        } else {
+            VisualTransformation.None
+        },
+        keyboardOptions = KeyboardOptions(
+            keyboardType = when (field.type) {
+                "password" -> KeyboardType.Password
+                "tel" -> KeyboardType.Phone
+                "smsCode" -> KeyboardType.Number
+                else -> KeyboardType.Text
+            },
+            imeAction = if (isLast) ImeAction.Done else ImeAction.Next
+        ),
+        keyboardActions = KeyboardActions(
+            onDone = { if (isLast) script.submit() }
+        ),
+        shape = shape,
+        colors = fieldColors,
+        modifier = Modifier.fillMaxWidth().height(LoginTextFieldHeight)
+    )
+}
+
+// 图形验证码尾部：与原登录页验证码框同款（112x48 圆角可点刷新）。
+@Composable
+private fun ScriptCaptchaImage(script: ScriptLoginController, field: LoginScriptRuntime.Field) {
+    Box(
+        modifier = Modifier
+            .padding(end = 8.dp)
+            .size(width = 112.dp, height = 48.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = !script.busy) { script.refreshCaptcha(field) },
+        contentAlignment = Alignment.Center
+    ) {
+        val bytes = script.captchaImages[field.id]
+        val bitmap = remember(bytes) {
+            bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+        }
+        when {
+            bytes != null && bitmap != null -> Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "验证码图片，点按刷新",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+            script.busy -> CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp
+            )
+            else -> Icon(Icons.Outlined.Refresh, "刷新验证码")
+        }
+    }
+}
+
+// 唯一新增的字段尾部控件：短信验证码“获取/倒计时”按钮。
+@Composable
+private fun ScriptSmsSendButton(script: ScriptLoginController, field: LoginScriptRuntime.Field) {
+    val cooldown = script.smsCooldown
+    val enabled = cooldown == 0 && !script.busy
+    Box(
+        modifier = Modifier
+            .padding(end = 8.dp)
+            .size(width = 104.dp, height = 44.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled) { script.sendSms(field) },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = if (cooldown > 0) "${cooldown}s 后重发" else "获取验证码",
+            color = if (enabled) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun ScriptCheckboxCard(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    backdrop: Backdrop
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clip(LoginPillShape),
+        shape = LoginPillShape,
+        colors = CardDefaults.cardColors(containerColor = PortalCardBackground),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .clickable { onCheckedChange(!checked) },
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(label, fontWeight = FontWeight.Medium)
+            }
+            PortalGlassSwitch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                backdrop = backdrop,
+                label = label
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScriptQrPanel(script: ScriptLoginController) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(232.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color.White)
+                .padding(12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            val image = script.qrImage
+            when {
+                image != null -> Image(
+                    bitmap = image.asImageBitmap(),
+                    contentDescription = "登录二维码",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+                else -> CircularProgressIndicator(Modifier.size(32.dp), strokeWidth = 2.dp)
+            }
+        }
+        val message = script.qrMessage.ifBlank {
+            when (script.qrState) {
+                "scanned" -> "已扫描，请在手机上确认"
+                "expired" -> "二维码已失效，正在重新生成…"
+                else -> "请使用学校 App 扫码登录"
+            }
+        }
+        Text(
+            message,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        script.error?.let { ScriptErrorSurface(it) }
+        script.status?.let { ScriptStatusSurface(it) }
+    }
+}
+
+@Composable
+private fun ScriptErrorSurface(message: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.errorContainer
+    ) {
+        Text(
+            message,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            style = MaterialTheme.typography.bodyMedium
+        )
+    }
+}
+
+@Composable
+private fun ScriptStatusSurface(message: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text(
+                message,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScriptLoginDialogs(script: ScriptLoginController) {
+    script.captchaChallenge?.let {
+        AlertDialog(
+            onDismissRequest = { script.dismissCaptchaDialog() },
+            title = { Text("请输入验证码") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("学校要求本次登录补输图形验证码。", style = MaterialTheme.typography.bodyMedium)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color.White)
+                            .clickable { script.refreshDialogCaptcha() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val bytes = script.captchaDialogImage
+                        val bitmap = remember(bytes) {
+                            bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                        }
+                        when {
+                            bytes != null && bitmap != null -> Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = "验证码图片，点按刷新",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize().padding(4.dp)
+                            )
+                            else -> Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Text("点按刷新", style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = script.captchaDialogInput,
+                        onValueChange = script::typeCaptchaInput,
+                        singleLine = true,
+                        label = { Text("验证码") },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Text,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = { script.confirmCaptchaDialog() }
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { script.confirmCaptchaDialog() },
+                    enabled = script.captchaDialogInput.isNotBlank()
+                ) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { script.dismissCaptchaDialog() }) { Text("取消") }
+            }
+        )
+    }
+    script.failureDialog?.let { message ->
+        AlertDialog(
+            onDismissRequest = { script.dismissFailure() },
+            title = { Text("登录失败") },
+            text = { Text(message, style = MaterialTheme.typography.bodyMedium) },
+            confirmButton = {
+                TextButton(onClick = { script.retryAfterFailure() }) { Text("重试") }
+            },
+            dismissButton = {
+                TextButton(onClick = { script.dismissFailure() }) { Text("取消") }
+            }
+        )
+    }
 }

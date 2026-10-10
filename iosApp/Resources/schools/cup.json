@@ -9,11 +9,16 @@
   "baseUrl": "https://bk.cup.edu.cn/student",
   "readerAdapter": "adapters/cup-reader.js",
   "auth": {
-    "type": "salted-sha1",
+    "type": "script",
     "captcha": {"required": false},
-    "loginPath": "/login",
-    "saltPath": "/login-salt",
-    "homePath": "/home"
+    "loginUrl": "https://bk.cup.edu.cn/student/login",
+    "homePath": "/home",
+    "successUrlPrefixes": [
+      "https://bk.cup.edu.cn/student/home",
+      "https://bk.cup.edu.cn/student/"
+    ],
+    "sessionCookieHosts": ["bk.cup.edu.cn"],
+    "sessionCookieNames": ["SESSION"]
   },
   "monitor": {
     "coursePagePath": "/for-std/course-table",

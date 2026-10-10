@@ -9,11 +9,16 @@
   "baseUrl": "https://eams.cupk.edu.cn/student",
   "readerAdapter": "adapters/cupk-reader.js",
   "auth": {
-    "type": "salted-sha1",
+    "type": "script",
     "captcha": {"required": false},
-    "loginPath": "/login",
-    "saltPath": "/login-salt",
-    "homePath": "/home"
+    "loginUrl": "https://eams.cupk.edu.cn/student/login",
+    "homePath": "/home",
+    "successUrlPrefixes": [
+      "https://eams.cupk.edu.cn/student/home",
+      "https://eams.cupk.edu.cn/student/"
+    ],
+    "sessionCookieHosts": ["eams.cupk.edu.cn"],
+    "sessionCookieNames": ["SESSION"]
   },
   "monitor": {
     "coursePagePath": "/for-std/course-table",

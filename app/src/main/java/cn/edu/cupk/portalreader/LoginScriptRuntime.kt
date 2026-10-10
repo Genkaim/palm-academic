@@ -95,7 +95,11 @@ class LoginScriptRuntime(
         val checkboxes: List<Checkbox>
     )
 
-    data class Schema(val methods: List<Method>)
+    /**
+     * [methodSwitch] 必须由脚本在 describe() 顶层显式声明为 true，界面才会渲染
+     * 登录方式切换菜单；未声明时即使存在多个 method 也只展示默认方式。
+     */
+    data class Schema(val methods: List<Method>, val methodSwitch: Boolean)
 
     data class SubmitResult(
         val ok: Boolean,
@@ -197,7 +201,7 @@ class LoginScriptRuntime(
             )
         }
         require(methods.isNotEmpty()) { "登录脚本未声明任何登录方式" }
-        return Schema(methods)
+        return Schema(methods, json.optBoolean("methodSwitch", false))
     }
 
     /**

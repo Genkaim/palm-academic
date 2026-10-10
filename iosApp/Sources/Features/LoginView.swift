@@ -196,7 +196,18 @@ struct LoginView: View {
         .clipped()
     }
 
+    @ViewBuilder
     private var credentialForm: some View {
+        // type=script 学校复用本页：只把表单区换成脚本 schema 驱动的增量控件
+        // （方式切换/短信/扫码/验证码挑战），页面品牌、底部按钮与学校选择完全不动。
+        if let scriptLogin = state.scriptLogin {
+            ScriptLoginSection(controller: scriptLogin)
+        } else {
+            classicCredentialForm
+        }
+    }
+
+    private var classicCredentialForm: some View {
         VStack(alignment: .leading, spacing: 12) {
             formLabel("密码登录")
             VStack(spacing: 0) {
@@ -286,8 +297,11 @@ struct LoginView: View {
                 .opacity(secondaryOpacity)
                 .allowsHitTesting(keyboardHeight == 0)
 
-                loginButton
-                    .padding(.top, Metric.buttonSpacing)
+                // 扫码方式没有提交动作（轮询在脚本内进行），不显示登录按钮，与安卓一致。
+                if state.scriptLogin?.currentMethod()?.kind != "qrcode" {
+                    loginButton
+                        .padding(.top, Metric.buttonSpacing)
+                }
             } else {
                 schoolSelectionPrompt
             }
@@ -303,15 +317,19 @@ struct LoginView: View {
     private var loginButton: some View {
         Button {
             focusedField = nil
-            Task { await state.login() }
+            if let scriptLogin = state.scriptLogin {
+                scriptLogin.submit()
+            } else {
+                Task { await state.login() }
+            }
         } label: {
             HStack(spacing: 8) {
-                if state.isLoading {
+                if pageBusy {
                     ProgressView()
                 } else {
                     Image(systemName: "lock")
                 }
-                Text(state.isLoading ? "登录中…" : "登录")
+                Text(pageBusy ? "登录中…" : "登录")
                     .font(.body.weight(.semibold))
             }
             .frame(maxWidth: .infinity)
@@ -321,7 +339,12 @@ struct LoginView: View {
         .tint(PortalPalette.primary)
         .foregroundStyle(PortalPalette.plainSurface)
         .controlSize(.large)
-        .disabled(!canSubmit || state.isLoading)
+        .disabled(pageBusy || !canSubmit)
+    }
+
+    /// 经典登录走 isLoading；脚本登录走控制器的 busy。
+    private var pageBusy: Bool {
+        state.scriptLogin?.busy ?? state.isLoading
     }
 
     /// How far the keyboard has risen, 0...1. Android derives this the same way, from the IME inset
@@ -395,7 +418,7 @@ struct LoginView: View {
         .tint(PortalPalette.outline.opacity(0.8))
         .foregroundStyle(PortalPalette.onSurface)
         .controlSize(.large)
-        .disabled(state.isLoading)
+        .disabled(pageBusy)
     }
 
     private var rememberRow: some View {
@@ -626,7 +649,10 @@ struct LoginView: View {
     }
 
     private var canSubmit: Bool {
-        !state.isLoading
+        if let scriptLogin = state.scriptLogin {
+            return scriptLogin.canSubmitCurrent
+        }
+        return !state.isLoading
             && !state.username.trimmingCharacters(in: .whitespaces).isEmpty
             && !state.password.isEmpty
             && (!state.captchaRequired || (
