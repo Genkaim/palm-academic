@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "id": "portal-cupk-script-test",
+  "name": "CUPK 门户（脚本登录·全方式测试）",
+  "author": {
+    "name": "Genkaim",
+    "email": "genkaim@outlook.com"
+  },
+  "baseUrl": "https://portal.cupk.edu.cn/portal",
+  "readerAdapter": "adapters/portal-cupk-script-test-reader.js",
+  "auth": {
+    "type": "script",
+    "loginUrl": "https://portal.cupk.edu.cn/portal/login",
+    "homePath": "/r/w?cmd=CLIENT_USER_HOME",
+    "successUrlPrefixes": [
+      "https://portal.cupk.edu.cn/portal/home"
+    ],
+    "sessionCookieHosts": [
+      "portal.cupk.edu.cn"
+    ],
+    "sessionCookieNames": []
+  },
+  "monitor": {
+    "coursePagePath": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME",
+    "courseDataPathTemplate": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&semester={semesterId}",
+    "gradeDataPathTemplate": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME",
+    "examDataPathTemplate": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME",
+    "semesterIdPatterns": ["cmd=([A-Z_]+)"],
+    "studentIdPatterns": ["id=\"userName\"[^>]*>\\s*([^<\\s]+)"]
+  },
+  "groups": [
+    {
+      "title": "门户功能",
+      "items": [
+        {
+          "title": "融合门户首页",
+          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME",
+          "quick": true,
+          "nativeType": "schedule"
+        },
+        {
+          "title": "服务大厅",
+          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=SERVICE_HALL",
+          "quick": true,
+          "nativeType": "grade"
+        },
+        {
+          "title": "通知公告",
+          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=NOTICE",
+          "quick": true,
+          "nativeType": "exam"
+        },
+        {
+          "title": "个人中心",
+          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=USER_CENTER",
+          "quick": true,
+          "nativeType": "program"
+        }
+      ]
+    }
+  ],
+  "readerConfig": {
+    "scheduleProfiles": [
+      {
+        "locationPattern": "",
+        "unitTimes": {
+          "1": ["08:00", "08:45"],
+          "2": ["08:55", "09:40"],
+          "3": ["10:00", "10:45"]
+        }
+      }
+    ]
+  }
+}
