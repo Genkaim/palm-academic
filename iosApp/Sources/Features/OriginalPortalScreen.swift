@@ -57,7 +57,24 @@ struct OriginalPortalScreen: View {
                 menuScript: makeMenuScript(),
                 isDark: state.isDark,
                 refreshToken: refreshToken,
-                onPhase: { phase = $0 }
+                onPhase: { newPhase in
+                    if newPhase == .sessionExpired && state.captchaRequired && state.definition?.auth?.isWebOnly != true {
+                        state.requireCaptchaReauthentication()
+                        dismiss()
+                    } else if newPhase == .sessionExpired && state.supportsSilentPasswordReauthentication {
+                        phase = .loading
+                        Task { @MainActor in
+                            let restored = await state.revalidateQuietlyPublic()
+                            if restored {
+                                refreshToken += 1
+                            } else {
+                                phase = .sessionExpired
+                            }
+                        }
+                    } else {
+                        phase = newPhase
+                    }
+                }
             )
             // Full bleed on every edge: the document background paints under the status bar and
             // behind the home indicator. The scroll view's own inset adjustment keeps the page
@@ -212,9 +229,8 @@ struct OriginalPortalScreen: View {
     /// only issues its session cookies once it has run its own bootstrap on this page, and a cold
     /// request straight to a subsection is bounced back to the login form.
     ///
-    /// The school file declares an `auth.homePath`, but `SchoolDefinition` does not decode that
-    /// block, so the path is the one the portal itself uses -- the same `/home` Android's
-    /// `PortalConfig.HOME` points at.
+    /// The school file's `auth.homePath` is authoritative. Absolute paths are kept as-is; relative
+    /// paths are resolved against the imported adapter's base URL, matching Android PortalConfig.
     private var homeURL: String {
         if let configured = state.definition?.auth?.homePath,
            !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -236,10 +252,8 @@ struct OriginalPortalScreen: View {
     ///
     /// This is a best-effort nicety, not the navigation mechanism, and it is written the way the
     /// portal's own menu is more likely to be marked up: every anchor that looks like a menu entry
-    /// is considered, not just one hard-coded class. Android's `OriginalPortalActivity` looks only
-    /// for `a.menu-item`, which is a guess about the portal's markup that was never verified -- and
-    /// matching on a class nothing renders is why the screen used to report "未在教务菜单中找到"
-    /// for items that were sitting right there in the menu.
+    /// is considered, not just one hard-coded class. Android follows the same broad menu/nav anchor
+    /// search and both clients fall back to the declared URL for imported portal implementations.
     ///
     /// `browsertab` is forced off so the result stays in this WebView, and the tap is dispatched as
     /// a real DOM click so the portal's own handler runs rather than a synthesised navigation.
@@ -324,6 +338,7 @@ private struct PortalWebView: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
         // The view is laid out edge to edge, and this lets the scroll view inset the document's
         // CONTENT for the status bar / nav bar itself while its background still paints under
@@ -346,9 +361,10 @@ private struct PortalWebView: UIViewRepresentable {
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
         webView.stopLoading()
         webView.navigationDelegate = nil
+        webView.uiDelegate = nil
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         /// The portal builds its menu asynchronously, so the first attempts routinely land before
         /// the item exists. Android retries three times on the same escalating delay.
         private static let maximumMenuAttempts = 3
@@ -365,6 +381,15 @@ private struct PortalWebView: UIViewRepresentable {
         /// menu search, and it is tracked by URL rather than by a flag because the portal may
         /// redirect `/home` to an equivalent URL with a different query.
         private var sessionURL: String = ""
+
+        private func canonicalURL(_ value: String) -> String? {
+            guard var components = URLComponents(string: value) else { return nil }
+            components.fragment = nil
+            while components.path.count > 1 && components.path.hasSuffix("/") {
+                components.path.removeLast()
+            }
+            return components.string
+        }
 
         init(parent: PortalWebView) {
             self.parent = parent
@@ -423,35 +448,63 @@ private struct PortalWebView: UIViewRepresentable {
                 parent.onPhase(.ready)
                 return
             }
+            if canonicalURL(parent.targetURL) == canonicalURL(sessionURL) {
+                menuNavigationStarted = true
+                parent.onPhase(.ready)
+                return
+            }
             attemptMenu(in: webView)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            guard !isBenignNavigationInterruption(error) else { return }
             retryWork?.cancel()
             parent.onPhase(.failed(error.localizedDescription))
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            guard !isBenignNavigationInterruption(error) else { return }
             retryWork?.cancel()
             parent.onPhase(.failed(error.localizedDescription))
         }
 
+        private func isBenignNavigationInterruption(_ error: Error) -> Bool {
+            let value = error as NSError
+            return value.code == NSURLErrorCancelled ||
+                (value.domain == WKError.errorDomain &&
+                    value.code == 102) // frameLoadInterruptedByPolicyChange (not exposed by older SDKs)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            if navigationAction.targetFrame == nil,
+               navigationAction.request.url?.scheme == "https" {
+                webView.load(navigationAction.request)
+            }
+            return nil
+        }
+
         private func attemptMenu(in webView: WKWebView) {
-            webView.evaluateJavaScript(parent.menuScript) { [weak self] value, _ in
-                guard let self else { return }
+            webView.evaluateJavaScript(parent.menuScript) { [weak self, weak webView] value, _ in
+                guard let self, let webView else { return }
                 if (value as? Bool) == true {
                     self.menuNavigationStarted = true
                     return
                 }
                 // The portal may still be rendering its menu, so retry on the same escalating
-                // delay as Android. Never replace this with a direct URL load: the requested
-                // behaviour is the portal's own native menu click, because its click handler owns
-                // the page shell, permission setup and route initialisation.
+                // delay as Android. Imported portals do not necessarily expose the fixed EAMS
+                // menu markup, so fall back to their declared URL after the retries are exhausted.
                 guard self.menuAttempts < Self.maximumMenuAttempts else {
-                    // Match Android: leave the untouched portal home visible when no menu node can
-                    // be matched. A direct deep link here would be precisely the path this screen
-                    // exists to avoid.
-                    self.parent.onPhase(.ready)
+                    guard let target = URL(string: self.parent.targetURL) else {
+                        self.parent.onPhase(.failed("页面地址无效"))
+                        return
+                    }
+                    self.menuNavigationStarted = true
+                    webView.load(URLRequest(url: target))
                     return
                 }
                 self.menuAttempts += 1

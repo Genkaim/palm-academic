@@ -245,7 +245,15 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         PortalNotificationPreferences.preferences(getApplication())
             .edit()
             .putBoolean(PortalPollWorker.KEY_AUTH_FAILURE_NOTIFIED, false)
+            .putBoolean(PortalPollWorker.KEY_CAPTCHA_REAUTH_REQUIRED, false)
             .apply()
+    }
+
+    fun prepareCaptchaReauthentication() {
+        loading = false
+        authenticated = false
+        error = "登录已过期，请输入验证码重新登录"
+        if (captchaRequired) refreshCaptcha()
     }
 }
 
@@ -256,13 +264,32 @@ class MainActivity : PortalActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val openedFromNotification = intent.getBooleanExtra(EXTRA_NOTIFICATION_ENTRY, false)
+        val preferences = PortalNotificationPreferences.preferences(this)
+        val requestedCaptchaReauthentication =
+            intent.getBooleanExtra(EXTRA_CAPTCHA_REAUTHENTICATION, false) ||
+                preferences.getBoolean(PortalPollWorker.KEY_CAPTCHA_REAUTH_REQUIRED, false)
+        val captchaReauthentication = requestedCaptchaReauthentication &&
+            model.captchaRequired && !model.webLoginOnly
+        if (requestedCaptchaReauthentication && !captchaReauthentication) {
+            preferences.edit()
+                .putBoolean(PortalPollWorker.KEY_CAPTCHA_REAUTH_REQUIRED, false)
+                .apply()
+        }
+        if (captchaReauthentication) {
+            preferences.edit()
+                .putBoolean(PortalPollWorker.KEY_CAPTCHA_REAUTH_REQUIRED, false)
+                .apply()
+            PortalSessionCoordinator.clear()
+            PortalHttp.clearSession()
+            model.prepareCaptchaReauthentication()
+        }
         if (openedFromNotification) {
             @Suppress("DEPRECATION")
             overridePendingTransition(R.anim.fade_in, R.anim.activity_stay)
         }
         useContinuousSystemBars()
         PortalPollWorker.ensureChannel(this)
-        val resumeExistingSession = PortalHttp.hasSessionCookie()
+        val resumeExistingSession = !captchaReauthentication && PortalHttp.hasSessionCookie()
         if (resumeExistingSession) {
             PortalSessionCoordinator.validate(application)
             openHome(
@@ -332,6 +359,7 @@ class MainActivity : PortalActivity() {
 
     companion object {
         const val EXTRA_NOTIFICATION_ENTRY = "notification_entry"
+        const val EXTRA_CAPTCHA_REAUTHENTICATION = "captcha_reauthentication"
     }
 }
 

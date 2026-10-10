@@ -327,6 +327,11 @@ struct MaterialPageScreen: View {
             },
             onSessionExpired: {
                 Task { @MainActor in
+                    if state.captchaRequired && state.definition?.auth?.isWebOnly != true {
+                        loadState = .sessionExpired
+                        state.requireCaptchaReauthentication()
+                        return
+                    }
                     // A trusted session that says "session expired" is almost always a cookie
                     // timeout, not a stolen credential. The reader is dropped back into its
                     // authenticating state and the app kicks off a quiet revalidation; only if

@@ -82,6 +82,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -161,6 +162,12 @@ class MaterialPortalActivity : PortalActivity() {
         setContent {
             PortalTheme {
                 var sessionExpired by remember { mutableStateOf(false) }
+                var silentReauthenticationPending by remember { mutableStateOf(false) }
+                var readerGeneration by remember { mutableIntStateOf(0) }
+                val coordinatorState by PortalSessionCoordinator.state.collectAsState()
+                val captchaReauthentication = remember {
+                    this@MaterialPortalActivity.requiresCaptchaReauthentication()
+                }
                 var readerResources by remember { mutableStateOf<MaterialReaderResources?>(null) }
                 var resourceError by remember { mutableStateOf<String?>(null) }
                 LaunchedEffect(Unit) {
@@ -183,18 +190,48 @@ class MaterialPortalActivity : PortalActivity() {
                         resourceError = throwable.message ?: "页面配置加载失败"
                     }
                 }
-                MaterialPortalContent(
-                    requestedTitle = requestedTitle,
-                    url = requestedUrl,
-                    initialPage = initialCachedPage,
-                    readerResources = readerResources,
-                    resourceError = resourceError,
-                    onBack = { finish() },
-                    onOpenLink = { title, url -> openLink(title, url) },
-                    onExport = ::exportSchedule,
-                    onSessionExpired = { sessionExpired = true }
-                )
-                if (sessionExpired) {
+                key(readerGeneration) {
+                    MaterialPortalContent(
+                        requestedTitle = requestedTitle,
+                        url = requestedUrl,
+                        initialPage = initialCachedPage,
+                        readerResources = readerResources,
+                        resourceError = resourceError,
+                        onBack = { finish() },
+                        onOpenLink = { title, url -> openLink(title, url) },
+                        onExport = ::exportSchedule,
+                        onSessionExpired = {
+                            if (this@MaterialPortalActivity.supportsSilentPasswordReauthentication()) {
+                                silentReauthenticationPending = true
+                                PortalSessionCoordinator.validate(application, force = true)
+                            } else {
+                                sessionExpired = true
+                            }
+                        }
+                    )
+                }
+                LaunchedEffect(coordinatorState, silentReauthenticationPending) {
+                    if (!silentReauthenticationPending) return@LaunchedEffect
+                    when (coordinatorState) {
+                        PortalSessionState.Ready -> {
+                            silentReauthenticationPending = false
+                            readerGeneration++
+                        }
+                        PortalSessionState.Expired, PortalSessionState.NoSession -> {
+                            silentReauthenticationPending = false
+                            sessionExpired = true
+                        }
+                        else -> Unit
+                    }
+                }
+                LaunchedEffect(sessionExpired, captchaReauthentication) {
+                    if (sessionExpired && captchaReauthentication) {
+                        this@MaterialPortalActivity.markCaptchaReauthenticationRequired()
+                        PortalSessionCoordinator.clear()
+                        PortalHttp.clearSession { runOnUiThread { returnToLogin(true) } }
+                    }
+                }
+                if (sessionExpired && !captchaReauthentication) {
                     AlertDialog(
                         onDismissRequest = {},
                         title = { Text("登录状态已失效") },
@@ -202,7 +239,7 @@ class MaterialPortalActivity : PortalActivity() {
                         confirmButton = {
                             Button(onClick = {
                                 PortalSessionCoordinator.clear()
-                                PortalHttp.clearSession { runOnUiThread(::returnToLogin) }
+                                PortalHttp.clearSession { runOnUiThread { returnToLogin() } }
                             }) { Text("重新登录") }
                         }
                     )
@@ -236,10 +273,11 @@ class MaterialPortalActivity : PortalActivity() {
         )
     }
 
-    private fun returnToLogin() {
+    private fun returnToLogin(captchaRequired: Boolean = false) {
         startActivity(
             Intent(this, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                .putExtra(MainActivity.EXTRA_CAPTCHA_REAUTHENTICATION, captchaRequired)
         )
         finish()
     }

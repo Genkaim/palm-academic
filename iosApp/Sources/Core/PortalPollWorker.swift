@@ -12,9 +12,9 @@ import UserNotifications
 /// multi-MB regex/JSON parsing over them. Doing that work on the main actor (an earlier build)
 /// froze the UI long enough for the system watchdog to kill the app -- this is what made
 /// "立即检查" crash. All heavy work runs on the generic executor; the few reads/writes that touch
-/// main-actor UI state (NotificationPreferences, SchoolCatalog) are explicit hops. The singleton
-/// holds no mutable state of its own, hence `@unchecked Sendable`.
-final class PortalPollWorker: @unchecked Sendable {
+/// main-actor UI state (NotificationPreferences, SchoolCatalog) are explicit hops. Actor isolation
+/// serializes manual, foreground and background runs so snapshot writes cannot overlap.
+actor PortalPollWorker {
     static let shared = PortalPollWorker()
 
     /// Same scheduler-facing result Android's `PortalPollEngine` returns. A changed page and a
@@ -119,15 +119,26 @@ final class PortalPollWorker: @unchecked Sendable {
     private func performCheck(prefs: PrefsSnapshot) async throws -> PollOutcome {
         var details: [PortalPollHistoryDetail] = []
 
-        guard await MainActor.run(body: { PortalHTTP.hasSessionCookie }) else {
-            let notified = await notifyAuthenticationFailure()
-            details.append(PortalPollHistoryDetail(
-                category: "登录状态",
-                summary: "登录 Cookie 不存在",
-                notificationTriggered: notified,
-                technicalDetails: "PortalHTTP.hasSessionCookie 返回 false。"
-            ))
-            return PollOutcome(status: "登录已过期", details: details)
+        if !(await MainActor.run(body: { PortalHTTP.hasSessionCookie })) {
+            if await usesSilentPasswordReauthentication() {
+                guard await attemptSilentPasswordReauthentication() else {
+                    details.append(PortalPollHistoryDetail(
+                        category: "登录状态",
+                        summary: "正在静默重试密码登录",
+                        technicalDetails: "无验证码密码登录未完成，将在下一次后台机会继续重试。"
+                    ))
+                    return PollOutcome(status: "正在重新登录", details: details, shouldRetry: true)
+                }
+            } else {
+                let notified = await notifyAuthenticationFailure()
+                details.append(PortalPollHistoryDetail(
+                    category: "登录状态",
+                    summary: "登录 Cookie 不存在",
+                    notificationTriggered: notified,
+                    technicalDetails: "PortalHTTP.hasSessionCookie 返回 false。"
+                ))
+                return PollOutcome(status: "登录已过期", details: details)
+            }
         }
 
         // SchoolCatalog is main-actor isolated; hop over once and carry the Sendable definition
@@ -153,6 +164,13 @@ final class PortalPollWorker: @unchecked Sendable {
         let coursePage = await get(coursePageURL)
 
         if coursePage.isAuthenticationFailure {
+            if let retryDetail = await prepareSilentPasswordRetry(
+                reason: "课表页面返回登录页或未授权状态"
+            ) {
+                details.append(coursePage.historyDetail(category: "课表", summary: "登录状态失效"))
+                details.append(retryDetail)
+                return PollOutcome(status: "正在重新登录", details: details, shouldRetry: true)
+            }
             let notified = await notifyAuthenticationFailure()
             details.append(coursePage.historyDetail(category: "课表", summary: "登录状态失效"))
             details.append(PortalPollHistoryDetail(
@@ -195,6 +213,13 @@ final class PortalPollWorker: @unchecked Sendable {
             let url = monitor.courseDataURL(baseURL: school.baseUrl, semesterId: semester, studentId: student)
             let response = await get(url, referer: coursePage.finalURL, ajax: true)
             if response.isAuthenticationFailure {
+                if let retryDetail = await prepareSilentPasswordRetry(
+                    reason: "课表数据接口返回登录页或未授权状态"
+                ) {
+                    details.append(response.historyDetail(category: "课表", summary: "登录状态失效"))
+                    details.append(retryDetail)
+                    return PollOutcome(status: "正在重新登录", details: details, shouldRetry: true)
+                }
                 let notified = await notifyAuthenticationFailure()
                 details.append(response.historyDetail(category: "课表", summary: "登录状态失效"))
                 details.append(authenticationDetail(notified: notified, reason: "课表数据接口返回登录页或未授权状态"))
@@ -230,6 +255,13 @@ final class PortalPollWorker: @unchecked Sendable {
                 initialReferer: coursePage.finalURL
             )
             if response.isAuthenticationFailure {
+                if let retryDetail = await prepareSilentPasswordRetry(
+                    reason: "成绩页面返回登录页或未授权状态"
+                ) {
+                    details.append(response.historyDetail(category: "成绩", summary: "登录状态失效"))
+                    details.append(retryDetail)
+                    return PollOutcome(status: "正在重新登录", details: details, shouldRetry: true)
+                }
                 let notified = await notifyAuthenticationFailure()
                 details.append(response.historyDetail(category: "成绩", summary: "登录状态失效"))
                 details.append(authenticationDetail(notified: notified, reason: "成绩页面返回登录页或未授权状态"))
@@ -257,6 +289,13 @@ final class PortalPollWorker: @unchecked Sendable {
                 initialReferer: coursePage.finalURL
             )
             if response.isAuthenticationFailure {
+                if let retryDetail = await prepareSilentPasswordRetry(
+                    reason: "考试页面返回登录页或未授权状态"
+                ) {
+                    details.append(response.historyDetail(category: "考试", summary: "登录状态失效"))
+                    details.append(retryDetail)
+                    return PollOutcome(status: "正在重新登录", details: details, shouldRetry: true)
+                }
                 let notified = await notifyAuthenticationFailure()
                 details.append(response.historyDetail(category: "考试", summary: "登录状态失效"))
                 details.append(authenticationDetail(notified: notified, reason: "考试页面返回登录页或未授权状态"))
@@ -404,6 +443,14 @@ final class PortalPollWorker: @unchecked Sendable {
     // MARK: - Notifications
 
     private func notifyAuthenticationFailure() async -> Bool {
+        let requiresCaptcha = await MainActor.run {
+            guard let auth = SchoolCatalog.shared.loadDefinition()?.auth else { return false }
+            return auth.isWebOnly == false && auth.captcha?.required == true
+        }
+        guard requiresCaptcha else { return false }
+        await MainActor.run {
+            NotificationPreferences.shared.markCaptchaReauthenticationRequired()
+        }
         let shouldNotify = await MainActor.run {
             NotificationPreferences.shared.shouldNotifyAuthenticationFailure()
         }
@@ -411,9 +458,10 @@ final class PortalPollWorker: @unchecked Sendable {
         guard await notificationsAvailable() else { return false }
         let content = UNMutableNotificationContent()
         content.title = "登录已过期"
-        content.body = "掌上教务需要重新登录教务系统"
+        content.body = "请打开掌上教务，输入验证码后重新登录。"
         content.sound = .default
-        content.categoryIdentifier = PortalMonitor.notificationCategory
+        content.categoryIdentifier = "PORTAL_CHANGE"
+        content.userInfo = ["source": "captcha_reauthentication"]
         let request = UNNotificationRequest(
             identifier: "portal_auth_failure",
             content: content,
@@ -421,11 +469,48 @@ final class PortalPollWorker: @unchecked Sendable {
         )
         do {
             try await UNUserNotificationCenter.current().add(request)
-            await MainActor.run { NotificationPreferences.shared.markAuthenticationFailureNotified() }
+            await MainActor.run {
+                NotificationPreferences.shared.markAuthenticationFailureNotified()
+            }
             return true
         } catch {
             return false
         }
+    }
+
+    private func usesSilentPasswordReauthentication() async -> Bool {
+        await MainActor.run {
+            guard let auth = SchoolCatalog.shared.loadDefinition()?.auth else { return false }
+            return !auth.isWebOnly && auth.captcha?.required != true &&
+                CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID) != nil
+        }
+    }
+
+    private func attemptSilentPasswordReauthentication() async -> Bool {
+        await Task { @MainActor in
+            guard let credential = CredentialStore.load(
+                schoolID: SchoolCatalog.shared.selectedSchoolID
+            ) else { return false }
+            do {
+                try await AuthRepository().login(
+                    username: credential.username,
+                    password: credential.password
+                )
+                return true
+            } catch {
+                return false
+            }
+        }.value
+    }
+
+    private func prepareSilentPasswordRetry(reason: String) async -> PortalPollHistoryDetail? {
+        guard await usesSilentPasswordReauthentication() else { return nil }
+        let renewed = await attemptSilentPasswordReauthentication()
+        return PortalPollHistoryDetail(
+            category: "登录状态",
+            summary: renewed ? "已静默恢复密码登录" : "正在静默重试密码登录",
+            technicalDetails: "\(reason)；将在下一次检查中使用更新后的会话。"
+        )
     }
 
     private func authenticationDetail(notified: Bool, reason: String) -> PortalPollHistoryDetail {
@@ -444,7 +529,7 @@ final class PortalPollWorker: @unchecked Sendable {
         content.title = "\(category)有更新"
         content.body = summary
         content.sound = .default
-        content.categoryIdentifier = PortalMonitor.notificationCategory
+        content.categoryIdentifier = "PORTAL_CHANGE"
         content.userInfo = ["source": "portal_change"]
         let request = UNNotificationRequest(
             identifier: "portal_change_\(UUID().uuidString)",
@@ -733,6 +818,24 @@ enum PortalBackgroundScheduler {
             }
             _ = await PortalPollWorker.shared.run()
             NotificationPreferences.shared.reschedule()
+            foregroundCatchUp = nil
+        }
+    }
+
+    /// A fresh login first warms every declared redrawn page. Once that serial baseline is fully
+    /// committed, run the same automatic comparison engine once while the app is known to be
+    /// active. This closes the launch-order gap where applicationDidBecomeActive ran before login
+    /// and therefore skipped the catch-up forever until the next foreground activation.
+    static func runAfterBaselineEstablished() {
+        let preferences = NotificationPreferences.shared
+        guard foregroundCatchUp == nil,
+              preferences.monitorEnabled,
+              preferences.anyEnabled,
+              PortalHTTP.hasSessionCookie
+        else { return }
+        foregroundCatchUp = Task {
+            _ = await PortalPollWorker.shared.run()
+            preferences.reschedule()
             foregroundCatchUp = nil
         }
     }

@@ -414,12 +414,20 @@ struct MaterialReaderView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            guard !isBenignNavigationInterruption(error) else { return }
             handleFailure(in: webView, error: error)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            guard (error as NSError).code != NSURLErrorCancelled else { return }
+            guard !isBenignNavigationInterruption(error) else { return }
             handleFailure(in: webView, error: error)
+        }
+
+        private func isBenignNavigationInterruption(_ error: Error) -> Bool {
+            let value = error as NSError
+            return value.code == NSURLErrorCancelled ||
+                (value.domain == WKError.errorDomain &&
+                    value.code == 102) // frameLoadInterruptedByPolicyChange (not exposed by older SDKs)
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

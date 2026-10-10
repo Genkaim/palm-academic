@@ -38,6 +38,16 @@ class OriginalPortalActivity : PortalActivity() {
     private var sessionDialogShown = false
     private var nativeNavigationStarted = false
     private var initialLoadStarted = false
+    private var silentReauthenticationPending = false
+
+    private fun samePortalLocation(first: String, second: String): Boolean = runCatching {
+        val left = android.net.Uri.parse(first)
+        val right = android.net.Uri.parse(second)
+        left.scheme.equals(right.scheme, true) &&
+            left.host.equals(right.host, true) &&
+            left.path.orEmpty().trimEnd('/') == right.path.orEmpty().trimEnd('/') &&
+            left.query.orEmpty() == right.query.orEmpty()
+    }.getOrDefault(false)
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,6 +91,8 @@ class OriginalPortalActivity : PortalActivity() {
             settings.setSupportZoom(true)
             settings.builtInZoomControls = true
             settings.displayZoomControls = false
+            settings.javaScriptCanOpenWindowsAutomatically = true
+            settings.setSupportMultipleWindows(false)
             settings.layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
             configurePortalWebDarkening(settings, darkTheme)
         }
@@ -199,8 +211,14 @@ class OriginalPortalActivity : PortalActivity() {
                 } else {
                     PortalSessionStore.captureFromWebView()
                     PortalSessionCoordinator.markAuthenticated()
-                    if (!nativeNavigationStarted && url?.startsWith(PortalConfig.HOME) == true) {
-                        openThroughPortalMenu(view, title, this@OriginalPortalActivity.intent.getStringExtra(MaterialPortalActivity.EXTRA_URL).orEmpty())
+                    val targetUrl = this@OriginalPortalActivity.intent
+                        .getStringExtra(MaterialPortalActivity.EXTRA_URL).orEmpty()
+                    if (!nativeNavigationStarted && url != null && samePortalLocation(url, PortalConfig.HOME)) {
+                        if (samePortalLocation(targetUrl, PortalConfig.HOME)) {
+                            nativeNavigationStarted = true
+                        } else {
+                            openThroughPortalMenu(view, title, targetUrl)
+                        }
                     }
                 }
             }
@@ -213,10 +231,20 @@ class OriginalPortalActivity : PortalActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PortalSessionCoordinator.state.collect { state ->
                     when (state) {
-                        PortalSessionState.Checking -> startInitialLoad()
-                        PortalSessionState.Ready -> startInitialLoad()
+                        PortalSessionState.Checking -> if (!silentReauthenticationPending) startInitialLoad()
+                        PortalSessionState.Ready -> {
+                            if (silentReauthenticationPending) {
+                                silentReauthenticationPending = false
+                                initialLoadStarted = false
+                                nativeNavigationStarted = false
+                            }
+                            startInitialLoad()
+                        }
                         is PortalSessionState.Unavailable -> startInitialLoad()
-                        PortalSessionState.Expired, PortalSessionState.NoSession -> showExpiredSessionDialog()
+                        PortalSessionState.Expired, PortalSessionState.NoSession -> {
+                            silentReauthenticationPending = false
+                            showExpiredSessionDialog()
+                        }
                     }
                 }
             }
@@ -240,7 +268,12 @@ class OriginalPortalActivity : PortalActivity() {
               var target = ${JSONObject.quote(targetUrl)};
               var targetPath = new URL(target).pathname;
               var normalize = function(value) { return (value || '').replace(/\s+/g, ' ').trim(); };
-              var menuItems = Array.from(document.querySelectorAll('a.menu-item'));
+              var links = Array.from(document.querySelectorAll('a[href]'));
+              var menuItems = links.filter(function(node) {
+                return !!node.closest('nav, .menu, .sidebar, [class*="menu"], [class*="nav"], [role="navigation"]') ||
+                  /menu|nav/i.test(node.className || '');
+              });
+              if (menuItems.length === 0) menuItems = links;
               var candidate = menuItems.find(function(node) {
                 return normalize(node.getAttribute('data-text') || node.textContent) === title;
               });
@@ -272,11 +305,7 @@ class OriginalPortalActivity : PortalActivity() {
                     openThroughPortalMenu(view, title, targetUrl, attempt + 1)
                 } else {
                     nativeNavigationStarted = true
-                    Toast.makeText(
-                        this@OriginalPortalActivity,
-                        "未在教务菜单中找到“$title”，已停留在教务首页",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    view.loadUrl(targetUrl)
                 }
             }
         }, if (attempt == 0) 300L else 650L)
@@ -284,7 +313,27 @@ class OriginalPortalActivity : PortalActivity() {
 
     private fun showExpiredSessionDialog() {
         if (sessionDialogShown || isFinishing || isDestroyed) return
+        if (supportsSilentPasswordReauthentication() && PortalHttp.hasSessionCookie()) {
+            silentReauthenticationPending = true
+            PortalSessionCoordinator.validate(application, force = true)
+            return
+        }
         sessionDialogShown = true
+        if (requiresCaptchaReauthentication()) {
+            markCaptchaReauthenticationRequired()
+            PortalSessionCoordinator.clear()
+            PortalHttp.clearSession {
+                runOnUiThread {
+                    startActivity(
+                        Intent(this, MainActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                            .putExtra(MainActivity.EXTRA_CAPTCHA_REAUTHENTICATION, true)
+                    )
+                    finish()
+                }
+            }
+            return
+        }
         AlertDialog.Builder(this)
             .setTitle("登录状态已失效")
             .setMessage("教务系统登录状态已过期或账号凭据已变更，请重新登录。")

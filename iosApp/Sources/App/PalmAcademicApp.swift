@@ -33,6 +33,9 @@ private struct AppRoot: View {
             .onAppear { state.resolveTheme(with: systemScheme) }
             .onChange(of: systemScheme) { scheme in state.resolveTheme(with: scheme) }
             .onChange(of: state.themeMode) { _ in state.resolveTheme(with: systemScheme) }
+            .onReceive(NotificationCenter.default.publisher(for: .portalCaptchaReauthenticationRequested)) { _ in
+                state.requireCaptchaReauthentication()
+            }
     }
 }
 
@@ -122,8 +125,17 @@ final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelega
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        if response.notification.request.content.userInfo["source"] as? String == "captcha_reauthentication" {
+            NotificationCenter.default.post(name: .portalCaptchaReauthenticationRequested, object: nil)
+        }
         completionHandler()
     }
+}
+
+extension Notification.Name {
+    static let portalCaptchaReauthenticationRequested = Notification.Name(
+        "portalCaptchaReauthenticationRequested"
+    )
 }
 
 struct RootView: View {

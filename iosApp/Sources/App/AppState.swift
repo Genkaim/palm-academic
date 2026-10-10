@@ -87,6 +87,10 @@ final class AppState: ObservableObject {
     var definition: SchoolDefinition? { SchoolCatalog.shared.definition }
     var isSignedIn: Bool { phase == .signedIn }
     var captchaRequired: Bool { definition?.auth?.captcha?.required == true }
+    var supportsSilentPasswordReauthentication: Bool {
+        definition?.auth?.isWebOnly != true && !captchaRequired &&
+            CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID) != nil
+    }
 
     func refreshCaptchaIfNeeded() async {
         guard captchaRequired, phase != .signedIn else {
@@ -133,6 +137,11 @@ final class AppState: ObservableObject {
         isDark = ThemePreferences.shared.mode == .dark
         SessionStore.shared.restoreToCookieStorage()
 
+        if captchaRequired && NotificationPreferences.shared.captchaReauthenticationRequired {
+            requireCaptchaReauthentication()
+            return
+        }
+
         // Ask while the school is known and before any page has been loaded. Two things hang on the
         // timing: the system raises its local-network prompt when something reaches for a campus
         // address and raises it at most once per install, so reaching early is what gets the
@@ -155,6 +164,12 @@ final class AppState: ObservableObject {
 
         switch await auth.validateSession() {
         case .expired:
+            if supportsSilentPasswordReauthentication {
+                sessionNotice = "正在重新登录…"
+                sessionStatus = .checking
+                Task { await revalidateQuietly() }
+                return
+            }
             // A previously-trusted session that no longer answers is almost always a slow campus
             // network, not stolen credentials. Kick off a quiet retry loop instead of throwing the
             // user back to the login form.
@@ -181,8 +196,10 @@ final class AppState: ObservableObject {
 ///
 /// A retry is only worth doing while the user is still trusting this session. The badge stays
 /// hidden on success, so a healthy network reads as "nothing happened".
-func revalidateQuietlyPublic() async {
+@discardableResult
+func revalidateQuietlyPublic() async -> Bool {
         await revalidateQuietly()
+        return phase == .signedIn && sessionStatus == .hidden
     }
 
 private func revalidateQuietly() async {
@@ -214,6 +231,10 @@ private func revalidateQuietly() async {
                 return
             case .expired:
                 guard revision == sessionRevision else { return }
+                if supportsSilentPasswordReauthentication {
+                    await reauthenticatePasswordQuietly(revision: revision)
+                    return
+                }
                 // Server says no. Stopping the loop is the right call here -- retrying will not
                 // change a real expired-session answer -- but a previously-trusted user still does
                 // not get kicked out: the badge stays visible with a retry action so they can
@@ -227,6 +248,36 @@ private func revalidateQuietly() async {
         }
         guard revision == sessionRevision else { return }
         sessionStatus = .unavailable("网络较慢，或当前网络无法访问教务系统")
+    }
+
+    private func reauthenticatePasswordQuietly(revision: Int) async {
+        guard supportsSilentPasswordReauthentication,
+              let credential = CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID)
+        else {
+            sessionStatus = .unavailable("登录已过期，未保存可用于自动重登的密码")
+            return
+        }
+        var attempt = 0
+        while revision == sessionRevision && !Task.isCancelled {
+            do {
+                try await auth.login(username: credential.username, password: credential.password)
+                guard revision == sessionRevision else { return }
+                onAuthenticationCompleted(freshLogin: false)
+                SessionRefreshBus.shared.bump()
+                return
+            } catch PortalError.loginRejected {
+                sessionNotice = "自动登录失败"
+                sessionStatus = .unavailable("密码已失效，点击重试登录")
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                attempt += 1
+                sessionNotice = "正在重新登录（第 \(attempt) 次）…"
+                let delay = UInt64([1, 2, 4, 8, 16][min(attempt - 1, 4)]) * 1_000_000_000
+                try? await Task.sleep(nanoseconds: delay)
+            }
+        }
     }
 
     /// Asks once whether the portal is reachable, so a refused local-network connection is visible
@@ -250,7 +301,10 @@ private func revalidateQuietly() async {
             sessionNotice = nil
             onAuthenticationCompleted(freshLogin: false)
         case .expired:
-            if sessionTrusted {
+            if supportsSilentPasswordReauthentication {
+                sessionNotice = "正在重新登录…"
+                Task { await reauthenticatePasswordQuietly(revision: sessionRevision) }
+            } else if sessionTrusted {
                 sessionNotice = "登录状态已失效"
                 sessionStatus = .unavailable("登录已过期，点击重试登录")
             } else {
@@ -385,6 +439,13 @@ private func revalidateQuietly() async {
         searchQuery = ""
         selectedTab = .home
         phase = .signedOut
+    }
+
+    func requireCaptchaReauthentication() {
+        guard captchaRequired, definition?.auth?.isWebOnly != true else { return }
+        NotificationPreferences.shared.markCaptchaReauthenticationRequired()
+        signOut(message: "登录已过期，请输入验证码重新登录")
+        Task { await refreshCaptchaIfNeeded() }
     }
 
     // MARK: - Search

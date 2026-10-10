@@ -2,7 +2,7 @@ package cn.edu.cupk.portalreader
 
 import android.content.Context
 
-/** Tracks the four-page warm-up requested by an actual successful login. */
+/** Tracks the declared quick-page warm-up requested by an actual successful login. */
 internal object QuickEntryBaseline {
     private const val PREFERENCES = "quick_entry_baseline"
     private const val KEY_PENDING_SCHOOL = "pending_school"
@@ -22,17 +22,18 @@ internal object QuickEntryBaseline {
     fun recordAndComplete(
         context: Context,
         schoolId: String,
-        snapshots: List<QuickEntryBaselineSnapshot>
+        snapshots: List<QuickEntryBaselineSnapshot>,
+        expectedCount: Int
     ) {
         val preferences = context.applicationContext
             .getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
         if (preferences.getString(KEY_PENDING_SCHOOL, null) != schoolId) return
-        if (snapshots.size != 4) return
+        if (expectedCount <= 0 || snapshots.size != expectedCount) return
         PortalPollHistory.append(
             context.applicationContext,
             PortalPollHistoryEntry(
                 timestamp = System.currentTimeMillis(),
-                status = "首次登录基线已建立（4 项）",
+                status = "首次登录基线已建立（$expectedCount 项）",
                 notificationTriggered = false,
                 details = snapshots.map { snapshot ->
                     PortalPollHistoryDetail(

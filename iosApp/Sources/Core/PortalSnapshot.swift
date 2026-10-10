@@ -599,7 +599,11 @@ enum QuickEntryBaseline {
         UserDefaults.standard.string(forKey: pendingSchoolKey) == schoolID
     }
 
-    static func complete(schoolID: String, snapshots: [(item: PortalItem, json: String)]) {
+    static func complete(
+        schoolID: String,
+        snapshots: [(item: PortalItem, json: String)],
+        expectedCount: Int
+    ) {
         let pendingSchool = UserDefaults.standard.string(forKey: pendingSchoolKey)
         guard pendingSchool == schoolID else {
             NSLog(
@@ -608,11 +612,11 @@ enum QuickEntryBaseline {
             )
             return
         }
-        // Android completes this warm-up only after all four native entries have published real
+        // Android completes this warm-up only after every declared native entry has published real
         // data. A partial cache must stay pending, otherwise the missing page can be mistaken for
         // a legitimate empty baseline by the first background comparison.
-        guard snapshots.count == 4 else {
-            NSLog("PalmAcademic/baseline: complete ignored, only %d/4 snapshots", snapshots.count)
+        guard expectedCount > 0, snapshots.count == expectedCount else {
+            NSLog("PalmAcademic/baseline: complete ignored, only %d/%d snapshots", snapshots.count, expectedCount)
             return
         }
         // Seed the exact business keys read by PortalPollWorker. Earlier builds only wrote a log
@@ -638,10 +642,10 @@ enum QuickEntryBaseline {
             }
         }
 
-        NSLog("PalmAcademic/baseline: recording 首次登录基线已建立（4 项） history entry")
+        NSLog("PalmAcademic/baseline: recording %d-item initial baseline history entry", expectedCount)
         PortalPollHistory.append(PortalPollHistoryEntry(
             timestamp: Date(),
-            status: "首次登录基线已建立（4 项）",
+            status: "首次登录基线已建立（\(expectedCount) 项）",
             notificationTriggered: false,
             details: snapshots.map { snapshot in
                 let rows = PortalLogDetails.rows(
@@ -663,6 +667,9 @@ enum QuickEntryBaseline {
         ))
         UserDefaults.standard.removeObject(forKey: pendingSchoolKey)
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: preferencesKey)
+        Task { @MainActor in
+            PortalBackgroundScheduler.runAfterBaselineEstablished()
+        }
     }
 
     static func category(for nativeType: String?) -> String {

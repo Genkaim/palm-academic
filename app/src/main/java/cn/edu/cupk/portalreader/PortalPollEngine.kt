@@ -56,7 +56,29 @@ internal class PortalPollEngine(private val appContext: Context) {
             )
             return PollRunResult(started = true, status = status, shouldRetry = retry, triggeredNotification = triggered)
         }
+        suspend fun prepareSilentPasswordRetry(reason: String): Boolean {
+            if (!usesSilentPasswordReauthentication()) return false
+            val renewed = attemptSilentPasswordReauthentication()
+            details += PortalPollHistoryDetail(
+                category = "登录状态",
+                summary = if (renewed) "已静默恢复密码登录" else "正在静默重试密码登录",
+                technicalDetails = "$reason；将在下一次检查中使用更新后的会话。"
+            )
+            return true
+        }
         if (!PortalHttp.hasSessionCookie()) {
+            if (usesSilentPasswordReauthentication()) {
+                if (attemptSilentPasswordReauthentication()) {
+                    // Continue this same comparison pass with the renewed cookie jar.
+                } else {
+                    details += PortalPollHistoryDetail(
+                        category = "登录状态",
+                        summary = "正在静默重试密码登录",
+                        technicalDetails = "无验证码密码登录未完成，将由后台任务继续重试。"
+                    )
+                    return@withContext finish("正在重新登录", retry = true)
+                }
+            } else {
             val notified = notifyAuthenticationFailure(preferences)
             details += PortalPollHistoryDetail(
                 category = "登录状态",
@@ -65,6 +87,7 @@ internal class PortalPollEngine(private val appContext: Context) {
                 notificationTriggered = notified
             )
             return@withContext finish("登录已过期")
+            }
         }
         runCatching {
             val school = SchoolAdapterRepository.load(appContext)
@@ -82,6 +105,10 @@ internal class PortalPollEngine(private val appContext: Context) {
             )
             val coursePage = get(school.monitor.coursePageUrl(school.baseUrl))
             if (coursePage.isAuthenticationFailure()) {
+                if (prepareSilentPasswordRetry("课表页面返回登录页或未授权状态")) {
+                    details += coursePage.toHistoryDetail("课表", "登录状态失效")
+                    return@withContext finish("正在重新登录", retry = true)
+                }
                 val notified = notifyAuthenticationFailure(preferences)
                 details += coursePage.toHistoryDetail("课表", "登录状态失效")
                 details += authenticationDetail(notified, "课表页面返回登录页或未授权状态")
@@ -137,6 +164,10 @@ internal class PortalPollEngine(private val appContext: Context) {
                     ajax = true
                 )
                 if (courseData.isAuthenticationFailure()) {
+                    if (prepareSilentPasswordRetry("课表数据接口返回登录页或未授权状态")) {
+                        details += combinedCourseDetail(courseData, "登录状态失效")
+                        return@withContext finish("正在重新登录", retry = true)
+                    }
                     val notified = notifyAuthenticationFailure(preferences)
                     details += combinedCourseDetail(
                         courseData, "登录状态失效"
@@ -183,6 +214,10 @@ internal class PortalPollEngine(private val appContext: Context) {
                     initialReferer = coursePage.finalUrl
                 )
                 if (gradeData.isAuthenticationFailure()) {
+                    if (prepareSilentPasswordRetry("成绩页面返回登录页或未授权状态")) {
+                        details += gradeData.toHistoryDetail("成绩", "登录状态失效")
+                        return@withContext finish("正在重新登录", retry = true)
+                    }
                     val notified = notifyAuthenticationFailure(preferences)
                     details += gradeData.toHistoryDetail("成绩", "登录状态失效")
                     details += authenticationDetail(notified, "成绩页面返回登录页或未授权状态")
@@ -213,6 +248,10 @@ internal class PortalPollEngine(private val appContext: Context) {
                     initialReferer = coursePage.finalUrl
                 )
                 if (examData.isAuthenticationFailure()) {
+                    if (prepareSilentPasswordRetry("考试页面返回登录页或未授权状态")) {
+                        details += examData.toHistoryDetail("考试", "登录状态失效")
+                        return@withContext finish("正在重新登录", retry = true)
+                    }
                     val notified = notifyAuthenticationFailure(preferences)
                     details += examData.toHistoryDetail("考试", "登录状态失效")
                     details += authenticationDetail(notified, "考试页面返回登录页或未授权状态")
@@ -518,12 +557,27 @@ internal class PortalPollEngine(private val appContext: Context) {
     }
 
     private fun notifyAuthenticationFailure(preferences: android.content.SharedPreferences): Boolean {
+        val auth = runCatching { SchoolAdapterRepository.load(appContext).auth }.getOrNull()
+        if (auth == null || auth.webOnly || !auth.captcha.required) return false
         if (preferences.getBoolean(PortalPollWorker.KEY_AUTH_FAILURE_NOTIFIED, false)) return false
-        if (notify(3003, "教务登录已过期", "请打开掌上教务重新登录，以继续后台通知检测。")) {
+        preferences.edit()
+            .putBoolean(PortalPollWorker.KEY_CAPTCHA_REAUTH_REQUIRED, true)
+            .apply()
+        if (notify(3003, "教务登录已过期", "请打开掌上教务，输入验证码后重新登录。")) {
             preferences.edit().putBoolean(PortalPollWorker.KEY_AUTH_FAILURE_NOTIFIED, true).apply()
             return true
         }
         return false
+    }
+
+    private fun usesSilentPasswordReauthentication(): Boolean {
+        val auth = runCatching { SchoolAdapterRepository.load(appContext).auth }.getOrNull() ?: return false
+        return !auth.webOnly && !auth.captcha.required && PasswordCredentialStore.load(appContext) != null
+    }
+
+    private suspend fun attemptSilentPasswordReauthentication(): Boolean {
+        val credential = PasswordCredentialStore.load(appContext) ?: return false
+        return AuthRepository().login(credential.username, credential.password).isSuccess
     }
 
     private fun notify(id: Int, title: String, text: String): Boolean {
@@ -537,6 +591,7 @@ internal class PortalPollEngine(private val appContext: Context) {
         val intent = Intent(appContext, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(MainActivity.EXTRA_NOTIFICATION_ENTRY, true)
+            if (id == 3003) putExtra(MainActivity.EXTRA_CAPTCHA_REAUTHENTICATION, true)
         }
         val pendingIntent = PendingIntent.getActivity(
             appContext, id, intent,

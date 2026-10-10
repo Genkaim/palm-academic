@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 sealed interface PortalSessionState {
     data object NoSession : PortalSessionState
@@ -69,8 +71,31 @@ object PortalSessionCoordinator {
             when (AuthRepository().validateSession()) {
                 SessionValidation.VALID -> _state.value = PortalSessionState.Ready
                 SessionValidation.EXPIRED -> {
-                    PortalHttp.clearSession()
-                    _state.value = PortalSessionState.Expired
+                    val auth = runCatching { SchoolAdapterRepository.load(application).auth }.getOrNull()
+                    val credential = PasswordCredentialStore.load(application)
+                    if (auth != null && !auth.webOnly && !auth.captcha.required && credential != null) {
+                        // A password-only adapter can renew without user interaction. Stay in the
+                        // checking state and keep the established retry behaviour; captcha and web
+                        // adapters are deliberately excluded from this branch.
+                        var attempt = 0
+                        while (isActive) {
+                            val result = AuthRepository().login(credential.username, credential.password)
+                            if (result.isSuccess) {
+                                _state.value = PortalSessionState.Ready
+                                return@launch
+                            }
+                            if (result.exceptionOrNull() is LoginRejectedException) {
+                                PortalHttp.clearSession()
+                                _state.value = PortalSessionState.Expired
+                                return@launch
+                            }
+                            attempt++
+                            delay((1000L shl minOf(attempt - 1, 4)))
+                        }
+                    } else {
+                        PortalHttp.clearSession()
+                        _state.value = PortalSessionState.Expired
+                    }
                 }
                 SessionValidation.UNAVAILABLE -> {
                     _state.value = PortalSessionState.Unavailable("网络较慢，或当前网络无法访问教务系统")

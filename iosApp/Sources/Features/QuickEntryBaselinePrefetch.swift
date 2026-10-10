@@ -131,7 +131,8 @@ struct QuickEntryBaselinePrefetch: View {
                 NSLog("PalmAcademic/baseline: all %d entries captured, recording baseline", collected.count)
                 QuickEntryBaseline.complete(
                     schoolID: schoolID,
-                    snapshots: collected.map { ($0.item, $0.json) }
+                    snapshots: collected.map { ($0.item, $0.json) },
+                    expectedCount: items.count
                 )
             } else {
                 // The common reason "首次基线没有日志": one entry never produced data within its
@@ -203,6 +204,7 @@ struct QuickEntryBaselinePrefetch: View {
             },
             onDiagnostic: { _ in }
         )
+        .id(item.url(baseURL: definition?.baseUrl ?? SchoolCatalog.shared.baseURL))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .opacity(0.01)
         .allowsHitTesting(false)

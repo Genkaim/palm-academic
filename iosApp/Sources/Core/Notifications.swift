@@ -267,6 +267,7 @@ final class NotificationPreferences: ObservableObject {
         static let grade = "notify_grade"
         static let exam = "notify_exam"
         static let authFailureNotified = "auth_failure_notified"
+        static let captchaReauthenticationRequired = "captcha_reauthentication_required"
         static let interval = "interval"
         /// Builds before 0.4.6 defaulted the master worker switch to false, unlike Android, so a
         /// user could enable all three categories and still never enqueue a background job.
@@ -308,6 +309,7 @@ final class NotificationPreferences: ObservableObject {
 
     func clearAuthenticationFailureMarker() {
         defaults.set(false, forKey: Key.authFailureNotified)
+        defaults.set(false, forKey: Key.captchaReauthenticationRequired)
     }
 
     func shouldNotifyAuthenticationFailure() -> Bool {
@@ -316,6 +318,14 @@ final class NotificationPreferences: ObservableObject {
 
     func markAuthenticationFailureNotified() {
         defaults.set(true, forKey: Key.authFailureNotified)
+    }
+
+    var captchaReauthenticationRequired: Bool {
+        defaults.bool(forKey: Key.captchaReauthenticationRequired)
+    }
+
+    func markCaptchaReauthenticationRequired() {
+        defaults.set(true, forKey: Key.captchaReauthenticationRequired)
     }
 
     // MARK: - Snapshots
@@ -344,6 +354,7 @@ final class NotificationPreferences: ObservableObject {
             "exam_parsed_json_v2", "exam_raw_v1"
         ].forEach { defaults.removeObject(forKey: $0) }
         defaults.set(false, forKey: Key.authFailureNotified)
+        defaults.set(false, forKey: Key.captchaReauthenticationRequired)
     }
 
     // MARK: - Scheduling

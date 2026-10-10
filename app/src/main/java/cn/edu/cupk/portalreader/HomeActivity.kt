@@ -106,6 +106,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
@@ -236,11 +237,14 @@ class HomeActivity : PortalActivity() {
     }
 
     private fun returnToLogin() {
+        val captchaRequired = requiresCaptchaReauthentication()
+        if (captchaRequired) markCaptchaReauthenticationRequired()
         PortalHttp.clearSession()
         PortalSessionCoordinator.clear()
         startActivity(
             Intent(this, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                .putExtra(MainActivity.EXTRA_CAPTCHA_REAUTHENTICATION, captchaRequired)
         )
         finish()
     }
@@ -325,9 +329,7 @@ private fun HomeContent(
     val visibleGroups = remember(query, school) {
         school.groups.mapNotNull { group ->
             val items = group.items.filter { item ->
-                !item.quick && (
-                    query.isBlank() || item.title.contains(query.trim(), ignoreCase = true)
-                )
+                query.isBlank() || item.title.contains(query.trim(), ignoreCase = true)
             }
             if (items.isEmpty()) null else PortalGroup(group.title, items)
         }
@@ -990,11 +992,12 @@ private fun QuickEntryBaselinePrefetch(
             val updatedSnapshots = snapshot?.let { snapshots + it } ?: snapshots
             val anyFailure = previousFailure || snapshot == null
             if (itemIndex == items.lastIndex) {
-                if (!anyFailure && items.size == 4) {
+                if (!anyFailure && updatedSnapshots.size == items.size) {
                     QuickEntryBaseline.recordAndComplete(
                         context = context,
                         schoolId = school.id,
-                        snapshots = updatedSnapshots
+                        snapshots = updatedSnapshots,
+                        expectedCount = items.size
                     )
                 }
                 pending = false
@@ -1156,7 +1159,8 @@ private fun QuickEntryCell(
         modifier = modifier
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = Arrangement.SpaceBetween,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(
             icon,
@@ -1164,17 +1168,25 @@ private fun QuickEntryCell(
             tint = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.size(24.dp)
         )
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             Text(
                 item.title,
                 fontWeight = FontWeight.SemiBold,
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
             )
             Text(
                 quickEntrySubtitle(item),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.labelSmall,
-                maxLines = 1
+                maxLines = 1,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }
