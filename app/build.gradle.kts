@@ -20,8 +20,8 @@ android {
         applicationId = "cn.edu.cupk.portalreader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 30
-        versionName = "0.4.7"
+        versionCode = 31
+        versionName = "0.4.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

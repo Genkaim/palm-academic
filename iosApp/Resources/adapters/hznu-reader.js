@@ -481,7 +481,7 @@
         dllt: 'generalLogin',
         lt: page.lt,
         execution: page.execution,
-        rememberMe: checks.rememberCredential ? 'true' : 'false'
+        rememberMe: checks.remember7Days ? 'true' : 'false'
       }
     });
     if (isSuccess(resp)) return { ok: true, kind: 'success' };
@@ -592,8 +592,10 @@
                 placeholder: '请输入密码' }
             ],
             checkboxes: [
-              // request 作用域：同时作为表单 rememberMe 提交（7 天免登录）。
-              { id: 'rememberCredential', label: '7天内免登录', defaultChecked: true, scope: 'request' }
+              // local：原生侧把账号密码保存到钥匙串/Keystore，下次自动回填。
+              { id: 'rememberCredential', label: '记住密码', defaultChecked: true, scope: 'local' },
+              // request 作用域：作为表单 rememberMe 提交（学校侧 7 天免登录），与保存密码互不影响。
+              { id: 'remember7Days', label: '7天内免登录', defaultChecked: true, scope: 'request' }
             ]
           },
           {

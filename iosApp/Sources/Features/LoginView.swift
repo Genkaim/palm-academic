@@ -253,18 +253,17 @@ struct LoginView: View {
             // Non-terminal: a network-caused password login is being retried automatically.
             // Neutral styling (no red) -- the user does not need to do anything but wait.
             if let retry = state.loginRetryMessage, state.isLoading {
+                // 输入框下方提示不加底色：仅转圈 + 次级文字。
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
                     Text(retry)
                         .font(.subheadline)
+                        .foregroundStyle(PortalPalette.secondaryText)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(PortalPalette.surface)
-                )
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .transition(.opacity)
             }
         }
     }
@@ -662,16 +661,13 @@ struct LoginView: View {
     }
 
     private func errorBanner(_ message: String) -> some View {
+        // 错误提示不加底色，仅用错误色文字。
         Text(message)
             .font(.subheadline)
             .foregroundStyle(PortalPalette.error)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(PortalPalette.errorContainer)
-            )
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
     }
 }
 

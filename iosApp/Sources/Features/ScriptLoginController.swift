@@ -52,12 +52,16 @@ final class ScriptLoginController: ObservableObject {
     private let onAuthenticated: () -> Void
     private let onRemember: (_ username: String, _ password: String) -> Void
     private let onForget: () -> Void
+    /// 钥匙串中已保存凭证的回填值（如 username/password），仅在 schema 含同名字段时生效。
+    private let prefillValues: [String: String]
 
     init(
+        prefillValues: [String: String] = [:],
         onAuthenticated: @escaping () -> Void,
         onRemember: @escaping (String, String) -> Void,
         onForget: @escaping () -> Void
     ) {
+        self.prefillValues = prefillValues
         self.onAuthenticated = onAuthenticated
         self.onRemember = onRemember
         self.onForget = onForget
@@ -134,6 +138,13 @@ final class ScriptLoginController: ObservableObject {
         if !keepUsername.isEmpty { values["username"] = keepUsername }
         for field in method.fields where field.type == "captcha" {
             values[field.id] = ""
+        }
+        // 回填已保存凭证：仅写入当前方式确实存在的字段（短信/扫码方式没有 password 字段，
+        // 密码不会跨方式泄漏到提交值里）。验证码等已被置空的字段不覆盖。
+        for (key, saved) in prefillValues where !saved.isEmpty {
+            if method.fields.contains(where: { $0.id == key }), values[key] == nil {
+                values[key] = saved
+            }
         }
         checkboxes.removeAll()
         for checkbox in method.checkboxes {

@@ -597,7 +597,13 @@ private func revalidateQuietly() async {
         }
         guard scriptLogin == nil else { return }
         let remembered = CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID)
+        // 账号与密码一起回填：仅当当前登录方式 schema 含同名字段时控制器才会写入，
+        // 短信/扫码方式不存在 password 字段，密码不会进入提交值。
+        var prefill: [String: String] = [:]
+        if let remembered, !remembered.username.isEmpty { prefill["username"] = remembered.username }
+        if let remembered, !remembered.password.isEmpty { prefill["password"] = remembered.password }
         let controller = ScriptLoginController(
+            prefillValues: prefill,
             onAuthenticated: { [weak self] in
                 self?.onAuthenticationCompleted(freshLogin: true)
             },
@@ -613,11 +619,6 @@ private func revalidateQuietly() async {
             }
         )
         scriptLogin = controller
-        if let remembered, !remembered.username.isEmpty {
-            // 预填账号必须在 start() 之前：bindMethod 会保留已有 username 并清空其余字段，
-            // 之后再写入可能与 schema 绑定发生竞态。密码只保存在钥匙串，不进入脚本值表。
-            controller.setValue("username", remembered.username)
-        }
         if let loadedDefinition { controller.start(definition: loadedDefinition) }
     }
 

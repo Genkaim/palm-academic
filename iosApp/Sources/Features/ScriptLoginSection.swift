@@ -20,29 +20,31 @@ struct ScriptLoginSection: View {
             switch controller.phase {
             case .loading:
                 loadingState
+                    .transition(.opacity)
             case .ready:
                 if let initError = controller.initError {
                     errorBanner(initError)
                 } else {
                     methodTabs
                     if let method = controller.currentMethod() {
-                        formLabel(method.label)
-                        if method.kind == "qrcode" {
-                            qrPanel
-                        } else {
-                            fieldGroup(method)
-                        }
-                        checkboxGroup(method)
+                        // 整块随方式切换滑入滑出；字段增减也包含在同一动画事务内。
+                        methodBody(method)
+                            .id(method.id)
+                            .transition(.methodSwitch)
                     }
                     if let error = controller.error {
                         errorBanner(error)
+                            .transition(.opacity)
                     }
                     if controller.busy || controller.status != nil {
                         statusSurface
+                            .transition(.opacity)
                     }
                 }
             }
         }
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: controller.methodId)
+        .animation(.easeInOut(duration: 0.2), value: controller.phase)
         .alert(
             "登录失败",
             isPresented: Binding(
@@ -63,8 +65,24 @@ struct ScriptLoginSection: View {
         }
     }
 
+    // MARK: - Method body
+
+    @ViewBuilder
+    private func methodBody(_ method: LoginScriptRuntime.Method) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            formLabel(method.label)
+            if method.kind == "qrcode" {
+                qrPanel
+            } else {
+                fieldGroup(method)
+            }
+            checkboxGroup(method)
+        }
+    }
+
     // MARK: - States
 
+    /// 输入框下方的提示不加底色：仅小字与转圈，与表单分隔由间距承担。
     private var loadingState: some View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small)
@@ -74,12 +92,8 @@ struct ScriptLoginSection: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 14)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(PortalPalette.surface)
-        )
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
     }
 
     private var statusSurface: some View {
@@ -93,12 +107,8 @@ struct ScriptLoginSection: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(PortalPalette.surface)
-        )
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
     }
 
     // MARK: - Method switch
@@ -112,7 +122,10 @@ struct ScriptLoginSection: View {
                 set: { newValue in
                     if let method = controller.methods.first(where: { $0.id == newValue }) {
                         focusedKey = nil
-                        controller.selectMethod(method)
+                        // 与表单区的 methodSwitch 转场处于同一个弹性动画事务。
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                            controller.selectMethod(method)
+                        }
                     }
                 }
             )) {
@@ -405,17 +418,14 @@ struct ScriptLoginSection: View {
             .padding(.bottom, -6)
     }
 
+    /// 错误提示同样不加底色，仅用错误色文字。
     private func errorBanner(_ message: String) -> some View {
         Text(message)
             .font(.subheadline)
             .foregroundStyle(PortalPalette.error)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(PortalPalette.errorContainer)
-            )
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
     }
 
     private func iconName(for field: LoginScriptRuntime.Field) -> String {
@@ -463,4 +473,12 @@ struct ScriptLoginSection: View {
         }
         focusedKey = method.fields[index + 1].id
     }
+}
+
+private extension AnyTransition {
+    /// 登录方式切换：旧方式向左淡出，新方式从右侧淡入（与安卓 AnimatedContent 同向）。
+    static let methodSwitch: AnyTransition = .asymmetric(
+        insertion: .opacity.combined(with: .move(edge: .trailing)),
+        removal: .opacity.combined(with: .move(edge: .leading))
+    )
 }

@@ -24,7 +24,9 @@ class ScriptLoginController(
     private val scope: CoroutineScope,
     private val onAuthenticated: () -> Unit,
     private val onRemember: (username: String, password: String) -> Unit,
-    private val onForget: () -> Unit
+    private val onForget: () -> Unit,
+    /** 钥匙串/Keystore 中已保存凭证的回填值（如 username/password），仅在 schema 含同名字段时生效。 */
+    private val prefillValues: Map<String, String> = emptyMap()
 ) {
     var phase by mutableStateOf(Phase.LOADING)
         private set
@@ -140,6 +142,13 @@ class ScriptLoginController(
         if (keepUsername.isNotEmpty()) values["username"] = keepUsername
         method.fields.forEach { field ->
             if (field.type == "captcha") values[field.id] = ""
+        }
+        // 回填已保存凭证：仅写入当前方式确实存在的字段（短信/扫码方式没有 password 字段，
+        // 密码不会跨方式泄漏到提交值里）。验证码等已被置空的字段不覆盖。
+        prefillValues.forEach { (key, saved) ->
+            if (saved.isNotEmpty() && method.fields.any { it.id == key } && values[key] == null) {
+                values[key] = saved
+            }
         }
         checkboxes.clear()
         method.checkboxes.forEach { checkboxes[it.id] = it.defaultChecked }

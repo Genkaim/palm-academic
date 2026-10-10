@@ -1,13 +1,19 @@
 package cn.edu.cupk.portalreader
 
 import android.graphics.BitmapFactory
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -59,10 +65,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -461,44 +463,38 @@ internal fun RefactoredLoginContent(
                                 }
                             }
 
+                            // 输入框下方的错误提示不加底色，仅用错误色小字。
                             model.error?.let { message ->
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = MaterialTheme.colorScheme.errorContainer
-                                ) {
-                                    Text(
-                                        message,
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-                                        color = MaterialTheme.colorScheme.onErrorContainer,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                }
+                                Text(
+                                    message,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
                             }
 
                             // Non-terminal: a network-caused attempt is being retried. This is
                             // information, not an error -- the login keeps going by itself.
+                            // 同样不加底色：仅转圈 + 次级文字。
                             model.retryStatus?.let { message ->
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                        Text(
-                                            message,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
-                                    }
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Text(
+                                        message,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
                                 }
                             }
                     }
@@ -772,48 +768,117 @@ private fun ScriptLoginFormSection(
         if (script.methodSwitch && script.methods.size > 1) {
             ScriptMethodTabs(script)
         }
-        if (method.kind == "qrcode") {
-            ScriptQrPanel(script)
-        } else {
-            LoginFormLabel(method.label)
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                method.fields.forEachIndexed { index, field ->
-                    val position = when {
-                        method.fields.size == 1 -> ScriptFieldPosition.SOLO
-                        index == 0 -> ScriptFieldPosition.FIRST
-                        index == method.fields.lastIndex -> ScriptFieldPosition.LAST
-                        else -> ScriptFieldPosition.MIDDLE
+        // 方式切换时整块内容横向滑入滑出 + 淡入淡出（与 iOS methodSwitch 转场同向）。
+        AnimatedContent(
+            targetState = method.id,
+            transitionSpec = {
+                (fadeIn(tween(220)) +
+                    slideInHorizontally(tween(280)) { it / 6 }) togetherWith
+                    (fadeOut(tween(160)) +
+                        slideOutHorizontally(tween(200)) { -it / 6 })
+            },
+            label = "scriptMethodBody"
+        ) { currentMethodId ->
+            val current = script.methods.firstOrNull { it.id == currentMethodId } ?: method
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (current.kind == "qrcode") {
+                    ScriptQrPanel(script)
+                } else {
+                    LoginFormLabel(current.label)
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        current.fields.forEachIndexed { index, field ->
+                            val position = when {
+                                current.fields.size == 1 -> ScriptFieldPosition.SOLO
+                                index == 0 -> ScriptFieldPosition.FIRST
+                                index == current.fields.lastIndex -> ScriptFieldPosition.LAST
+                                else -> ScriptFieldPosition.MIDDLE
+                            }
+                            ScriptField(script, field, position, fieldColors)
+                        }
                     }
-                    ScriptField(script, field, position, fieldColors)
+                    current.checkboxes.forEach { checkbox ->
+                        ScriptCheckboxCard(
+                            label = checkbox.label,
+                            checked = script.checkboxes.getOrDefault(checkbox.id, checkbox.defaultChecked),
+                            onCheckedChange = { script.toggleCheckbox(checkbox.id) },
+                            backdrop = backdrop
+                        )
+                    }
+                    // 提示条随状态展开/淡出，不做硬切。
+                    AnimatedVisibility(
+                        visible = script.error != null,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically()
+                    ) {
+                        script.error?.let { ScriptErrorSurface(it) }
+                    }
+                    AnimatedVisibility(
+                        visible = script.status != null,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically()
+                    ) {
+                        script.status?.let { ScriptStatusSurface(it) }
+                    }
                 }
             }
-            method.checkboxes.forEach { checkbox ->
-                ScriptCheckboxCard(
-                    label = checkbox.label,
-                    checked = script.checkboxes.getOrDefault(checkbox.id, checkbox.defaultChecked),
-                    onCheckedChange = { script.toggleCheckbox(checkbox.id) },
-                    backdrop = backdrop
-                )
-            }
-            script.error?.let { ScriptErrorSurface(it) }
-            script.status?.let { ScriptStatusSurface(it) }
         }
     }
 }
 
+/**
+ * Material Expressive 风格的方式切换栏：
+ * 未选中项为圆角矩形（约 30% 圆角），选中项在 280ms 内过渡为 50% 胶囊，
+ * 容器色、文字色同步过渡，配合表单区的滑动转场构成完整切换反馈。
+ */
 @Composable
 private fun ScriptMethodTabs(script: ScriptLoginController) {
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-        script.methods.forEachIndexed { index, method ->
-            SegmentedButton(
-                selected = method.id == script.methodId,
-                onClick = {
-                    val target = script.methods.getOrNull(index) ?: return@SegmentedButton
-                    script.selectMethod(target)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        script.methods.forEach { method ->
+            val selected = method.id == script.methodId
+            val cornerPercent by animateIntAsState(
+                targetValue = if (selected) 50 else 30,
+                animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
+                label = "methodTabShape"
+            )
+            val containerColor by animateColorAsState(
+                targetValue = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
                 },
-                shape = SegmentedButtonDefaults.itemShape(index, script.methods.size)
+                animationSpec = tween(280, easing = FastOutSlowInEasing),
+                label = "methodTabContainer"
+            )
+            val contentColor by animateColorAsState(
+                targetValue = if (selected) {
+                    MaterialTheme.colorScheme.onPrimary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                animationSpec = tween(280, easing = FastOutSlowInEasing),
+                label = "methodTabContent"
+            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(percent = cornerPercent))
+                    .background(containerColor)
+                    .clickable(enabled = !script.busy) {
+                        script.selectMethod(method)
+                    },
+                contentAlignment = Alignment.Center
             ) {
-                Text(method.label, fontSize = 13.sp, maxLines = 1)
+                Text(
+                    method.label,
+                    color = contentColor,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                )
             }
         }
     }
@@ -1032,46 +1097,52 @@ private fun ScriptQrPanel(script: ScriptLoginController) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodyMedium
         )
-        script.error?.let { ScriptErrorSurface(it) }
-        script.status?.let { ScriptStatusSurface(it) }
+        AnimatedVisibility(
+            visible = script.error != null,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            script.error?.let { ScriptErrorSurface(it) }
+        }
+        AnimatedVisibility(
+            visible = script.status != null,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            script.status?.let { ScriptStatusSurface(it) }
+        }
     }
 }
 
+// 输入框下方的错误提示：不加底色，仅错误色小字。
 @Composable
 private fun ScriptErrorSurface(message: String) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.errorContainer
-    ) {
-        Text(
-            message,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-            color = MaterialTheme.colorScheme.onErrorContainer,
-            style = MaterialTheme.typography.bodyMedium
-        )
-    }
+    Text(
+        message,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        color = MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodyMedium
+    )
 }
 
+// 输入框下方的状态提示（验证码加载中、重试中等）：不加底色，仅转圈 + 次级文字。
 @Composable
 private fun ScriptStatusSurface(message: String) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-            Text(
-                message,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
+        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+        Text(
+            message,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium
+        )
     }
 }
 

@@ -417,7 +417,8 @@
               placeholder: "请输入密码" }
           ],
           checkboxes: [
-            { id: "rememberCredential", label: "记住账号", defaultChecked: true, scope: "local" }
+            // local：原生侧把账号密码保存到钥匙串/Keystore，下次自动回填。
+            { id: "rememberCredential", label: "记住密码", defaultChecked: true, scope: "local" }
           ]
         }]
       };

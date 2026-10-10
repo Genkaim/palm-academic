@@ -142,6 +142,11 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         if (definition?.auth?.usesScript == true) {
             if (scriptLogin == null) {
                 val remembered = PasswordCredentialStore.load(getApplication())
+                // 账号与密码一起回填：仅当当前登录方式 schema 含同名字段时控制器才会写入。
+                val prefill = buildMap {
+                    remembered?.username?.takeIf { it.isNotBlank() }?.let { put("username", it) }
+                    remembered?.password?.takeIf { it.isNotBlank() }?.let { put("password", it) }
+                }
                 val controller = ScriptLoginController(
                     appContext = getApplication(),
                     scope = viewModelScope,
@@ -149,13 +154,11 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
                     onRemember = { username, password ->
                         PasswordCredentialStore.save(getApplication(), username, password, selectedSchoolId)
                     },
-                    onForget = { PasswordCredentialStore.clear(getApplication(), selectedSchoolId) }
+                    onForget = { PasswordCredentialStore.clear(getApplication(), selectedSchoolId) },
+                    prefillValues = prefill
                 )
                 scriptLogin = controller
                 controller.start(definition)
-                if (!remembered?.username.isNullOrBlank()) {
-                    controller.values["username"] = remembered?.username.orEmpty()
-                }
             }
         } else {
             scriptLogin?.close()

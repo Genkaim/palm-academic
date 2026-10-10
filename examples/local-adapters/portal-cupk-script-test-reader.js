@@ -194,7 +194,7 @@
         execution: page.execution,
         lt: page.lt,
         _eventId: 'submit',
-        rememberMe: checks.rememberCredential ? 'true' : 'false',
+        rememberMe: checks.remember7Days ? 'true' : 'false',
         agreement: checks.loginAgreement ? 'true' : 'false'
       }
     });
@@ -214,7 +214,7 @@
     return { ok: false, kind: 'rejected', message: message };
   }
 
-  async function smsLogin(v, checks) {
+  async function smsLogin(v) {
     var page = await openLoginPage();
     var resp = await H.http({
       method: 'POST', url: API + '/sms', headers: BROWSER_HEADERS,
@@ -223,8 +223,7 @@
         captcha: v.captcha || '',
         dynamicCode: v.smsCode || '',
         execution: page.execution,
-        lt: page.lt,
-        rememberMe: checks.rememberCredential ? 'true' : 'false'
+        lt: page.lt
       }
     });
     if (isSuccess(resp)) return { ok: true, kind: 'success' };
@@ -325,9 +324,11 @@
                 captcha: { url: CAPTCHA_URL, refreshParam: 'ts' } }
             ],
             checkboxes: [
-              // local 作用域：仅用于客户端“记住账号/密码”，不随表单提交。
-              { id: 'rememberCredential', label: '记住账号', defaultChecked: true, scope: 'local' },
-              // request 作用域：同时作为表单字段提交（登录协议校验）。
+              // local：原生侧把账号密码保存到钥匙串/Keystore，下次自动回填，不随表单提交。
+              { id: 'rememberCredential', label: '记住密码', defaultChecked: true, scope: 'local' },
+              // request：学校侧“7 天内免登录”，作为表单 rememberMe 提交，与保存密码互不影响。
+              { id: 'remember7Days', label: '7天内免登录', defaultChecked: true, scope: 'request' },
+              // request：另一个随表单提交的协议复选框（登录须知）。
               { id: 'loginAgreement', label: '我已阅读登录须知', defaultChecked: false, scope: 'request' }
             ]
           },
@@ -343,16 +344,13 @@
               { id: 'smsCode', type: 'smsCode', label: '短信验证码', required: true,
                 placeholder: '请输入短信验证码' }
             ],
-            checkboxes: [
-              { id: 'rememberCredential', label: '记住账号', defaultChecked: false, scope: 'local' }
-            ]
+            // 短信/扫码方式没有密码，不提供 rememberCredential（原生仅在密码方式保存密码）。
+            checkboxes: []
           },
           {
             id: 'qrcode', kind: 'qrcode', label: '扫码登录',
             fields: [],
-            checkboxes: [
-              { id: 'rememberCredential', label: '登录后记住本设备', defaultChecked: true, scope: 'local' }
-            ]
+            checkboxes: []
           }
         ]
       };
@@ -361,7 +359,7 @@
     submit: async function (arg) {
       var v = arg.values || {};
       var checks = arg.checkboxes || {};
-      if (arg.methodId === 'sms') return await smsLogin(v, checks);
+      if (arg.methodId === 'sms') return await smsLogin(v);
       if (arg.methodId === 'qrcode') return await qrLogin();
       return await passwordLogin(v, checks);
     },
