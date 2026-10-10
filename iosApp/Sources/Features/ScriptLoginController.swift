@@ -307,7 +307,11 @@ final class ScriptLoginController: ObservableObject {
         }
     }
 
-    private func openCaptchaChallenge(imageUrl: String, refreshParam: String?, targetKey: String) {
+    private func openCaptchaChallenge(
+        _ imageUrl: String,
+        refreshParam: String?,
+        targetKey: String
+    ) {
         captchaDialogInput = values[targetKey] ?? ""
         captchaDialogImage = nil
         captchaChallenge = CaptchaChallenge(
@@ -409,11 +413,12 @@ final class ScriptLoginController: ObservableObject {
     /// 密码字段用占位符替换后再交给运行时；真实密码单独走 secret 通道。
     private func publicValues() -> [String: String] {
         guard let method = currentMethod() else { return values }
-        return values.mapValues { key, value in
-            method.fields.contains { $0.id == key && $0.type == "password" }
+        // mapValues 的闭包只接收 value，键值对转换走 Dictionary(uniqueKeysWithValues:)。
+        return Dictionary(uniqueKeysWithValues: values.map { key, value in
+            (key, method.fields.contains { $0.id == key && $0.type == "password" }
                 ? LoginScriptRuntime.passwordToken
-                : value
-        }
+                : value)
+        })
     }
 
     private func secretPassword() -> String {

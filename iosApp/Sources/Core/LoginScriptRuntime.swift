@@ -135,7 +135,11 @@ final class LoginScriptRuntime: @unchecked Sendable {
     func start() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             jsQueue.async {
-                let context = JSContext()
+                // JSContext() 在 Swift 中是可失败初始化器（返回 JSContext?）。
+                guard let context = JSContext() else {
+                    continuation.resume(throwing: RuntimeError.generic("无法初始化登录脚本环境"))
+                    return
+                }
                 context.name = "PalmAcademicLoginSandbox"
                 context.exceptionHandler = { [weak self] _, exception in
                     guard let self else { return }
@@ -276,7 +280,7 @@ final class LoginScriptRuntime: @unchecked Sendable {
 
     /// 拉取图形验证码。首次取图前先 GET 一次登录页建立服务端预会话（金智验证码依赖会话
     /// cookie），与后续 submit 共用同一个 cookie 罐。
-    func fetchCaptcha(rawURLString: String, refreshParam: String?) async throws -> Data {
+    func fetchCaptcha(_ rawURLString: String, refreshParam: String?) async throws -> Data {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             jsQueue.async {
                 do {
@@ -395,13 +399,13 @@ final class LoginScriptRuntime: @unchecked Sendable {
         }
     }
 
-    private func resolveHostCall(callId: Int, json: [String: Any]) {
+    private func resolveHostCall(_ callId: Int, json: [String: Any]) {
         guard let context else { return }
         let script = "__paHostResolve(\(callId),true,\(jsonString(json)))"
         context.evaluateScript(script)
     }
 
-    private func resolveHostCall(callId: Int, ok: Bool, message: String) {
+    private func resolveHostCall(_ callId: Int, ok: Bool, message: String) {
         guard let context else { return }
         let script = "__paHostResolve(\(callId),false,\(jsonString(["message": message])))"
         context.evaluateScript(script)
