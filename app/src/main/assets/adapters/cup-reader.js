@@ -346,14 +346,23 @@
   let timer;
   let lastPayloadJson = '';
   function publishNow() {
-    if (selectLatestSemesterIfNeeded()) return;
-    loadGpaRank();
-    const payload = read();
-    if (!payload) return;
-    const payloadJson = JSON.stringify(payload);
-    if (payloadJson === lastPayloadJson) return;
-    lastPayloadJson = payloadJson;
-    PalmAcademicHost.publish(payload);
+    try {
+      if (selectLatestSemesterIfNeeded()) return;
+      loadGpaRank();
+      const payload = read();
+      if (!payload) return;
+      const payloadJson = JSON.stringify(payload);
+      if (payloadJson === lastPayloadJson) return;
+      PalmAcademicHost.publish(payload);
+      // Only suppress an identical retry after the host bridge accepted the publication. WebKit
+      // can briefly expose the host object before its message channel is ready during a redirect;
+      // remembering the payload first made that transient failure permanent.
+      lastPayloadJson = payloadJson;
+    } catch (error) {
+      if (PalmAcademicHost.report) {
+        PalmAcademicHost.report('适配器读取出错：' + (error && error.message ? error.message : String(error)));
+      }
+    }
   }
 
   function publish() {
@@ -363,9 +372,81 @@
 
   window.PalmAcademicAdapter = {apiVersion:1, read, publish, perform};
   const observer = new MutationObserver(publish);
-  observer.observe(document.body, {childList:true, subtree:true, characterData:true});
-  publishNow();
+  let observing = false;
+  function startObserving() {
+    if (observing) return;
+    if (!document.body) {
+      // Some redirect responses reach WebKit's document-end phase before their body is attached.
+      // Keep the adapter recoverable instead of throwing after its global object was installed.
+      setTimeout(startObserving, 50);
+      return;
+    }
+    observer.observe(document.body, {childList:true, subtree:true, characterData:true});
+    observing = true;
+    publishNow();
+  }
+  startObserving();
   setTimeout(publish, 350);
   setTimeout(publish, 1000);
   loadGpaRank();
+})();
+
+/* =========================================================================
+ * 登录适配器（仅在 App 登录沙箱中运行；重绘适配器见文件开头，二者互斥）。
+ * ========================================================================= */
+(function () {
+  if (!window.PalmAcademic || window.PalmAcademicLoginAdapter) return;
+  var H = window.PalmAcademic;
+  var ORIGIN = "https://bk.cup.edu.cn/student";
+  var AJAX = { "X-Requested-With": "XMLHttpRequest", "Accept-Language": "zh-CN,zh;q=0.9" };
+
+  function messageOf(body, fallback) {
+    try { var j = JSON.parse(body); if (j && j.message) return j.message; } catch (e) {}
+    return fallback;
+  }
+
+  window.PalmAcademicLoginAdapter = {
+    describe: function () {
+      return {
+        methods: [{
+          id: "password", kind: "password", label: "账号密码", default: true,
+          fields: [
+            { id: "username", type: "text", label: "学号/工号", required: true,
+              placeholder: "请输入学号/工号" },
+            { id: "password", type: "password", label: "密码", required: true,
+              placeholder: "请输入密码" }
+          ],
+          checkboxes: [
+            // local：原生侧把账号密码保存到钥匙串/Keystore，下次自动回填。
+            { id: "rememberCredential", label: "记住密码", defaultChecked: true, scope: "local" }
+          ]
+        }]
+      };
+    },
+
+    submit: async function (arg) {
+      var v = arg.values || {};
+      await H.http({ method: "GET", url: ORIGIN + "/login", headers: AJAX });
+      var saltResp = await H.http({ method: "GET", url: ORIGIN + "/login-salt", headers: AJAX });
+      var salt = (saltResp.text || "").trim().replace(/^"|"$/g, "");
+      if (!salt) return { ok: false, kind: "rejected", message: "无法获取登录校验信息" };
+      var digest = await H.crypto({ op: "sha1", data: salt + "-" + v.password });
+      var loginResp = await H.http({
+        method: "POST",
+        url: ORIGIN + "/login",
+        headers: { "Content-Type": "application/json; charset=utf-8", "Accept": "application/json",
+          "X-Requested-With": "XMLHttpRequest", "Accept-Language": "zh-CN,zh;q=0.9" },
+        json: { username: v.username, password: digest, captchaToken: v.captcha || "" }
+      });
+      var body = loginResp.text || "";
+      var parsed = null; try { parsed = JSON.parse(body); } catch (e) {}
+      if (parsed && parsed.needCaptcha === true) {
+        return { ok: false, kind: "captcha", message: parsed.message || "需要安全验证" };
+      }
+      if (parsed && parsed.result === false) {
+        return { ok: false, kind: "rejected", message: messageOf(body, "账号或密码错误") };
+      }
+      return { ok: true, kind: "success" };
+    }
+  };
 })();
