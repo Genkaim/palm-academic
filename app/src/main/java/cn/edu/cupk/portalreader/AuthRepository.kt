@@ -465,8 +465,8 @@ private class LoginCookieJar : CookieJar {
 
     @Synchronized
     fun persistSession() {
-        PortalSessionStore.saveCookieHeader(
-            cookies.values.joinToString("; ") { cookie -> "${cookie.name}=${cookie.value}" }
-        )
+        // 完整 cookie 身份（domain/path/secure/httpOnly）必须保留：CAS 学校的 TGC 在
+        // cas 主机、SESSION 在门户主机，扁平 name=value 会在恢复时把 TGC 装错域。
+        PortalSessionStore.saveCookies(cookies.values.map(PersistedCookie::fromOkHttp))
     }
 }

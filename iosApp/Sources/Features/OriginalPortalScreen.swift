@@ -40,53 +40,48 @@ struct OriginalPortalScreen: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            // Match the web view's OWN opaque background rather than the grouped page colour:
-            // the surface here is the portal document (white/black), and painting the grouped
-            // grey behind the status bar left a visible seam -- a solid colour block -- between
-            // the transparent nav bar and the page.
-            PortalPalette.plainSurface.ignoresSafeArea()
-
-            PortalWebView(
-                targetURL: targetURL,
-                isDark: state.isDark,
-                refreshToken: refreshToken,
-                onPhase: { newPhase in
-                    if newPhase == .sessionExpired && state.captchaRequired && state.definition?.auth?.isWebOnly != true {
-                        state.requireCaptchaReauthentication()
-                        dismiss()
-                    } else if newPhase == .sessionExpired && state.supportsSilentPasswordReauthentication {
-                        phase = .loading
-                        Task { @MainActor in
-                            let restored = await state.revalidateQuietlyPublic()
-                            if restored {
-                                refreshToken += 1
-                            } else {
-                                phase = .sessionExpired
-                            }
-                        }
-                    } else {
-                        phase = newPhase
-                    }
-                }
-            )
-            // Full bleed on every edge: the document background paints under the status bar and
-            // behind the home indicator. The scroll view's own inset adjustment keeps the page
-            // CONTENT clear of the bars, so nothing is hidden -- only the dead strip is gone.
-            .ignoresSafeArea()
-
-            // A load that failed gets a page of its own rather than a transient alert: the alert
-            // would be dismissed by the first tap and leave a blank WebView behind it, with nothing
-            // on screen to explain why. The reload in the toolbar re-runs the whole sequence.
-            if case .failed(let reason) = phase {
-                failureView(reason)
-                    .transition(.opacity)
-            }
-
-            // Non-redrawn pages use the same floating glass chrome as web login: a round back
-            // control, a compact title capsule, and an independent refresh control at top-right.
+        VStack(spacing: 0) {
+            // The app chrome owns an opaque, adaptive surface including the top safe area. The
+            // WebView is a separate layout region below it, so portal content can never slide
+            // underneath the back/title/refresh controls.
             topChrome
+                .background(PortalPalette.plainSurface.ignoresSafeArea(edges: .top))
+
+            ZStack {
+                PortalWebView(
+                    targetURL: targetURL,
+                    isDark: state.isDark,
+                    refreshToken: refreshToken,
+                    onPhase: { newPhase in
+                        if newPhase == .sessionExpired && state.captchaRequired && state.definition?.auth?.isWebOnly != true {
+                            state.requireCaptchaReauthentication()
+                            dismiss()
+                        } else if newPhase == .sessionExpired && state.supportsSilentPasswordReauthentication {
+                            phase = .loading
+                            Task { @MainActor in
+                                let restored = await state.revalidateQuietlyPublic()
+                                if restored {
+                                    refreshToken += 1
+                                } else {
+                                    phase = .sessionExpired
+                                }
+                            }
+                        } else {
+                            phase = newPhase
+                        }
+                    }
+                )
+
+                // A load that failed gets a page of its own rather than a transient alert: the
+                // alert would be dismissed by the first tap and leave a blank WebView behind it.
+                if case .failed(let reason) = phase {
+                    failureView(reason)
+                        .transition(.opacity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(PortalPalette.plainSurface.ignoresSafeArea())
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(false)
@@ -164,27 +159,12 @@ struct OriginalPortalScreen: View {
             .padding(.top, 6)
             .padding(.bottom, 8)
 
-            if case .loading = phase {
-                ProgressView()
-                    .progressViewStyle(.linear)
-                    .frame(height: 3)
-                    .padding(.horizontal, 14)
-            }
+            ProgressView()
+                .progressViewStyle(.linear)
+                .frame(height: 3)
+                .padding(.horizontal, 14)
+                .opacity(phase == .loading ? 1 : 0)
         }
-        .background(
-            LinearGradient(
-                colors: [
-                    PortalPalette.plainSurface.opacity(0.82),
-                    PortalPalette.plainSurface.opacity(0.55),
-                    PortalPalette.plainSurface.opacity(0)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 132)
-            .ignoresSafeArea(edges: .top),
-            alignment: .top
-        )
     }
 
     private func failureView(_ reason: String) -> some View {
@@ -245,10 +225,9 @@ private struct PortalWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
-        // The view is laid out edge to edge, and this lets the scroll view inset the document's
-        // CONTENT for the status bar / nav bar itself while its background still paints under
-        // them (the immersive effect). `.never` left the page's top row hidden under the bar.
-        webView.scrollView.contentInsetAdjustmentBehavior = .always
+        // SwiftUI lays this WebView below the app-owned header and inside the bottom safe area.
+        // Disabling UIKit's automatic adjustment avoids applying a second top inset.
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         context.coordinator.applyAppearance(to: webView, isDark: isDark)
         context.coordinator.load(webView, targetURL: targetURL)
         return webView
@@ -319,6 +298,23 @@ private struct PortalWebView: UIViewRepresentable {
             parent.onPhase(.ready)
         }
 
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            guard let url = navigationAction.request.url else {
+                decisionHandler(.allow)
+                return
+            }
+            if let upgraded = upgradedPortalURL(url) {
+                decisionHandler(.cancel)
+                webView.load(URLRequest(url: upgraded, cachePolicy: .reloadIgnoringLocalCacheData))
+                return
+            }
+            decisionHandler(.allow)
+        }
+
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             guard !isBenignNavigationInterruption(error) else { return }
             parent.onPhase(.failed(error.localizedDescription))
@@ -336,6 +332,16 @@ private struct PortalWebView: UIViewRepresentable {
                     value.code == 102) // frameLoadInterruptedByPolicyChange (not exposed by older SDKs)
         }
 
+        private func upgradedPortalURL(_ url: URL) -> URL? {
+            guard url.scheme?.lowercased() == "http",
+                  let requestedHost = url.host?.lowercased(),
+                  requestedHost == URL(string: parent.targetURL)?.host?.lowercased(),
+                  var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            else { return nil }
+            components.scheme = "https"
+            return components.url
+        }
+
         func webView(
             _ webView: WKWebView,
             createWebViewWith configuration: WKWebViewConfiguration,
@@ -343,8 +349,12 @@ private struct PortalWebView: UIViewRepresentable {
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
             if navigationAction.targetFrame == nil,
-               navigationAction.request.url?.scheme == "https" {
-                webView.load(navigationAction.request)
+               let requested = navigationAction.request.url {
+                if let upgraded = upgradedPortalURL(requested) {
+                    webView.load(URLRequest(url: upgraded))
+                } else if requested.scheme?.lowercased() == "https" {
+                    webView.load(navigationAction.request)
+                }
             }
             return nil
         }

@@ -14,20 +14,42 @@ class WebViewCookieJar : CookieJar {
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         cookies.forEach { manager.setCookie(url.toString(), it.toString()) }
         manager.flush()
-        PortalSessionStore.mergeCookies(
-            cookies.associate { cookie ->
-                cookie.name to cookie.value.takeIf { cookie.expiresAt > System.currentTimeMillis() }
-            }
-        )
+        // 保留每个 cookie 的 domain/path：CAS 与门户的同名 cookie 不能折叠成一条。
+        PortalSessionStore.mergeCookies(cookies.map(PersistedCookie::fromOkHttp))
     }
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        val persisted = PortalSessionStore.persistedCookieHeader()
-        val current = manager.getCookie(url.toString())
-        // The app-private copy is the durable source of truth immediately after restart.
-        return listOfNotNull(current, persisted)
-            .flatMap { it.split(';') }
-            .mapNotNull { Cookie.parse(url, it.trim()) }
+        val now = System.currentTimeMillis()
+        // 持久 cookie 严格按各自的 domain/path 匹配请求 URL——TGC 只发给 CAS，SESSION 只发给门户。
+        val persisted = PortalSessionStore.persistedCookies()
+            .asSequence()
+            .filter { it.expiresAt == Long.MAX_VALUE || it.expiresAt > now }
+            .filter {
+                it.matches(
+                    host = url.host,
+                    requestPath = url.encodedPath.ifEmpty { "/" },
+                    https = url.scheme == "https"
+                )
+            }
+            .map { it.toOkHttpCookie() }
+            .toList()
+        // CookieManager 里的实时值优先（页面 JS 或最新跳转可能刚种过 cookie）。
+        val live = manager.getCookie(url.toString())
+            ?.split(';')
+            ?.mapNotNull { Cookie.parse(url, it.trim()) }
+            .orEmpty()
+        if (persisted.isEmpty()) {
+            // 旧版本只留了扁平 header：不区分域地兜底，保证升级用户不掉登录。
+            val legacy = PortalSessionStore.persistedCookieHeader()
+                ?.split(';')
+                ?.mapNotNull { Cookie.parse(url, it.trim()) }
+                .orEmpty()
+            return (legacy + live)
+                .associateBy { it.name }
+                .values
+                .toList()
+        }
+        return (persisted + live)
             .associateBy { it.name }
             .values
             .toList()

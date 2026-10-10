@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.TextUtils
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -66,6 +67,16 @@ class OriginalPortalActivity : PortalActivity() {
         val root = FrameLayout(this).apply {
             setBackgroundColor(colors.webBackground)
         }
+        val headerBackground = View(this).apply {
+            setBackgroundColor(colors.webBackground)
+        }
+        root.addView(
+            headerBackground,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                controlSize + (16 * density).toInt()
+            ).apply { gravity = Gravity.TOP }
+        )
         webView = WebView(this).apply {
             setBackgroundColor(colors.webBackground)
             settings.javaScriptEnabled = true
@@ -85,13 +96,13 @@ class OriginalPortalActivity : PortalActivity() {
             settings.layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
             configurePortalWebDarkening(settings, darkTheme)
         }
-        root.addView(
-            webView,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
+        val webViewParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ).apply {
+            topMargin = controlSize + (16 * density).toInt()
+        }
+        root.addView(webView, webViewParams)
 
         val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
@@ -168,13 +179,22 @@ class OriginalPortalActivity : PortalActivity() {
         setContentView(root)
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val webTop = bars.top + (8 * density).toInt() + controlSize + (8 * density).toInt()
             webView.setPadding(0, 0, 0, bars.bottom)
+            (headerBackground.layoutParams as FrameLayout.LayoutParams).apply {
+                height = webTop
+                headerBackground.layoutParams = this
+            }
+            (webView.layoutParams as FrameLayout.LayoutParams).apply {
+                topMargin = webTop
+                webView.layoutParams = this
+            }
             (chrome.layoutParams as FrameLayout.LayoutParams).apply {
                 topMargin = bars.top + (8 * density).toInt()
                 chrome.layoutParams = this
             }
             (progress.layoutParams as FrameLayout.LayoutParams).apply {
-                topMargin = bars.top + controlSize + (14 * density).toInt()
+                topMargin = webTop
                 progress.layoutParams = this
             }
             insets
@@ -189,9 +209,11 @@ class OriginalPortalActivity : PortalActivity() {
         }
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                Log.i(TAG, "Started ${url.orEmpty()}")
                 progress.visibility = android.view.View.VISIBLE
             }
             override fun onPageFinished(view: WebView, url: String?) {
+                Log.i(TAG, "Finished ${url.orEmpty()}")
                 if (url?.substringBefore('?')?.endsWith("/login") == true) {
                     showExpiredSessionDialog()
                 } else {
@@ -199,9 +221,36 @@ class OriginalPortalActivity : PortalActivity() {
                     PortalSessionCoordinator.markAuthenticated()
                 }
             }
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = request.url.scheme != "https"
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val requested = request.url
+                if (requested.scheme.equals("https", ignoreCase = true)) return false
+
+                // This portal briefly redirects its HTTPS entry URL to an HTTP URL on the same
+                // host, where nginx immediately redirects back to HTTPS. Blocking that first hop
+                // aborts the main frame and leaves the WebView at about:blank. Upgrade the trusted
+                // same-host hop in place so the browser flow works without making an insecure
+                // request or allowing arbitrary clear-text navigation.
+                val targetHost = runCatching {
+                    android.net.Uri.parse(
+                        intent.getStringExtra(MaterialPortalActivity.EXTRA_URL).orEmpty()
+                    ).host
+                }.getOrNull()
+                if (requested.scheme.equals("http", ignoreCase = true) &&
+                    requested.host.equals(targetHost, ignoreCase = true)
+                ) {
+                    val upgraded = requested.buildUpon().scheme("https").build().toString()
+                    Log.i(TAG, "Upgrading portal redirect to $upgraded")
+                    view.loadUrl(upgraded)
+                    return true
+                }
+                Log.w(TAG, "Blocked external navigation to ${requested.scheme.orEmpty()}")
+                return true
+            }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) Toast.makeText(this@OriginalPortalActivity, error.description, Toast.LENGTH_LONG).show()
+                if (request.isForMainFrame) {
+                    Log.e(TAG, "Main-frame error ${error.errorCode}: ${error.description} (${request.url})")
+                    Toast.makeText(this@OriginalPortalActivity, error.description, Toast.LENGTH_LONG).show()
+                }
             }
         }
         lifecycleScope.launch {
@@ -289,5 +338,9 @@ class OriginalPortalActivity : PortalActivity() {
         webView.webViewClient = WebViewClient()
         webView.destroy()
         super.onDestroy()
+    }
+
+    private companion object {
+        const val TAG = "OriginalPortal"
     }
 }
