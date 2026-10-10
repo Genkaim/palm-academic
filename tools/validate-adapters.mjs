@@ -105,8 +105,8 @@ function validateDefinition(assetPath) {
   if (definition.auth !== undefined) {
     const auth = definition.auth;
     const type = auth?.type ?? "salted-sha1";
-    requireValue(type === "salted-sha1" || type === "web" || type === "engine", assetPath,
-      "auth.type 仅支持 salted-sha1、web 或 engine");
+    requireValue(type === "salted-sha1" || type === "web" || type === "engine" || type === "script",
+      assetPath, "auth.type 仅支持 salted-sha1、web、engine 或 script");
     if (auth.captcha?.required === true) {
       requireValue(isHttpsUrl(auth.captcha.imageUrl), assetPath,
         "auth.captcha.imageUrl 必须是 HTTPS 地址");
@@ -158,7 +158,7 @@ function validateDefinition(assetPath) {
         }
       }
     }
-    if (type === "web" || type === "engine") {
+    if (type === "web" || type === "engine" || type === "script") {
       requireValue(isHttpsUrl(auth.loginUrl), assetPath, "auth.loginUrl 必须是 HTTPS 地址");
       requireValue(Array.isArray(auth.successUrlPrefixes) && auth.successUrlPrefixes.length > 0 &&
         auth.successUrlPrefixes.every(isHttpsUrl), assetPath,
@@ -172,6 +172,18 @@ function validateDefinition(assetPath) {
         requireValue(Array.isArray(auth.sessionCookieNames) &&
           auth.sessionCookieNames.every((name) => typeof name === "string" && name.trim()),
         assetPath, "auth.sessionCookieNames 必须是字符串数组");
+      }
+    }
+    if (type === "script") {
+      // loginScript 可省略：省略时登录段与重绘段合并在 readerAdapter 同一文件中。
+      const loginScript = auth.loginScript;
+      if (loginScript !== undefined) {
+        if (requireValue(isSafeAssetPath(loginScript, "adapters/", ".js"), assetPath,
+          "auth.loginScript 路径无效")) {
+          referencedAdapters.add(loginScript);
+          requireValue(existsSync(join(assetsRoot, loginScript)), assetPath,
+            `找不到 ${loginScript}`);
+        }
       }
     }
   }
@@ -287,8 +299,8 @@ if (index) {
 }
 
 for (const definitionPath of referencedDefinitions) validateDefinition(definitionPath);
-requireValue(referencedAdapters.size === builtInSchools.length, "schools/index.json",
-  "每所内置学校必须使用一个独立、完整的 readerAdapter");
+requireValue(referencedAdapters.size >= builtInSchools.length, "schools/index.json",
+  "每所内置学校必须使用一个独立、完整的 readerAdapter（登录脚本可合并或独立）");
 
 for (const file of readdirSync(join(assetsRoot, "schools"))) {
   const assetPath = `schools/${file}`;

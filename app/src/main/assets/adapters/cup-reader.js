@@ -390,3 +390,62 @@
   setTimeout(publish, 1000);
   loadGpaRank();
 })();
+
+/* =========================================================================
+ * 登录适配器（仅在 App 登录沙箱中运行；重绘适配器见文件开头，二者互斥）。
+ * ========================================================================= */
+(function () {
+  if (!window.PalmAcademic || window.PalmAcademicLoginAdapter) return;
+  var H = window.PalmAcademic;
+  var ORIGIN = "https://bk.cup.edu.cn/student";
+  var AJAX = { "X-Requested-With": "XMLHttpRequest", "Accept-Language": "zh-CN,zh;q=0.9" };
+
+  function messageOf(body, fallback) {
+    try { var j = JSON.parse(body); if (j && j.message) return j.message; } catch (e) {}
+    return fallback;
+  }
+
+  window.PalmAcademicLoginAdapter = {
+    describe: function () {
+      return {
+        methods: [{
+          id: "password", kind: "password", label: "账号密码", default: true,
+          fields: [
+            { id: "username", type: "text", label: "学号/工号", required: true,
+              placeholder: "请输入学号/工号" },
+            { id: "password", type: "password", label: "密码", required: true,
+              placeholder: "请输入密码" }
+          ],
+          checkboxes: [
+            { id: "rememberCredential", label: "记住账号", defaultChecked: true, scope: "local" }
+          ]
+        }]
+      };
+    },
+
+    submit: async function (arg) {
+      var v = arg.values || {};
+      await H.http({ method: "GET", url: ORIGIN + "/login", headers: AJAX });
+      var saltResp = await H.http({ method: "GET", url: ORIGIN + "/login-salt", headers: AJAX });
+      var salt = (saltResp.text || "").trim().replace(/^"|"$/g, "");
+      if (!salt) return { ok: false, kind: "rejected", message: "无法获取登录校验信息" };
+      var digest = await H.crypto({ op: "sha1", data: salt + "-" + v.password });
+      var loginResp = await H.http({
+        method: "POST",
+        url: ORIGIN + "/login",
+        headers: { "Content-Type": "application/json; charset=utf-8", "Accept": "application/json",
+          "X-Requested-With": "XMLHttpRequest", "Accept-Language": "zh-CN,zh;q=0.9" },
+        json: { username: v.username, password: digest, captchaToken: v.captcha || "" }
+      });
+      var body = loginResp.text || "";
+      var parsed = null; try { parsed = JSON.parse(body); } catch (e) {}
+      if (parsed && parsed.needCaptcha === true) {
+        return { ok: false, kind: "captcha", message: parsed.message || "需要安全验证" };
+      }
+      if (parsed && parsed.result === false) {
+        return { ok: false, kind: "rejected", message: messageOf(body, "账号或密码错误") };
+      }
+      return { ok: true, kind: "success" };
+    }
+  };
+})();

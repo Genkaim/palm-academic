@@ -128,6 +128,41 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
     var captchaGeneration by mutableStateOf(0)
         private set
 
+    var scriptLogin by mutableStateOf<ScriptLoginController?>(null)
+        private set
+
+    init {
+        bindLoginMode()
+    }
+
+    private fun bindLoginMode() {
+        val definition = runCatching {
+            SchoolAdapterRepository.load(getApplication())
+        }.getOrNull()
+        if (definition?.auth?.usesScript == true) {
+            if (scriptLogin == null) {
+                val remembered = PasswordCredentialStore.load(getApplication())
+                val controller = ScriptLoginController(
+                    appContext = getApplication(),
+                    scope = viewModelScope,
+                    onAuthenticated = { completeAuthentication() },
+                    onRemember = { username, password ->
+                        PasswordCredentialStore.save(getApplication(), username, password, selectedSchoolId)
+                    },
+                    onForget = { PasswordCredentialStore.clear(getApplication(), selectedSchoolId) }
+                )
+                scriptLogin = controller
+                controller.start(definition)
+                if (!remembered?.username.isNullOrBlank()) {
+                    controller.values["username"] = remembered?.username.orEmpty()
+                }
+            }
+        } else {
+            scriptLogin?.close()
+            scriptLogin = null
+        }
+    }
+
     private val auth = AuthRepository()
     private var loginJob: Job? = null
     private var captchaJob: Job? = null
@@ -218,6 +253,10 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         }.getOrDefault(false)
         rememberedCredential = PasswordCredentialStore.load(getApplication(), schoolId)
         error = null
+        // 学校切换后登录方式可能不同（salted-sha1/web/script），重建登录控制器。
+        scriptLogin?.close()
+        scriptLogin = null
+        bindLoginMode()
         if (changed) {
             PortalMonitor.cancel(getApplication())
             PortalHttp.clearSession()
@@ -396,7 +435,14 @@ private fun LoginRoute(
                 .fillMaxSize()
                 .graphicsLayer { alpha = loginAlpha }
         ) {
-            RefactoredLoginContent(model, openWebLogin, openSchoolSelection)
+            val script = model.scriptLogin
+            if (script != null) {
+                val schoolName = model.schoolOptions
+                    .firstOrNull { it.id == model.selectedSchoolId }?.name.orEmpty()
+                ScriptLoginContent(script, schoolName, openSchoolSelection)
+            } else {
+                RefactoredLoginContent(model, openWebLogin, openSchoolSelection)
+            }
         }
     }
 }

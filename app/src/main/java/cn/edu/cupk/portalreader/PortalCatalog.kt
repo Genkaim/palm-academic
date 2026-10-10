@@ -69,10 +69,13 @@ data class PortalAuthDefinition(
     val sessionCookieHosts: List<String> = emptyList(),
     val sessionCookieNames: List<String> = listOf("SESSION"),
     val captcha: PortalCaptchaDefinition = PortalCaptchaDefinition(),
-    val engine: JSONObject? = null
+    val engine: JSONObject? = null,
+    val loginScript: String? = null
 ) {
     val webOnly: Boolean get() = type == "web"
     val usesEngine: Boolean get() = type == "engine" && engine != null
+    // loginScript 省略时与 readerAdapter 共用同一个 JS 文件，因此 type=="script" 即生效。
+    val usesScript: Boolean get() = type == "script"
 
     fun accepts(url: String): Boolean = successUrlPrefixes.any { prefix -> url.startsWith(prefix) }
 
@@ -498,13 +501,19 @@ object SchoolAdapterRepository {
                         refreshQueryParameter = captcha.optString("refreshQueryParameter", "id")
                     )
                 } ?: PortalCaptchaDefinition(),
-                engine = authJson.optJSONObject("engine")
+                engine = authJson.optJSONObject("engine"),
+                loginScript = authJson.optString("loginScript").takeIf(String::isNotBlank)
             )
         ).also { cachedDefinition = it }
     }
 
     fun readAdapterScript(context: Context, assetPath: String): String =
         adapterScriptCache.getOrPut("$selectedSchoolId:$assetPath") {
+            readConfiguredText(context, assetPath)
+        }
+
+    fun readLoginScript(context: Context, assetPath: String): String =
+        adapterScriptCache.getOrPut("login:$selectedSchoolId:$assetPath") {
             readConfiguredText(context, assetPath)
         }
 
@@ -531,6 +540,13 @@ object SchoolAdapterRepository {
                     downloaded[adapterPath] = PalmAcademicGitHub.repositoryFile(
                         "$REMOTE_REPOSITORY_ROOT/$adapterPath"
                     )
+                    definition.optJSONObject("auth")?.optString("loginScript")
+                        ?.takeIf(String::isNotBlank)?.let { loginScriptPath ->
+                            requireSafeAssetPath(loginScriptPath, "adapters/", ".js")
+                            downloaded[loginScriptPath] = PalmAcademicGitHub.repositoryFile(
+                                "$REMOTE_REPOSITORY_ROOT/$loginScriptPath"
+                            )
+                        }
                 }
 
                 val cacheRoot = File(appContext.filesDir, REMOTE_CACHE_DIRECTORY)
@@ -690,8 +706,8 @@ object SchoolAdapterRepository {
         require(EMAIL_PATTERN.matches(author.optString("email"))) { "学校定义中的作者邮箱无效" }
         root.optJSONObject("auth")?.let { auth ->
             val type = auth.optString("type", "salted-sha1")
-            require(type == "salted-sha1" || type == "web" || type == "engine") {
-                "auth.type 仅支持 salted-sha1、web 或 engine"
+            require(type == "salted-sha1" || type == "web" || type == "engine" || type == "script") {
+                "auth.type 仅支持 salted-sha1、web、engine 或 script"
             }
             auth.optJSONObject("captcha")?.let { captcha ->
                 if (captcha.optBoolean("required", false)) {
@@ -741,7 +757,7 @@ object SchoolAdapterRepository {
                     }
                 }
             }
-            if (type == "web" || type == "engine") {
+            if (type == "web" || type == "engine" || type == "script") {
                 require(auth.optString("loginUrl").startsWith("https://")) { "auth.loginUrl 必须使用 HTTPS" }
                 val prefixes = auth.optJSONArray("successUrlPrefixes")
                 require(prefixes != null && prefixes.length() > 0) { "auth.successUrlPrefixes 不能为空" }
@@ -756,6 +772,13 @@ object SchoolAdapterRepository {
                             "auth.sessionCookieHosts 包含无效主机"
                         }
                     }
+                }
+            }
+            if (type == "script") {
+                // loginScript 可省略：省略时与 readerAdapter 共用同一个 JS 文件
+                // （该文件按运行环境分别注册 PalmAcademicAdapter / PalmAcademicLoginAdapter）。
+                auth.optString("loginScript").takeIf(String::isNotBlank)?.let { path ->
+                    requireSafeAssetPath(path, "adapters/", ".js")
                 }
             }
         }

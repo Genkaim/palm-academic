@@ -33,3 +33,7 @@ artifacts/
 # Local Python venv with pymobiledevice3, used to push builds to the iPhone
 # LocalSend container over USB. Not part of the project.
 /.venv-ios/
+
+# JVM/Kotlin 临时目录（中文路径构建规避）
+.tmp-jvm/
+

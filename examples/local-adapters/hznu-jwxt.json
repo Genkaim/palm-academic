@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "id": "hznu-jwxt",
+  "name": "杭州师范大学教务系统",
+  "author": {
+    "name": "Genkaim",
+    "email": "genkaim@outlook.com"
+  },
+  "baseUrl": "https://jwxt.hznu.edu.cn/jwglxt",
+  "readerAdapter": "adapters/hznu-jwxt-reader.js",
+  "auth": {
+    "type": "web",
+    "loginUrl": "https://authserver.hznu.edu.cn/authserver/login?service=https%3A%2F%2Fjwxt.hznu.edu.cn%2Fsso%2Fjznewsixlogin",
+    "homePath": "/xtgl/index_initMenu.html?jsdm=xs&echarts=1",
+    "successUrlPrefixes": [
+      "https://jwxt.hznu.edu.cn/jwglxt/xtgl/index_initMenu.html",
+      "https://jwxt.hznu.edu.cn/jwglxt/"
+    ],
+    "sessionCookieHosts": [
+      "jwxt.hznu.edu.cn",
+      "authserver.hznu.edu.cn",
+      "atrust.hznu.edu.cn"
+    ],
+    "sessionCookieNames": []
+  },
+  "monitor": {
+    "coursePagePath": "/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default",
+    "courseDataPathTemplate": "/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default&paSemester={semesterId}",
+    "gradeDataPathTemplate": "/cjcx/cjcx_cxDgXscj.html?gnmkdm=N305005&layout=default",
+    "examDataPathTemplate": "/kwgl/kscx_cxXsksxxIndex.html?gnmkdm=N358105&layout=default",
+    "semesterIdPatterns": [
+      "(\\d{4}-\\d{4}学年第[123]学期)",
+      "id=\\\"xnm\\\"[\\s\\S]*?<option[^>]*selected[^>]*value=\\\"(\\d{4})\\\"",
+      "id=\\\"xnm\\\"[\\s\\S]*?<option[^>]*value=\\\"(\\d{4})\\\"[^>]*selected"
+    ],
+    "studentIdPatterns": [
+      "学号[：:]\\s*(\\d{8,})",
+      "id=\\\"sessionUserKey\\\"[^>]*value=\\\"(\\d{8,})\\\"",
+      "id=\\\"yhm\\\"[^>]*value=\\\"(\\d{8,})\\\""
+    ]
+  },
+  "groups": [
+    {
+      "title": "快捷功能",
+      "items": [
+        {
+          "title": "个人课表",
+          "path": "/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default",
+          "quick": true,
+          "nativeType": "schedule"
+        },
+        {
+          "title": "学生成绩",
+          "path": "/cjcx/cjcx_cxDgXscj.html?gnmkdm=N305005&layout=default",
+          "quick": true,
+          "nativeType": "grade"
+        },
+        {
+          "title": "考试信息",
+          "path": "/kwgl/kscx_cxXsksxxIndex.html?gnmkdm=N358105&layout=default",
+          "quick": true,
+          "nativeType": "exam"
+        },
+        {
+          "title": "教学执行计划",
+          "path": "/jxzxjhgl/jxzxjhck_cxJxzxjhckIndex.html?gnmkdm=N153540&layout=default",
+          "quick": true,
+          "nativeType": "program"
+        }
+      ]
+    },
+    {
+      "title": "信息查询",
+      "items": [
+        {
+          "title": "教务首页",
+          "path": "/xtgl/index_initMenu.html?jsdm=xs&echarts=1"
+        },
+        {
+          "title": "学生课表查询（新）",
+          "path": "/kbcx/xskbcxMobile_cxTimeTableIndex.html?gnmkdm=Y253511&layout=default"
+        },
+        {
+          "title": "学生选课明细",
+          "path": "/kbcx/xskbqr_cxXskbqrIndex.html?doType=details&gnmkdm=N2158&layout=default"
+        },
+        {
+          "title": "班级课表查询",
+          "path": "/kbdy/bjkbdy_cxBjkbdyIndex.html?gnmkdm=N214505&layout=default"
+        },
+        {
+          "title": "空闲教室查询",
+          "path": "/cdjy/cdjy_cxKxcdlb.html?gnmkdm=N2155&layout=default"
+        },
+        {
+          "title": "全校课表查询",
+          "path": "/design/viewFunc_cxDesignFuncPageIndex.html?gnmkdm=N219933&layout=default"
+        },
+        {
+          "title": "学生学业情况",
+          "path": "/xsxy/xsxyqk_cxXsxyqkIndex.html?echarts=1&gnmkdm=N105515&layout=default"
+        },
+        {
+          "title": "主修成绩和学籍证明打印",
+          "path": "/bysxxcx/xscjzbdy_cxXscjzbdyIndex.html?gnmkdm=N558020&layout=default"
+        }
+      ]
+    },
+    {
+      "title": "选课",
+      "items": [
+        {
+          "title": "自主选课",
+          "path": "/xsxk/zzxkyzb_cxZzxkYzbIndex.html?gnmkdm=N253512&layout=default"
+        },
+        {
+          "title": "重修选课",
+          "path": "/cxbm/cxbm_cxXscxbmIndex.html?gnmkdm=N1056&layout=default"
+        },
+        {
+          "title": "教材预订",
+          "path": "/xsxk/tjxkyzb_cxXkResultTjxkYzb.html?gnmkdm=N253520&layout=default"
+        }
+      ]
+    },
+    {
+      "title": "报名申请",
+      "items": [
+        {
+          "title": "学生转专业申请",
+          "path": "/xszzy/xszzysqgl_cxXszzysqIndex.html?doType=details&gnmkdm=N106204&layout=default"
+        },
+        {
+          "title": "等级考试报名",
+          "path": "/kjgl/kjbm_cxXskjbm.html?xmlbfl=1001&gnmkdm=N2510&layout=default"
+        },
+        {
+          "title": "缓考、免听申请",
+          "path": "/jxrwbmgl/jxrwxmbm_cxJxrwxmbmIndex.html?gnmkdm=N2511&layout=default"
+        },
+        {
+          "title": "外校课程认定",
+          "path": "/cjxfrdgl/cjxfrdsq_cxCjxfrdsq.html?doType=details&gnmkdm=N306010&layout=default"
+        },
+        {
+          "title": "学籍异动申请",
+          "path": "/xjyd/xjydsq_cxXjydsq.html?doType=details&gnmkdm=N102020&layout=default"
+        }
+      ]
+    },
+    {
+      "title": "其他功能",
+      "items": [
+        {
+          "title": "学生个人信息维护",
+          "path": "/xsxxxggl/xsgrxxwh_cxXsGrxxxgIndex.html?gnmkdm=N100808&layout=default"
+        },
+        {
+          "title": "学生评价",
+          "path": "/xspjgl/xspj_cxXspjIndex.html?doType=details&gnmkdm=N401605&layout=default"
+        },
+        {
+          "title": "问卷调查",
+          "path": "/wjdcgl/wjdc_cxWjdcIndex.html?gnmkdm=N402505&layout=default"
+        },
+        {
+          "title": "教学信息反馈",
+          "path": "/jxxxygl/jxxxfk_cxJxxxfkIndex.html?gnmkdm=N410510&layout=default"
+        },
+        {
+          "title": "毕业设计成绩查看",
+          "path": "/xsbysjgl/cjck_cxCjckIndex.html?gnmkdm=N532560&layout=default"
+        },
+        {
+          "title": "创新创业成果申报",
+          "path": "/cxcygl/cxcycgbm_cxCxcycgbmIndex.html?gnmkdm=N4905&layout=default"
+        }
+      ]
+    }
+  ],
+  "readerConfig": {
+    "scheduleProfiles": [
+      {
+        "locationPattern": "",
+        "unitTimes": {
+          "1": ["08:05", "08:50"],
+          "2": ["08:50", "09:35"],
+          "3": ["09:45", "10:30"],
+          "4": ["10:40", "11:25"],
+          "5": ["11:25", "12:10"],
+          "6": ["13:20", "14:05"],
+          "7": ["14:10", "14:55"],
+          "8": ["15:05", "15:50"],
+          "9": ["15:55", "16:40"],
+          "10": ["18:00", "18:45"],
+          "11": ["18:50", "19:35"],
+          "12": ["19:40", "20:25"]
+        }
+      }
+    ]
+  }
+}

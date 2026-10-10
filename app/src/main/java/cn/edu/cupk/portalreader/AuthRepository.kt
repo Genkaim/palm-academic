@@ -437,7 +437,7 @@ private fun Request.Builder.portalAjaxHeaders(referer: String): Request.Builder 
         .header("X-Requested-With", "XMLHttpRequest")
         .header("Accept-Language", "zh-CN,zh;q=0.9")
 
-private class LoginCookieJar : CookieJar {
+internal class LoginCookieJar : CookieJar {
     private val cookies = linkedMapOf<String, Cookie>()
 
     @Synchronized
