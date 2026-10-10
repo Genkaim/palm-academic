@@ -3,7 +3,7 @@ name: PalmAcademicIOS
 options:
   minimumXcodeGenVersion: 2.42.0
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "26.0"
 
 targets:
   PalmAcademic:

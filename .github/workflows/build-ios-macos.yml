@@ -7,8 +7,7 @@ name: Build signed iOS IPA (macOS, Liquid Glass)
 # Liquid Glass -- Apple gates that on the SDK the app was linked against, not on the OS version,
 # so an iOS 26/27 look requires an iOS 26/27 build no matter which device runs it.
 #
-# The app keeps a deployment target of 16.0, so the same binary still runs on older devices and
-# falls back to its own materials there.
+# The app targets iOS 26.0 so this artifact is intentionally not installable on older iOS versions.
 
 on:
   workflow_dispatch:
@@ -65,6 +64,7 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
           CODE_SIGN_IDENTITY=""
+          IPHONEOS_DEPLOYMENT_TARGET=26.0
           SWIFT_ACTIVE_COMPILATION_CONDITIONS="USE_SYSTEM_GLASS"
           build
 
