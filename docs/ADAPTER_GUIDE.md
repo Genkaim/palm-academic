@@ -1,123 +1,62 @@
 # 学校适配指南
 
-PalmAcademic 的 Android 渲染层与学校网页解析逻辑彼此独立。每所学校必须拥有一个定义文件和一个完整、独立的脚本；脚本不得依赖其他学校的脚本。
+适配一所学校只需要编写两份文件，**不需要合并仓库、不需要重新编译 App**：
 
-## 最快测试方式：直接在 App 内导入本地规则
+| 文件 | 作用 |
+|---|---|
+| 学校定义 `xxx.json` | 学校名称、地址、登录方式、首页菜单、四个重绘入口、后台检查接口、作者信息 |
+| 适配器 `xxx-reader.js` | 在隐藏网页中读取四个重绘入口的内容，转换成统一的原生页面数据 |
 
-适配器不需要先合并到仓库、等待云端刷新，也不需要为了改一行 JS 重新编译 App。准备下面两份文件后，可直接在 Android 与 iOS 上测试：
-
-1. 一份学校定义 JSON，包含登录方式、功能列表、四个重绘入口、后台检查配置和作者信息。
-2. 一份对应的 adapter JS，暴露 `window.PalmAcademicAdapter` 并通过 `PalmAcademicHost.publish(...)` 发布重绘数据。
-3. 在登录页点“选择学校”→“导入本地规则”，先选择 JSON，再选择 JS。
-4. 导入成功后，在学校列表选择带“本地”标记的学校并登录；修改规则后，先删除同名本地学校，再重新导入这两个文件。
-
-本地导入规则保存在 App 自己的独立目录中：刷新云端学校规则不会覆盖、替换或删除它。只有本地导入的学校可以删除；内置和云端学校保持只读。学校行右侧的 `i` 可查看规则作者与联系方式。
-
-导入时 App 会校验 JSON/JS、四个 `nativeType`、HTTPS 地址和作者信息，并把 JSON 中的 `readerAdapter` 重写成本机安全路径。因此两份待选文件可以放在“文件”、下载目录、LocalSend 或其他文稿提供器中，JS 文件名不要求与 JSON 中的路径相同。
-
-仓库提供了一套可直接导入的完整示例（通用登录引擎账密登录 + 四个重绘演示）：
-
-- [`examples/local-adapters/genkaim-top.json`](../examples/local-adapters/genkaim-top.json)
-- [`examples/local-adapters/genkaim-top-reader.js`](../examples/local-adapters/genkaim-top-reader.js)
-- [`examples/local-adapters/portal-cupk-test.json`](../examples/local-adapters/portal-cupk-test.json)
-- [`examples/local-adapters/portal-cupk-test-reader.js`](../examples/local-adapters/portal-cupk-test-reader.js)
-
-`genkaim-top` 用于演示自定义目标地址；`portal-cupk-test` 直接以 `https://portal.cupk.edu.cn/portal` 为目标，并完整演示验证码位置与同会话提交。两者都用 `auth.type: "engine"` 描述 CUPK CAS 握手：带 `service` 参数打开登录页、提取 `execution`、RSA-PKCS1 加密密码、提交账号/密码/验证码，再按最终落点和明确的错误正文判定结果。测试脚本只读取登录后门户页面的可见链接并生成几个演示功能，不包含账号、Cookie、Token 或固定个人数据。
-
-如果需要一份“学校声明 + 适配器脚本”的真实完整参考，可以在线查看仓库内置的中石大（北京）`cupk` 学校：
-
-- 学校定义（school JSON）：<https://raw.githubusercontent.com/Genkaim/palm-academic/main/app/src/main/assets/schools/cupk.json>
-- 适配器脚本（adapter JS）：<https://raw.githubusercontent.com/Genkaim/palm-academic/main/app/src/main/assets/adapters/cupk-reader.js>
-
-## 适配主线：只需要重点编写两份文件
-
-| 文件 | 负责什么 | 不负责什么 |
-|---|---|---|
-| `schools/<school>.json` | 学校名称、域名、作者、菜单入口、四个重绘入口、后台检查接口、学期/学生 ID 提取规则，以及 adapter 路径 | 不解析网页 DOM，不拼装原生页面数据 |
-| `adapters/<school>-reader.js` | 读取该校四个快捷入口的 DOM/只读 API，把课表、成绩、考试、培养方案转换成统一 `PagePayload`，处理学期选择等只读操作 | 不决定学校域名和菜单，不依赖其他学校脚本 |
-
-`schools/index.json` 只负责注册学校并提供作息 `readerConfig`，不是主要适配逻辑。建议按以下顺序完成：
-
-1. 在 `index.json` 注册学校和作息。
-2. 编写该校 `school.json`，先保证所有普通入口 URL 和四个快捷入口正确。
-3. 在同一份 `school.json` 中配置 `monitor`，用真实响应确认课表、成绩、考试接口能返回实际数据。
-4. 编写该校独立 `adapter.js`，依次完成 `schedule`、`grade`、`exam`、`program` 四类页面。
-5. 运行校验并分别测试普通网页、原生重绘、下拉刷新、学期切换、后台检查日志和课表导出。
-
-两条数据链路不要混淆：
+写好后在手机上通过"选择学校 → 导入本地规则"直接选用，安卓和 iPhone 操作完全一致。
 
 ```text
-用户打开四个快捷入口
-  school.json 的 groups.path -> 隐藏 WebView -> adapter.js 解析并 publish -> Android 原生重绘
+普通功能项（无 quick 标记）
+  JSON 里的 path 直接用内置浏览器打开学校官网，不做任何改写
+
+四个重绘入口（quick: true）
+  JSON 里的 path → 隐藏 WebView 打开网页 → 注入你的 JS 解析 → 原生界面重绘
 
 后台定时检查
-  school.json 的 monitor -> Android 请求只读数据接口 -> 解析成前后 JSON -> 判断变化/记录日志
+  JSON 里的 monitor 接口地址 → App 直接请求只读数据 → 比对前后 JSON
+  （后台任务不执行适配器 JS）
 ```
 
-也就是说，adapter 决定“页面如何显示”，school JSON 的 `monitor` 决定“后台如何检查”。后台任务不会执行 adapter。
+## 一、最快路径：应用内导入测试
 
-```text
-app/src/main/assets/
-├── schools/
-│   ├── index.json          # 内置学校索引
-│   └── <school>.json       # 该校页面、监测接口和脚本引用
-└── adapters/
-    └── <school>-reader.js  # 该校全部四个快捷入口的读取逻辑
-```
+1. 准备好学校定义 JSON 和适配器 JS 两个文件，放到手机可取用的位置（"文件"App、下载目录、LocalSend 等均可）。
+2. 在登录页点"选择学校"，拉到列表**最底部**点"导入本地规则"。
+3. 先选 JSON，再选 JS。App 会立即校验：两份文件通过后即出现在学校列表，带"本地"标记。
+4. 选中这所学校直接登录测试。改了规则想更新：再次导入同名规则并确认覆盖，或先在列表里删除再重新导入。
 
-合并到仓库 `main` 分支后，用户可在 App 的“选择学校”页面刷新规则。测试中的适配也可以在该页面选择“导入本地规则”，依次选择 school JSON 与对应的 adapter JS；本地规则存放在独立目录，不会被云端内置规则刷新覆盖。
+本地规则保存在 App 自己的数据目录，刷新云端规则不会覆盖或删除它；只有本地导入的学校能删除，内置学校只读。学校行右侧的信息按钮可查看规则作者与联系方式。
 
-本地导入使用 school JSON 的 `id` 作为列表 ID，要求只包含小写字母、数字和连字符，并且不能与内置、云端或其他本地学校重复。App 会将 `readerAdapter` 重写为本机安全路径，所以选择的 JS 文件名可以不同，但内容必须实现 `PalmAcademicAdapter`。如需自定义作息，可在 school JSON 顶层加入与索引相同结构的 `readerConfig`。本地学校可在列表中删除；内置与云端学校不可删除。每个学校右侧的详情按钮都会显示规则作者和邮箱。
+导入时 JSON 中的 `readerAdapter` 路径会被自动重写为本机安全路径，所以 JS 文件名随意、不必与 JSON 里写的路径同名，但脚本内容必须实现 `PalmAcademicAdapter`（见第四节）。
 
-## 1. 注册学校
+### 可直接导入的现成示例
 
-在 `schools/index.json` 的 `builtIn` 数组添加学校。schema v2 中的 `imported` 是旧版本兼容字段，必须保持空数组；App 的本地导入索引保存在应用数据目录，不与仓库索引或云端缓存混用。
+- [genkaim-top.json](../examples/local-adapters/genkaim-top.json) + [genkaim-top-reader.js](../examples/local-adapters/genkaim-top-reader.js)：演示如何把规则指向任意目标地址。
+- [portal-cupk-test.json](../examples/local-adapters/portal-cupk-test.json) + [portal-cupk-test-reader.js](../examples/local-adapters/portal-cupk-test-reader.js)：以中石大克拉玛依融合门户为目标，完整演示 CAS 引擎登录（验证码、RSA 加密密码、execution 提取）和四个重绘入口；适配器只读取页面可见链接，适合作为最小骨架照抄。
 
-```json
-{
-  "schemaVersion": 2,
-  "configVersion": 2,
-  "builtIn": [
-    {
-      "id": "example-university",
-      "name": "示例大学",
-      "origin": "https://jw.example.edu.cn",
-      "definitionAsset": "schools/example-university.json",
-      "readerConfig": {
-        "scheduleProfiles": [
-          {
-            "locationPattern": "",
-            "unitTimes": {
-              "1": ["08:00", "08:45"],
-              "2": ["08:50", "09:35"]
-            }
-          }
-        ]
-      }
-    }
-  ],
-  "imported": []
-}
-```
+想看一份真实生产级参考，可对照内置 cupk 学校：
 
-- `id` 仅使用小写字母、数字和连字符，仓库内唯一。
-- `origin` 必须是 HTTPS，不包含末尾 `/student`。
-- 每所学校使用独立的 `definitionAsset` 和 `readerAdapter`。
-- `scheduleProfiles` 必须包含 `locationPattern: ""` 的默认作息；节次时间使用 24 小时制。多校区按地点正则从具体到默认排列。
-- 作息会用于原生课表、iCalendar 和 WakeUp CSV，必须覆盖该校全部节次并实际检查导出时间。
+- 定义：<https://raw.githubusercontent.com/Genkaim/palm-academic/main/app/src/main/assets/schools/cupk.json>
+- 脚本：<https://raw.githubusercontent.com/Genkaim/palm-academic/main/app/src/main/assets/adapters/cupk-reader.js>
 
-## 2. 编写 school JSON：定义入口与后台检查
+## 二、学校定义 JSON
+
+### 最小骨架
 
 ```json
 {
   "schemaVersion": 1,
-  "id": "example-eams",
+  "id": "example-university",
   "name": "示例大学",
-  "author": {"name": "adapter-author", "email": "author@example.com"},
+  "author": {"name": "你的名字", "email": "you@example.com"},
   "baseUrl": "https://jw.example.edu.cn/student",
   "readerAdapter": "adapters/example-reader.js",
   "auth": {
     "type": "salted-sha1",
+    "captcha": {"required": false},
     "loginPath": "/login",
     "saltPath": "/login-salt",
     "homePath": "/home"
@@ -130,53 +69,47 @@ app/src/main/assets/
     "semesterIdPatterns": ["[\"']semesterId[\"']\\s*:\\s*[\"']?(\\d+)"],
     "studentIdPatterns": ["/for-std/course-table/info/(\\d+)"]
   },
-  "groups": [{
-    "title": "快捷入口",
-    "items": [
-      {"title":"我的课表","path":"/for-std/course-table","quick":true,"nativeType":"schedule"},
-      {"title":"课程成绩","path":"/for-std/grade/sheet","quick":true,"nativeType":"grade"},
-      {"title":"考试信息","path":"/for-std/exam-arrange","quick":true,"nativeType":"exam"},
-      {"title":"培养方案","path":"/for-std/program-completion-preview","quick":true,"nativeType":"program"}
+  "groups": [
+    {"title": "常用功能", "items": [
+      {"title": "选课信息", "path": "/for-std/course-select"}
+    ]},
+    {"title": "重绘入口", "items": [
+      {"title": "我的课表", "path": "/for-std/course-table", "quick": true, "nativeType": "schedule"},
+      {"title": "课程成绩", "path": "/for-std/grade/sheet", "quick": true, "nativeType": "grade"},
+      {"title": "考试信息", "path": "/for-std/exam-arrange", "quick": true, "nativeType": "exam"},
+      {"title": "培养方案", "path": "/for-std/program-completion-preview", "quick": true, "nativeType": "program"}
+    ]}
+  ],
+  "readerConfig": {
+    "scheduleProfiles": [
+      {"locationPattern": "", "unitTimes": {
+        "1": ["08:00", "08:45"],
+        "2": ["08:50", "09:35"]
+      }}
     ]
-  }]
+  }
 }
 ```
 
-主要字段的职责：
+### 字段说明
 
-| 字段 | 写法 |
+| 字段 | 说明 |
 |---|---|
-| `id` / `name` / `author` | 该校定义标识、显示名和维护者联系方式；`id` 在仓库内唯一 |
-| `baseUrl` | 教务系统学生端基地址，必须为 HTTPS |
-| `readerAdapter` | 指向该校唯一且完整的 `adapters/<school>-reader.js` |
-| `auth` | 登录协议。`salted-sha1` 沿用内置密码登录；`engine` 用步骤式通用引擎描述任意 HTTP 账密握手（CAS 等）；`web` 配置 CAS/SSO 网页登录地址、成功落点和会话 Cookie 主机 |
-| `groups` | 首页菜单；普通入口只写 `title`/`path`，四个重绘入口额外写 `quick: true` 和 `nativeType` |
-| `monitor` | 后台检查的数据接口模板，以及从入口页/最终 URL 提取学期 ID、学生 ID 的正则 |
+| `id` | 规则唯一标识，只能用小写字母、数字、连字符 |
+| `name` / `author` | 显示名称；作者名和邮箱必填，会展示在学校详情中 |
+| `baseUrl` | 目标站点基地址，必须 HTTPS；跨域的门户/CAS 可在各路径中写完整 URL |
+| `readerAdapter` | 适配器脚本引用，本地导入时会被重写，照写 `adapters/<id>-reader.js` 即可 |
+| `groups` | 首页菜单。普通项只写 `title`/`path`；四个重绘项加 `quick: true` 和 `nativeType` |
+| `monitor` | 后台检查接口模板与学期/学生 ID 提取正则，见下文 |
+| `readerConfig` | 作息时间表（本地规则直接写在 JSON 顶层即可） |
 
-`path` 和监测路径可为相对 `baseUrl` 的路径或完整 HTTPS URL。`courseDataPathTemplate` 必须含 `{semesterId}`，需要学生 ID 的接口使用 `{studentId}`。`semesterIdPatterns` 与 `studentIdPatterns` 会按顺序匹配入口页面内容和最终 URL，每个正则的第一组捕获值必须分别是学期 ID、学生 ID。
+`path` 和 monitor 路径既可以写相对 `baseUrl` 的路径（`/for-std/...`），也可以写完整 HTTPS URL。不要把带 ticket、sid、token 或学号的临时链接写进规则。
 
-后台检查必须请求真正包含数据的只读接口，不能只填写菜单入口页。课表接口应返回课程/教学班/安排，成绩接口应返回实际成绩行，考试接口应返回实际考试行。日志只保存解析后的前后 JSON 用于肉眼比较，不保存完整 HTML；请求状态、最终 URL 和脱敏后的诊断信息单独记录。接口结构不同的学校只修改自己的定义与独立脚本，Android 通用层不写学校域名、表格 class 或固定 ID。
+### 登录方式（auth.type）
 
-当前双端支持三种登录方式：内置的 salted-SHA1 密码流程、学校规则自描述的通用引擎账密流程（`engine`），以及 Web-only/CAS 网页登录流程（`web`）。未提供 `auth.loginUrl` 时保持原来的 `<origin>/student/login` 行为。
+**1. `salted-sha1`（内置教务默认）**：配置 `loginPath`、`saltPath`、`homePath` 即可。
 
-`auth.captcha` 明确声明密码登录是否使用图片验证码。无验证码的学校仍建议写
-`"captcha": {"required": false}`，便于阅读规则时直接确认；需要验证码时必须提供 HTTPS
-图片地址。App 会先在独立登录会话中打开 `loginUrl`，再用同一 Cookie 会话加载图片并提交
-`{captcha}`，点按图片会携带 `refreshQueryParameter` 重新获取，避免展示与提交属于不同会话。
-
-```json
-"captcha": {
-  "required": true,
-  "imageUrl": "https://cas.example.edu.cn/cas/captcha.jpg",
-  "refreshQueryParameter": "id"
-}
-```
-
-仓库内置 `cup`、`cupk` 均显式声明 `"captcha": {"required": false}`；测试学校
-`portal-cupk-test` 声明 `required: true`。是否显示验证码完全由当前 school JSON 决定，
-不按域名硬编码。
-
-CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会优先直接打开 `loginUrl`；WebView 进入任一 `successUrlPrefixes` 后视为登录完成，并只从 `sessionCookieHosts` 指定的站点捕获会话。`sessionCookieNames` 为空数组表示接受成功落点主机写入的任意非空 Cookie；若学校的会话 Cookie 名称稳定，建议明确列出，例如 `SESSION` 或 `JSESSIONID`。
+**2. `web`（纯网页登录/CAS 跳转）**：App 直接在内置浏览器打开登录页，落到成功地址即视为登录完成。
 
 ```json
 {
@@ -190,39 +123,39 @@ CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会
 }
 ```
 
-### 通用登录引擎：`auth.type: "engine"`
+- `successUrlPrefixes`：进入其中任一地址即登录成功。
+- `sessionCookieHosts`：需要捕获会话 Cookie 的主机；**CAS 与门户不同域时两个主机都要列**，否则会话无法跨域恢复（如 `["portal.example.edu.cn", "cas.example.edu.cn"]`）。
+- `sessionCookieNames`：会话 Cookie 名；留空数组 `[]` 表示接受落点主机的任意非空 Cookie；名称稳定时建议显式写出。
 
-教务系统的登录方式不止 salted-sha1 一种：CAS、统一身份认证、客户端 RSA 加密密码……为每一种登录方式单独写内置流程不现实，因此登录方式可以整个嵌入学校配置。选择 `type: "engine"` 后，App 不再执行任何内置登录流程，而是按 `auth.engine.steps` 的顺序逐条执行学校自己描述的握手；Android 与 iOS 使用同一套引擎语义，同一份 JSON 两端行为一致。
+**3. `engine`（步骤式通用登录引擎，双端语义一致）**：适用于 CAS、统一身份认证、RSA 加密密码等任意账密握手。App 不内置任何登录假设，完全按 `engine.steps` 依次执行：
 
-每个步骤有且仅有以下三种之一：
-
-| 步骤 | 作用 | 字段 |
+| 步骤类型 | 作用 | 关键字段 |
 |---|---|---|
-| `request` | 发起一次 HTTP 请求，自动跟随重定向并收集全程 Cookie | `method`（默认 GET）、`url`、`headers`、`contentType`（`"form"`/`"json"`/省略为原始体）、`form`/`json`/`body` |
-| `extract` | 用正则从响应正文提取变量 | `from`（请求步骤 id，默认上一个请求步骤）、`regex`（默认取第一捕获组）、`group` |
-| `transform` | 对变量做加密/摘要 | `algorithm`（`rsa-pkcs1-base64`/`sha1`/`md5`）、`publicKey`（RSA 时为 X.509 Base64 公钥）、`input` |
+| `request` | 发一次 HTTP 请求，自动跟随重定向并收集全程 Cookie | `method`、`url`、`headers`、`contentType`（`form`/`json`）、`form`/`json`/`body` |
+| `extract` | 正则提取变量（默认取第一捕获组，取上一个请求的响应） | `from`、`regex`、`group` |
+| `transform` | 加密/摘要 | `algorithm`：`rsa-pkcs1-base64`/`sha1`/`md5`；RSA 时给 `publicKey`、`input` |
 
-内置变量：`{username}`、`{password}`、`{captcha}`、`{baseUrl}`、`{loginUrl}`；`extract`/`transform` 的输出变量名即该步骤的 `id`，后续步骤用 `{id}` 插值。`form` 的键值在插值后自动 URL 编码。
+内置变量：`{username}`、`{password}`、`{captcha}`、`{baseUrl}`、`{loginUrl}`；每个步骤的输出以其 `id` 命名，后续用 `{id}` 插值。
 
-`outcome` 作用于最后一个 `request` 步骤的最终响应：
+`outcome` 对最后一个请求的结果做判定：
 
-- `captcha`/`rejected`：必须提供非空 `bodyContains`（不区分大小写、任一命中），可再用 `statusCodes` 收窄；二者同时满足时才按 `message` 提示并返回登录页。不能只凭 401/403 认定密码错误，因为网关、预会话失效也可能返回这些状态；
-- `success`：`finalUrlPrefixes`（默认取 `auth.successUrlPrefixes`）、`cookies`（默认取 `auth.sessionCookieNames`，空数组表示不校验 Cookie 名）、`statusCodes` 三类条件全部满足才判定登录成功；
-- 都不匹配视为网络/会话类错误，App 会持续重试，不会弹回登录页。
+- `captcha` / `rejected`：必须给出非空 `bodyContains`（任一命中），命中才按 `message` 提示并退回登录页。**不能只凭 401/403 判定密码错误**（网关、预会话失效也会返回这些码）。
+- `success`：`finalUrlPrefixes`、`cookies`（默认取 `sessionCookieNames`）、`statusCodes` 全部满足才算成功。
+- 都不命中视为网络/会话问题，App 持续重试，不打断用户。
 
-以中石大克拉玛依校区 CAS 为例（可直接导入的完整文件见文首 `portal-cupk-test` 示例）：
+完整 CAS 示例（含验证码）可直接看 [portal-cupk-test.json](../examples/local-adapters/portal-cupk-test.json)，下面是精简版：
 
 ```json
 {
   "auth": {
     "type": "engine",
-    "loginUrl": "https://cas.cupk.edu.cn/cas/login?service=https%3A%2F%2Fportal.cupk.edu.cn%2Fportal%2F",
-    "successUrlPrefixes": ["https://portal.cupk.edu.cn/portal/"],
-    "sessionCookieHosts": ["portal.cupk.edu.cn", "cas.cupk.edu.cn"],
+    "loginUrl": "https://cas.example.edu.cn/cas/login?service=https%3A%2F%2Fportal.example.edu.cn%2Fportal%2F",
+    "successUrlPrefixes": ["https://portal.example.edu.cn/portal/"],
+    "sessionCookieHosts": ["portal.example.edu.cn", "cas.example.edu.cn"],
     "sessionCookieNames": [],
     "captcha": {
       "required": true,
-      "imageUrl": "https://cas.cupk.edu.cn/cas/captcha.jpg",
+      "imageUrl": "https://cas.example.edu.cn/cas/captcha.jpg",
       "refreshQueryParameter": "id"
     },
     "engine": {
@@ -231,13 +164,11 @@ CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会
         {"id": "execution", "extract": {"regex": "name=\"execution\" value=\"([^\"]+)\""}},
         {"id": "encryptedPassword", "transform": {
           "algorithm": "rsa-pkcs1-base64",
-          "publicKey": "MFswDQYJKoZIhvcNAQEBBQADSgAwRwJAUpCfX4kq+mbPNcVHM9x1OIwk94OaU4Dwt0gS0VHDM52pG60Fmxjm47DP5EXIgrg1UlMSwJbBIdHyg1XS1E3OjQIDAQAB",
+          "publicKey": "<X.509 Base64 公钥>",
           "input": "{password}"
         }},
         {"id": "loginPost", "request": {
-          "method": "POST",
-          "url": "{loginUrl}",
-          "contentType": "form",
+          "method": "POST", "url": "{loginUrl}", "contentType": "form",
           "form": {
             "username": "{username}",
             "password": "{encryptedPassword}",
@@ -248,157 +179,156 @@ CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会
         }}
       ],
       "outcome": {
-        "captcha": {"bodyContains": ["验证码错误", "验证码不能为空"], "message": "验证码错误，请刷新后重试"},
-        "rejected": {"bodyContains": ["用户名或密码错误", "Invalid credentials"], "message": "账号或密码错误"},
-        "success": {"finalUrlPrefixes": ["https://portal.cupk.edu.cn/"]}
+        "captcha": {"bodyContains": ["验证码错误"], "message": "验证码错误，请刷新后重试"},
+        "rejected": {"bodyContains": ["用户名或密码错误"], "message": "账号或密码错误"},
+        "success": {"finalUrlPrefixes": ["https://portal.example.edu.cn/"]}
       }
     }
   }
 }
 ```
 
-`baseUrl` 仍表示规则的目标站点与相对功能路径基准；CAS 和登录后的门户不在同一域名时，功能项与 `monitor` 路径可以填写完整 HTTPS URL。不要把带 `sid`、票据、Token 或账号信息的临时 URL 写入规则。
+需要图片验证码时必须提供 HTTPS 的 `imageUrl` 和 `refreshQueryParameter`；App 会在同一登录会话中先打开登录页、再加载验证码图片并提交，点按图片按刷新参数重新获取。无验证码的学校也建议显式写 `"captcha": {"required": false}`。
 
-### school JSON 中的四个快捷入口
+### 四个重绘入口
 
-每所学校必须各提供一次下列 `nativeType`。四者都由同一个该校脚本读取并原生重绘。
+每所学校必须恰好各提供一个 `nativeType`，都由同一个适配器脚本处理：
 
-| `nativeType` | 推荐标题 | 必须提供的核心数据 |
+| `nativeType` | 建议标题 | 需要的核心数据 |
 |---|---|---|
-| `schedule` | 我的课表 | 学期、开学日期、星期、课程名、周次、节次、地点、教师 |
-| `grade` | 课程成绩 | 课程名、成绩及页面可见的学分、绩点、课程性质等字段 |
-| `exam` | 考试信息 | 课程名、日期时间、地点、座位等页面可见字段 |
-| `program` | 培养方案完成情况 | 学分统计与可递归展开的模块、课程完成状态 |
+| `schedule` | 我的课表 | 学期、星期、课程名、周次、节次、地点、教师 |
+| `grade` | 课程成绩 | 课程名、成绩及页面可见的学分、绩点、性质等 |
+| `exam` | 考试信息 | 课程名、时间、地点、座位等 |
+| `program` | 培养方案 | 学分统计、可递归的模块与课程完成状态 |
 
-```json
-{"title":"我的课表","path":"/course-table","quick":true,"nativeType":"schedule"}
-```
+### 后台检查（monitor）
 
-非重绘功能不设置 `quick`/`nativeType`，App 直接打开官网页面。选课、申请、查询等普通页面只需提供正确 `path`；不得在适配脚本里自动执行写操作。
+- `courseDataPathTemplate` 必须包含 `{semesterId}`；需要学号的接口用 `{studentId}`。
+- 接口必须返回**真正含数据**的只读响应（课程行/成绩行/考试行），不能只填菜单页地址。
+- `semesterIdPatterns`、`studentIdPatterns` 按顺序在入口页 HTML 和最终 URL 上匹配，取第一捕获组；两者都必须是非空正则数组。
+- 日志只保存解析后的 JSON 摘要，不保存完整 HTML、Cookie 或个人凭据。
 
-## 3. 编写 adapter JS：解析并发布四个页面
+### 作息时间（readerConfig.scheduleProfiles）
 
-宿主在页面完成后注入 `PalmAcademicHost`。一个学校的脚本必须自行包含四个快捷入口所需的 DOM/API 解析、学期切换和发布逻辑，不得 `import`、拼接或调用另一所学校的适配脚本。
+- 必须包含一个 `locationPattern: ""` 的默认作息；多校区按地点正则匹配，顺序从具体到默认。
+- 节次键是 `"1"`、`"2"` 这样的字符串，时间为 24 小时制 `["HH:mm", "HH:mm"]`。
+- 作息会用于原生课表、日历（.ics）导出，必须覆盖全部节次。
+
+## 三、适配器 JS
+
+网页加载完成后，宿主会注入 `PalmAcademicHost`。脚本通过 `window.PalmAcademicAdapter` 暴露四个入口：
 
 ```ts
 type PalmAcademicHost = {
   apiVersion: 1;
   schoolConfig: Record<string, unknown>;
-  publish: (payload: PagePayload) => void;
+  publish: (payload: PagePayload) => void;   // 把解析结果交给原生层
 };
 
 type PalmAcademicAdapter = {
   apiVersion: 1;
-  read: () => PagePayload;
-  publish: () => void;
-  perform: (actionId: string, value: string) => boolean;
+  read: () => PagePayload;                   // 只读解析当前页
+  publish: () => void;                       // read() 后交给 host
+  perform: (actionId: string, value: string) => boolean;  // 学期切换等交互
 };
 ```
 
-最小发布结构：
+最小可用模板：
 
 ```js
 (function () {
+  'use strict';
   if (!window.PalmAcademicHost || window.PalmAcademicAdapter) return;
+
   function read() {
     return {
       title: document.title,
       sourceUrl: location.href,
       choices: [],
       actions: [],
-      sections: [{type: "text", title: "内容", paragraphs: [document.body.innerText.trim()]}]
+      sections: [{type: 'text', title: '内容', paragraphs: [document.body.innerText.trim()]}]
     };
   }
   function publish() { PalmAcademicHost.publish(read()); }
   function perform() { return false; }
+
   window.PalmAcademicAdapter = {apiVersion: 1, read, publish, perform};
   publish();
 })();
 ```
 
-一份 adapter 推荐按下面的结构组织，四类逻辑必须都在当前文件内：
+建议按页面拆分函数，在 `read()` 里按 URL 分发；四类逻辑必须在同一个文件内，**不得引用或复制其他学校的脚本**：
 
 ```js
-function schedulePage() { /* 读取课表 DOM/API，返回 PagePayload */ }
-function gradePage() { /* 读取实际成绩内容，不能只返回行号 */ }
-function examPage() { /* 读取课程、时间、地点、座位等 */ }
-function programPage() { /* 读取学分统计、模块和课程 */ }
-
 function read() {
-  const path = location.pathname;
-  if (path.includes('/course-table')) return schedulePage();
-  if (path.includes('/grade')) return gradePage();
-  if (path.includes('/exam')) return examPage();
-  if (path.includes('/program')) return programPage();
+  const p = location.pathname;
+  if (p.includes('/course-table')) return schedulePage();
+  if (p.includes('/grade'))        return gradePage();
+  if (p.includes('/exam-arrange')) return examPage();
+  if (p.includes('/program'))      return programPage();
   return {title: document.title, sourceUrl: location.href, sections: []};
 }
 ```
 
-- `read()`：只读取当前页面状态并返回完整 `PagePayload`，不得产生写操作。
-- `publish()`：调用 `PalmAcademicHost.publish(read())`；页面异步变化后必须再次发布完整结果。
-- `perform(actionId, value)`：处理学期选择、排名类型等只读交互，完成后触发页面/API 更新并再次 `publish()`。
-- `MutationObserver`：仅用于等待异步 DOM，必须防抖，避免连续发布相同数据。
-- 四个 page 函数可以共享当前文件内的工具函数，但不能加载或复制依赖另一所学校的脚本。
+约束：
 
-## 4. adapter 发布的四类数据格式
+- 只做只读操作：禁止选课、退课、提交申请等任何写操作；禁止读取/输出 Cookie、密码、Token。
+- 页面异步渲染时，用**防抖的** `MutationObserver` 等内容到位后再 `publish()`，避免重复发同一份数据。
+- 学期/排名切换通过 `choices` 声明；原生层调用 `perform(actionId, value)` 后，脚本操作页面控件或请求对应数据，并再次 `publish()` 完整结果。
+- 可直接读 DOM，也可调用官网自己的只读接口（仅 HTTPS、GET/HEAD 或必要的只读查询 POST）。
+- 没有数据时也要发布可读的空状态 `text`，不能只发空壳。
 
-所有入口发布统一的 `PagePayload`：
+## 四、PagePayload 数据格式
 
 ```ts
 type PagePayload = {
   title: string;
   sourceUrl: string;
-  choices?: {id:string; label:string; value:string; options:{value:string; label:string}[]}[];
-  actions?: {id:string; label:string; value:string}[];
+  choices?: {id: string; label: string; value: string;
+               options: {value: string; label: string}[]}[];
+  actions?: {id: string; label: string; value: string}[];
   sections: Section[];
 };
 ```
 
-课表使用 `schedule` section：
+**课表 schedule**：
 
 ```json
 {
   "type": "schedule",
   "semesterStartDate": "2026-09-07",
-  "days": [{
-    "name": "周一",
-    "lessons": [{
-      "title": "高等数学",
-      "schedule": {
-        "weeks": "1-16周",
-        "startSection": "1",
-        "endSection": "2",
-        "teacher": "教师",
-        "location": "A101",
-        "startTime": "08:00",
-        "endTime": "09:35"
-      }
-    }]
-  }]
+  "days": [{"name": "周一", "lessons": [{
+    "title": "高等数学",
+    "schedule": {
+      "weeks": "1-16周",
+      "startSection": "1", "endSection": "2",
+      "teacher": "张老师", "location": "A101",
+      "startTime": "08:00", "endTime": "09:35"
+    }
+  }}]}
 }
 ```
 
-成绩与考试优先使用 `cards`，把网页可见字段全部放入 `fields`，不要只返回行号或数组索引：
+**成绩 / 考试 cards**：把页面可见字段全部放进 `fields`，不要只给行号：
 
 ```json
 {
   "type": "cards",
   "title": "课程成绩",
   "cards": [{
-    "title": "高等数学",
-    "subtitle": "必修",
+    "title": "高等数学", "subtitle": "必修",
     "fields": [
-      {"label":"成绩","value":"95"},
-      {"label":"学分","value":"4"},
-      {"label":"绩点","value":"4.5"}
+      {"label": "成绩", "value": "95"},
+      {"label": "学分", "value": "4"},
+      {"label": "绩点", "value": "4.5"}
     ]
   }]
 }
 ```
 
-考试同样使用 `cards`，例如字段 `考试时间`、`地点`、`座位号`。如官网天然为表格，也可使用 `table`：`headers: string[]` 与 `rows: string[][]`，但每一行必须包含实际内容。
+考试同样用 `cards`（字段如考试时间、地点、座位号）；官网本身就是表格时可用 `table`：`headers: string[]` + `rows: string[][]`，每行必须有实际内容。
 
-培养方案使用 `program`。顶层 `modules` 中的模块通过 `children` 递归；`courses` 必须是与 `headers` 对齐的二维字符串数组：
+**培养方案 program**：模块通过 `children` 递归，`courses` 与 `headers` 对齐：
 
 ```json
 {
@@ -418,24 +348,24 @@ type PagePayload = {
 }
 ```
 
-通用 section 还包括 `text`、`fields`、`table`、`cards`、`stats`、`links`。空状态也要发布可读的 `text`，不能仅发布空索引。
+其余通用 section：`text`、`fields`、`stats`、`links`。
 
-## 5. adapter 如何取得网页和数据
+## 五、自测清单
 
-- `sourceUrl` 使用当前实际页面 URL；入口 `path` 负责让隐藏 WebView 打开正确网页。
-- 可从 DOM 读取，也可复用官网的只读 API；只允许 HTTPS、GET/HEAD 及必要的只读查询 POST。
-- 页面异步加载时等待目标 DOM/API 完成后再 `publish()`；可用带防抖的 `MutationObserver`。
-- 学期选择放在 `choices`。Android 调用 `perform(actionId, value)` 后，脚本更新官网控件或请求对应数据，并再次发布完整结果。
-- 不得读取、记录、上传或输出 Cookie、密码、Token；不得执行选课、退课、提交申请等写操作。
-- 后台检查的 `monitor` 路径必须由该校定义提供，Android 不硬编码某个学校的表格 class 或接口地址。
+导入时 App 已自动校验 JSON/JS 语法、HTTPS 地址、作者信息、四个 `nativeType` 齐全和引擎步骤合法性。真机上再逐项确认：
 
-## 6. 提交前检查
+1. 四个重绘入口都能显示**真实内容**（不是空壳或整页 innerText），下拉刷新后发布最新完整结果。
+2. 学期切换（choices/perform）可用，切换后重新发布。
+3. 普通功能项能正常打开官网页面，登录态保持正常。
+4. 后台"立即检查"能解析出学期 ID、学生 ID，课表/成绩/考试日志显示的是解析后的 JSON。
+5. 日历导出的节次时间与实际作息一致（重点看多校区、晚课、跨节次）。
+6. 规则文件里不含账号、Cookie、Token 或真实个人数据。
 
-1. 运行 `node tools/validate-adapters.mjs`，确保索引、定义和脚本通过校验。
-2. 四个 `nativeType` 均能发布包含实际内容的非空数据，学期切换后会重新发布；所有原生重绘页面下拉刷新后也必须发布最新完整结果。
-3. 用真实账号确认后台检查的学生 ID、学期 ID 均能解析，课表/成绩/考试日志能显示解析后的前后 JSON，而不是索引、空壳对象或完整 HTML。
-4. 普通网页入口可以打开；重绘与非重绘功能边界符合第 3 节。
-5. 实测 `.ics` 与 WakeUp CSV，重点检查多校区、晚课、周次和跨节课程。
-6. 一个 PR 只新增一所学校的索引项、定义和完整脚本，不提交账号、Cookie、真实课表或其他个人信息。
+## 六、把学校贡献进仓库（可选）
 
-推荐通过 GitHub Pull Request 提交，以便逐行审查并单独回滚。详细流程见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。
+本地规则验证稳定后，如希望所有用户直接选用，可提交 Pull Request：
+
+1. 把 JSON 放到 `app/src/main/assets/schools/<id>.json`，JS 放到 `app/src/main/assets/adapters/<id>-reader.js`，作息移到 `app/src/main/assets/schools/index.json` 的注册项 `readerConfig` 中。
+2. **两端资源都要更新**：同两份文件复制到 iOS 工程的 `iosApp/Resources/schools/` 与 `iosApp/Resources/adapters/`，并在两端 `index.json` 注册。
+3. 本地运行 `node tools/validate-adapters.mjs` 通过校验。
+4. 一个 PR 只新增一所学校；不要提交任何个人凭据或数据。审查流程见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
