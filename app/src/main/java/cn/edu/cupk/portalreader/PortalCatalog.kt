@@ -9,6 +9,11 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 data class SchoolOption(val id: String, val name: String, val isImported: Boolean)
+
+class LocalRuleImportConflict(
+    val existing: SchoolOption,
+    val replacementName: String
+) : IllegalArgumentException("学校 id ${existing.id} 已存在")
 data class SchoolAuthorInfo(
     val schoolName: String,
     val authorName: String,
@@ -290,7 +295,8 @@ object SchoolAdapterRepository {
     fun importLocalSchool(
         context: Context,
         definitionText: String,
-        adapterText: String
+        adapterText: String,
+        overwriteExisting: Boolean = false
     ): SchoolOption {
         ensureInitialized(context)
         require(definitionText.toByteArray().size <= 1_048_576) { "规则 JSON 不能超过 1 MB" }
@@ -303,9 +309,16 @@ object SchoolAdapterRepository {
         validateDefinition(definition)
         val id = definition.optString("id")
         require(id.matches(Regex("[a-z0-9-]+"))) { "学校 id 只能包含小写字母、数字和连字符" }
-        require(profiles.none { it.id == id }) { "学校 id 已存在，请先删除同名本地规则" }
         val name = definition.optString("name")
         require(name.isNotBlank()) { "学校名称不能为空" }
+        profiles.firstOrNull { it.id == id }?.let { existing ->
+            if (!overwriteExisting) {
+                throw LocalRuleImportConflict(
+                    existing = SchoolOption(existing.id, existing.name, existing.isImported),
+                    replacementName = name
+                )
+            }
+        }
         val baseUrl = definition.getString("baseUrl")
         val origin = java.net.URI(baseUrl).let { uri ->
             require(uri.scheme == "https" && !uri.host.isNullOrBlank()) { "学校 baseUrl 无效" }
@@ -326,7 +339,7 @@ object SchoolAdapterRepository {
         val root = localCacheRoot(context)
         writeLocalFile(root, definitionAsset, definition.toString(2))
         writeLocalFile(root, adapterAsset, adapterText)
-        val locals = readLocalProfiles(context) + profile
+        val locals = readLocalProfiles(context).filterNot { it.id == id } + profile
         writeLocalIndex(root, locals)
         profiles = readProfiles(context)
         cachedDefinition = null
@@ -345,7 +358,7 @@ object SchoolAdapterRepository {
         // The canonical adapter path is deterministic even if the definition was already removed.
         localFile(context, "adapters/local/$schoolId-reader.js").delete()
         profiles = readProfiles(context)
-        if (selectedSchoolId == schoolId) {
+        if (selectedSchoolId == schoolId && profiles.none { it.id == schoolId }) {
             selectedSchoolId = profiles.firstOrNull { it.id == DEFAULT_SCHOOL_ID }?.id
                 ?: profiles.firstOrNull()?.id
                 ?: DEFAULT_SCHOOL_ID
@@ -553,8 +566,11 @@ object SchoolAdapterRepository {
 
     private fun readProfiles(context: Context): List<SchoolProfile> {
         val builtIn = currentIndex(context).builtIn
-        val builtInIds = builtIn.mapTo(mutableSetOf()) { it.id }
-        return builtIn + readLocalProfiles(context).filter { it.id !in builtInIds }
+        val local = readLocalProfiles(context)
+        val localIds = local.mapTo(mutableSetOf()) { it.id }
+        // A local import is an explicit user override. Keeping it first also means deleting that
+        // override naturally reveals the bundled/cloud profile with the same id again.
+        return local + builtIn.filter { it.id !in localIds }
     }
 
     private fun readLocalProfiles(context: Context): List<SchoolProfile> {

@@ -914,6 +914,7 @@ private struct LocalRuleImportView: View {
     @State private var choosingAdapter = false
     @State private var errorMessage: String?
     @State private var importing = false
+    @State private var pendingOverwrite: LocalRuleImportConflict?
     let onImported: (SchoolProfile) -> Void
 
     var body: some View {
@@ -933,7 +934,7 @@ private struct LocalRuleImportView: View {
                         action: { choosingAdapter = true }
                     )
                 } footer: {
-                    Text("两个文件将复制到本机独立存储；刷新云端内置规则不会覆盖本地导入。学校 ID 与现有条目冲突时会拒绝导入。")
+                    Text("两个文件将复制到本机独立存储；刷新云端内置规则不会覆盖本地导入。学校 ID 与现有条目冲突时，确认后可覆盖。")
                 }
 
                 if let errorMessage {
@@ -944,7 +945,7 @@ private struct LocalRuleImportView: View {
 
                 Section {
                     Button {
-                        importFiles()
+                        importFiles(overwriteExisting: false)
                     } label: {
                         HStack {
                             Spacer()
@@ -978,6 +979,26 @@ private struct LocalRuleImportView: View {
         ) { result in
             handle(result, target: &adapterURL)
         }
+        .alert(
+            "覆盖同 ID 规则？",
+            isPresented: Binding(
+                get: { pendingOverwrite != nil },
+                set: { if !$0 { pendingOverwrite = nil } }
+            ),
+            presenting: pendingOverwrite
+        ) { _ in
+            Button("取消", role: .cancel) { pendingOverwrite = nil }
+            Button("覆盖", role: .destructive) {
+                pendingOverwrite = nil
+                importFiles(overwriteExisting: true)
+            }
+        } message: { conflict in
+            let source = conflict.existingIsImported ? "本地导入规则" : "内置 / 云端规则"
+            Text(
+                "ID“\(conflict.schoolID)”已由\(source)“\(conflict.existingName)”使用。" +
+                    "是否用“\(conflict.replacementName)”覆盖？"
+            )
+        }
     }
 
     private func fileRow(
@@ -1010,7 +1031,7 @@ private struct LocalRuleImportView: View {
         }
     }
 
-    private func importFiles() {
+    private func importFiles(overwriteExisting: Bool) {
         guard let definitionURL, let adapterURL else { return }
         importing = true
         defer { importing = false }
@@ -1019,10 +1040,14 @@ private struct LocalRuleImportView: View {
             let adapter = try securityScopedData(from: adapterURL)
             let imported = try catalog.importLocalSchool(
                 definitionData: definition,
-                adapterData: adapter
+                adapterData: adapter,
+                overwriteExisting: overwriteExisting
             )
             onImported(imported)
             dismiss()
+        } catch let conflict as LocalRuleImportConflict where !overwriteExisting {
+            errorMessage = nil
+            pendingOverwrite = conflict
         } catch {
             errorMessage = error.localizedDescription
         }

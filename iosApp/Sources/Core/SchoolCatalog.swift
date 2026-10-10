@@ -1,5 +1,14 @@
 import Foundation
 
+struct LocalRuleImportConflict: LocalizedError {
+    let schoolID: String
+    let existingName: String
+    let replacementName: String
+    let existingIsImported: Bool
+
+    var errorDescription: String? { "学校 id \(schoolID) 已存在" }
+}
+
 /// Port of `SchoolAdapterRepository` from `PortalCatalog.kt`.
 ///
 /// The Android version merges bundled assets with a GitHub-downloaded overlay. This port keeps
@@ -81,7 +90,11 @@ final class SchoolCatalog: ObservableObject {
 
     /// Imports two user-selected files into an app-owned store that cloud refresh never touches.
     @discardableResult
-    func importLocalSchool(definitionData: Data, adapterData: Data) throws -> SchoolProfile {
+    func importLocalSchool(
+        definitionData: Data,
+        adapterData: Data,
+        overwriteExisting: Bool = false
+    ) throws -> SchoolProfile {
         guard definitionData.count <= 1_048_576 else {
             throw localImportError("规则 JSON 不能超过 1 MB")
         }
@@ -99,9 +112,6 @@ final class SchoolCatalog: ObservableObject {
               id.range(of: "^[a-z0-9-]+$", options: .regularExpression) != nil else {
             throw localImportError("学校 id 只能包含小写字母、数字和连字符")
         }
-        guard !profiles.contains(where: { $0.id == id }) else {
-            throw localImportError("学校 id 已存在，请先删除同名本地规则")
-        }
         guard let name = root["name"] as? String, !name.isEmpty,
               let baseURL = root["baseUrl"] as? String,
               var components = URLComponents(string: baseURL),
@@ -113,6 +123,14 @@ final class SchoolCatalog: ObservableObject {
         components.fragment = nil
         guard let origin = components.url?.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) else {
             throw PortalError.invalidSchoolDefinition
+        }
+        if let existing = profiles.first(where: { $0.id == id }), !overwriteExisting {
+            throw LocalRuleImportConflict(
+                schoolID: id,
+                existingName: existing.name,
+                replacementName: name,
+                existingIsImported: existing.isImported
+            )
         }
         let definitionAsset = "schools/local/\(id).json"
         let adapterAsset = "adapters/local/\(id)-reader.js"
@@ -144,7 +162,7 @@ final class SchoolCatalog: ObservableObject {
         let cacheRoot = try localCacheRoot()
         try writeLocalFile(cacheRoot: cacheRoot, assetPath: definitionAsset, content: definitionText)
         try writeLocalFile(cacheRoot: cacheRoot, assetPath: adapterAsset, content: adapterText)
-        try writeLocalIndex(readLocalProfiles() + [profile])
+        try writeLocalIndex(readLocalProfiles().filter { $0.id != id } + [profile])
         profiles = try readProfiles()
         cachedDefinition = nil
         definition = nil
@@ -162,7 +180,7 @@ final class SchoolCatalog: ObservableObject {
         try? fileManager.removeItem(at: localFile(assetPath: profile.definitionAsset))
         try? fileManager.removeItem(at: localFile(assetPath: "adapters/local/\(id)-reader.js"))
         profiles = try readProfiles()
-        if selectedSchoolID == id {
+        if selectedSchoolID == id && !profiles.contains(where: { $0.id == id }) {
             selectedSchoolID = profiles.first { $0.id == Self.defaultSchoolID }?.id
                 ?? profiles.first?.id
                 ?? Self.defaultSchoolID
@@ -311,8 +329,11 @@ final class SchoolCatalog: ObservableObject {
     }
 
     private func mergeWithLocalProfiles(_ builtIn: [SchoolProfile]) -> [SchoolProfile] {
-        let builtInIDs = Set(builtIn.map(\.id))
-        return builtIn + readLocalProfiles().filter { !builtInIDs.contains($0.id) }
+        let local = readLocalProfiles()
+        let localIDs = Set(local.map(\.id))
+        // A local import is an explicit user override. Deleting it reveals the bundled/cloud
+        // profile with the same id again without mutating that managed source.
+        return local + builtIn.filter { !localIDs.contains($0.id) }
     }
 
     private func readLocalProfiles() -> [SchoolProfile] {

@@ -131,6 +131,7 @@ private fun SchoolSelectionContent(
     var adapterUri by remember { mutableStateOf<Uri?>(null) }
     var info by remember { mutableStateOf<SchoolAuthorInfo?>(null) }
     var pendingDelete by remember { mutableStateOf<SchoolOption?>(null) }
+    var pendingOverwrite by remember { mutableStateOf<LocalRuleImportConflict?>(null) }
     val definitionPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { definitionUri = it }
@@ -144,6 +145,53 @@ private fun SchoolSelectionContent(
         }
             .groupBy { schoolInitial(it.name) }
             .toSortedMap(compareBy<String> { it == "#" }.thenBy { it })
+    }
+
+    fun importSelectedFiles(overwriteExisting: Boolean) {
+        val json = definitionUri ?: return
+        val script = adapterUri ?: return
+        importing = true
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val definitionText = context.contentResolver.openInputStream(json)
+                        ?.bufferedReader()?.use { it.readText() }
+                        ?: error("无法读取规则 JSON")
+                    val adapterText = context.contentResolver.openInputStream(script)
+                        ?.bufferedReader()?.use { it.readText() }
+                        ?: error("无法读取适配器 JS")
+                    SchoolAdapterRepository.importLocalSchool(
+                        context.applicationContext,
+                        definitionText,
+                        adapterText,
+                        overwriteExisting = overwriteExisting
+                    )
+                }
+            }
+            importing = false
+            result.onSuccess { imported ->
+                schools = SchoolAdapterRepository.options(context)
+                definitionUri = null
+                adapterUri = null
+                pendingOverwrite = null
+                showingImport = false
+                Toast.makeText(
+                    context,
+                    if (overwriteExisting) "已覆盖 ${imported.name}" else "已导入 ${imported.name}",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }.onFailure { error ->
+                if (!overwriteExisting && error is LocalRuleImportConflict) {
+                    pendingOverwrite = error
+                } else {
+                    Toast.makeText(
+                        context,
+                        error.message ?: "导入失败，请检查两个文件",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
     }
 
     Scaffold(
@@ -308,7 +356,7 @@ private fun SchoolSelectionContent(
             ) {
                 Text("导入本地规则", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "依次选择学校定义 JSON 和对应的适配器 JS。导入内容仅保存在本机，不会被云端刷新覆盖。",
+                    "依次选择学校定义 JSON 和对应的适配器 JS。导入内容仅保存在本机；如果学校 ID 已存在，确认后可覆盖。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 LocalRuleFileButton(
@@ -326,46 +374,7 @@ private fun SchoolSelectionContent(
                     }
                 )
                 Button(
-                    onClick = {
-                        val json = definitionUri ?: return@Button
-                        val script = adapterUri ?: return@Button
-                        importing = true
-                        scope.launch {
-                            val result = runCatching {
-                                withContext(Dispatchers.IO) {
-                                    val definitionText = context.contentResolver.openInputStream(json)
-                                        ?.bufferedReader()?.use { it.readText() }
-                                        ?: error("无法读取规则 JSON")
-                                    val adapterText = context.contentResolver.openInputStream(script)
-                                        ?.bufferedReader()?.use { it.readText() }
-                                        ?: error("无法读取适配器 JS")
-                                    SchoolAdapterRepository.importLocalSchool(
-                                        context.applicationContext,
-                                        definitionText,
-                                        adapterText
-                                    )
-                                }
-                            }
-                            importing = false
-                            result.onSuccess { imported ->
-                                schools = SchoolAdapterRepository.options(context)
-                                definitionUri = null
-                                adapterUri = null
-                                showingImport = false
-                                Toast.makeText(
-                                    context,
-                                    "已导入 ${imported.name}",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }.onFailure { error ->
-                                Toast.makeText(
-                                    context,
-                                    error.message ?: "导入失败，请检查两个文件",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
-                    },
+                    onClick = { importSelectedFiles(overwriteExisting = false) },
                     enabled = definitionUri != null && adapterUri != null && !importing,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -374,6 +383,31 @@ private fun SchoolSelectionContent(
                 Spacer(Modifier.size(12.dp))
             }
         }
+    }
+
+    pendingOverwrite?.let { conflict ->
+        AlertDialog(
+            onDismissRequest = { pendingOverwrite = null },
+            title = { Text("覆盖同 ID 规则？") },
+            text = {
+                val source = if (conflict.existing.isImported) "本地导入规则" else "内置 / 云端规则"
+                Text(
+                    "ID“${conflict.existing.id}”已由${source}“${conflict.existing.name}”使用。" +
+                        "是否用“${conflict.replacementName}”覆盖？"
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingOverwrite = null }) { Text("取消") }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingOverwrite = null
+                    importSelectedFiles(overwriteExisting = true)
+                }) {
+                    Text("覆盖", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        )
     }
 
     info?.let { author ->
