@@ -480,7 +480,7 @@ struct MaterialReaderView: UIViewRepresentable {
             // forever (the plain portal screen upgrades it, the hidden reader did not). Upgrade
             // the same-host hop instead, matching the browser/Android behaviour.
             if url.scheme?.lowercased() == "http",
-               let upgraded = Self.upgradeSameHostHTTPS(url, webView: webView, parent: parent.url) {
+               let upgraded = Self.upgradeSameHostHTTPS(url, webView: webView, parentURL: parent.url) {
                 decisionHandler(.cancel)
                 webView.load(URLRequest(url: upgraded, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60))
                 return
