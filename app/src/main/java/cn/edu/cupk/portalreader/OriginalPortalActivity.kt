@@ -31,23 +31,12 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 
 class OriginalPortalActivity : PortalActivity() {
     private lateinit var webView: WebView
     private var sessionDialogShown = false
-    private var nativeNavigationStarted = false
     private var initialLoadStarted = false
     private var silentReauthenticationPending = false
-
-    private fun samePortalLocation(first: String, second: String): Boolean = runCatching {
-        val left = android.net.Uri.parse(first)
-        val right = android.net.Uri.parse(second)
-        left.scheme.equals(right.scheme, true) &&
-            left.host.equals(right.host, true) &&
-            left.path.orEmpty().trimEnd('/') == right.path.orEmpty().trimEnd('/') &&
-            left.query.orEmpty() == right.query.orEmpty()
-    }.getOrDefault(false)
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -159,11 +148,8 @@ class OriginalPortalActivity : PortalActivity() {
             elevation = 8 * density
             contentDescription = "刷新"
             setOnClickListener {
-                nativeNavigationStarted = false
                 progress.visibility = View.VISIBLE
-                if (!PortalSessionStore.restoreToWebView { webView.loadUrl(PortalConfig.HOME) }) {
-                    webView.loadUrl(PortalConfig.HOME)
-                }
+                loadConfiguredPage()
             }
         }
         chrome.addView(
@@ -211,15 +197,6 @@ class OriginalPortalActivity : PortalActivity() {
                 } else {
                     PortalSessionStore.captureFromWebView()
                     PortalSessionCoordinator.markAuthenticated()
-                    val targetUrl = this@OriginalPortalActivity.intent
-                        .getStringExtra(MaterialPortalActivity.EXTRA_URL).orEmpty()
-                    if (!nativeNavigationStarted && url != null && samePortalLocation(url, PortalConfig.HOME)) {
-                        if (samePortalLocation(targetUrl, PortalConfig.HOME)) {
-                            nativeNavigationStarted = true
-                        } else {
-                            openThroughPortalMenu(view, title, targetUrl)
-                        }
-                    }
                 }
             }
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = request.url.scheme != "https"
@@ -236,7 +213,6 @@ class OriginalPortalActivity : PortalActivity() {
                             if (silentReauthenticationPending) {
                                 silentReauthenticationPending = false
                                 initialLoadStarted = false
-                                nativeNavigationStarted = false
                             }
                             startInitialLoad()
                         }
@@ -254,61 +230,15 @@ class OriginalPortalActivity : PortalActivity() {
     private fun startInitialLoad() {
         if (initialLoadStarted || isFinishing || isDestroyed) return
         initialLoadStarted = true
-        // 普通栏目由教务首页的原生菜单触发，保留官网自身的路由和初始化流程。
-        if (!PortalSessionStore.restoreToWebView { webView.loadUrl(PortalConfig.HOME) }) {
-            webView.loadUrl(PortalConfig.HOME)
-        }
+        loadConfiguredPage()
     }
 
-    private fun openThroughPortalMenu(view: WebView, title: String, targetUrl: String, attempt: Int = 0) {
-        if (nativeNavigationStarted || isFinishing || isDestroyed) return
-        val script = """
-            (function() {
-              var title = ${JSONObject.quote(title)};
-              var target = ${JSONObject.quote(targetUrl)};
-              var targetPath = new URL(target).pathname;
-              var normalize = function(value) { return (value || '').replace(/\s+/g, ' ').trim(); };
-              var links = Array.from(document.querySelectorAll('a[href]'));
-              var menuItems = links.filter(function(node) {
-                return !!node.closest('nav, .menu, .sidebar, [class*="menu"], [class*="nav"], [role="navigation"]') ||
-                  /menu|nav/i.test(node.className || '');
-              });
-              if (menuItems.length === 0) menuItems = links;
-              var candidate = menuItems.find(function(node) {
-                return normalize(node.getAttribute('data-text') || node.textContent) === title;
-              });
-              if (!candidate) candidate = menuItems.find(function(node) {
-                var href = node.getAttribute('href') || '';
-                try { return href && new URL(href, location.href).pathname === targetPath; } catch (_) { return false; }
-              });
-              if (!candidate) return false;
-
-              // 官网依据这两个属性决定是否在新浏览器标签打开。App 内统一沿用
-              // 教务首页自己的菜单事件，但让结果留在当前 WebView 的原生页面壳中。
-              candidate.setAttribute('browsertab', 'false');
-              candidate.removeAttribute('target');
-
-              var menuToggle = Array.from(document.querySelectorAll('button,a')).find(function(node) {
-                return normalize(node.getAttribute('data-text') || node.textContent).endsWith('菜单');
-              });
-              if (menuToggle && !menuToggle.classList.contains('active')) menuToggle.click();
-              setTimeout(function() { candidate.click(); }, 80);
-              return true;
-            })();
-        """.trimIndent()
-        view.postDelayed({
-            if (nativeNavigationStarted || isFinishing || isDestroyed) return@postDelayed
-            view.evaluateJavascript(script) { result ->
-                if (result == "true") {
-                    nativeNavigationStarted = true
-                } else if (attempt < 3) {
-                    openThroughPortalMenu(view, title, targetUrl, attempt + 1)
-                } else {
-                    nativeNavigationStarted = true
-                    view.loadUrl(targetUrl)
-                }
-            }
-        }, if (attempt == 0) 300L else 650L)
+    private fun loadConfiguredPage() {
+        val targetUrl = intent.getStringExtra(MaterialPortalActivity.EXTRA_URL).orEmpty()
+        if (!targetUrl.startsWith("https://")) return
+        if (!PortalSessionStore.restoreToWebView { webView.loadUrl(targetUrl) }) {
+            webView.loadUrl(targetUrl)
+        }
     }
 
     private fun showExpiredSessionDialog() {
