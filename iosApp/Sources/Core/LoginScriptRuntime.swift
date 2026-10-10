@@ -602,6 +602,9 @@ final class LoginScriptRuntime: @unchecked Sendable {
         data.append(Data(plain.utf8))
 
         var output = Data(count: data.count + kCCBlockSizeAES128)
+        // output 在 withUnsafeMutableBytes 期间被独占借用，长度必须先拷贝，
+        // 否则触发 Swift 独占访问冲突（overlapping accesses）。
+        let outputLength = output.count
         var movedLength = 0
         let status = output.withUnsafeMutableBytes { outputRaw in
             data.withUnsafeBytes { dataRaw in
@@ -614,7 +617,7 @@ final class LoginScriptRuntime: @unchecked Sendable {
                             keyRaw.baseAddress, key.count,
                             ivRaw.baseAddress,
                             dataRaw.baseAddress, data.count,
-                            outputRaw.baseAddress, output.count,
+                            outputRaw.baseAddress, outputLength,
                             &movedLength
                         )
                     }
