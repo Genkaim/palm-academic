@@ -680,6 +680,17 @@ object SchoolAdapterRepository {
                         }
                     }
                 }
+                engine.optJSONObject("outcome")?.let { outcome ->
+                    listOf("captcha", "rejected").forEach { key ->
+                        outcome.optJSONObject(key)?.let { rule ->
+                            val markers = rule.optJSONArray("bodyContains")
+                            require(markers != null && markers.length() > 0 &&
+                                (0 until markers.length()).all { markers.getString(it).isNotBlank() }) {
+                                "auth.engine.outcome.$key.bodyContains 必须包含明确的响应正文标记"
+                            }
+                        }
+                    }
+                }
             }
             if (type == "web" || type == "engine") {
                 require(auth.optString("loginUrl").startsWith("https://")) { "auth.loginUrl 必须使用 HTTPS" }

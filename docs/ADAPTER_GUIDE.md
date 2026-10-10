@@ -187,7 +187,7 @@ CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会
 
 `outcome` 作用于最后一个 `request` 步骤的最终响应：
 
-- `captcha`/`rejected`：`statusCodes`（任一命中）与 `bodyContains`（不区分大小写、任一命中）同时满足时，按 `message` 提示并返回登录页——只有这种确定的凭据失败才会打断登录；
+- `captcha`/`rejected`：必须提供非空 `bodyContains`（不区分大小写、任一命中），可再用 `statusCodes` 收窄；二者同时满足时才按 `message` 提示并返回登录页。不能只凭 401/403 认定密码错误，因为网关、预会话失效也可能返回这些状态；
 - `success`：`finalUrlPrefixes`（默认取 `auth.successUrlPrefixes`）、`cookies`（默认取 `auth.sessionCookieNames`，空数组表示不校验 Cookie 名）、`statusCodes` 三类条件全部满足才判定登录成功；
 - 都不匹配视为网络/会话类错误，App 会持续重试，不会弹回登录页。
 

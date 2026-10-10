@@ -135,7 +135,7 @@ struct SettingsScreen: View {
                 PortalSettingsRow(
                     icon: PortalRowIcon("arrow.triangle.2.circlepath"),
                     title: "后台运行",
-                    subtitle: "后台刷新、低电量模式与通知权限"
+                    subtitle: "系统后台刷新、补检与通知权限"
                 )
             }
 
@@ -563,38 +563,20 @@ struct NoticeHistoryScreen: View {
     }
 }
 
-/// Port of `BackgroundSupportActivity.kt`.
-///
-/// Android's page lists four things that can be wrong with background execution and deep-links
-/// into vendor settings to fix each. iOS has exactly one comparable switch -- Low Power Mode,
-/// which suspends `BGAppRefreshTask` until it is turned off -- plus the notification authorisation
-/// that a persistent notification would need. The internal mechanics differ by platform, which the
-/// brief allows; what has to match is that the page exists, is reachable in one tap, and says what
-/// state the app is actually in.
+/// iOS has no supported Android-style keep-alive service. This page reports only actionable
+/// system state and evidence that the shared comparison worker actually ran.
 struct BackgroundSupportScreen: View {
     @ObservedObject private var notifications = NotificationPreferences.shared
-    @ObservedObject private var localNetwork = LocalNetworkProbe.shared
     @State private var authorisation: UNAuthorizationStatus = .notDetermined
-    @State private var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
     @State private var backgroundRefreshStatus: UIBackgroundRefreshStatus = .restricted
     @State private var hasPendingRefresh = false
     @State private var pendingRefreshDate: Date?
+    @State private var lastAutomaticAttempt: Date?
+    @State private var lastHistoryEntry: PortalPollHistoryEntry?
 
     var body: some View {
         List {
             Section {
-                Button {
-                    Task { await localNetwork.probe(force: true) }
-                } label: {
-                    actionableStatusRow(
-                        icon: PortalRowIcon("network"),
-                        title: "本地网络",
-                        detail: localNetworkDetail,
-                        healthy: localNetwork.state.isHealthy
-                    )
-                }
-                .buttonStyle(.plain)
-
                 Button(action: openSystemSettings) {
                     actionableStatusRow(
                         icon: PortalRowIcon("arrow.clockwise.circle"),
@@ -614,19 +596,10 @@ struct BackgroundSupportScreen: View {
                     )
                 }
                 .buttonStyle(.plain)
-
-                statusRow(
-                    icon: PortalRowIcon("bolt"),
-                    title: "低电量模式",
-                    detail: lowPowerMode
-                        ? "已开启，系统会推迟后台刷新"
-                        : "已关闭，后台刷新按请求间隔执行",
-                    healthy: !lowPowerMode
-                )
             } header: {
-                Text("权限与运行条件")
+                Text("系统权限")
             } footer: {
-                Text("点按本地网络可重新探测；点按后台刷新或通知可前往系统设置。低电量模式需要在控制中心或电池设置中关闭。")
+                Text("点按可前往系统设置。通知权限只决定是否显示提醒，不决定比较任务能否执行。")
             }
 
             Section {
@@ -638,10 +611,16 @@ struct BackgroundSupportScreen: View {
                         && backgroundRefreshStatus == .available
                         && hasPendingRefresh
                 )
+                statusRow(
+                    icon: PortalRowIcon("checkmark.circle"),
+                    title: "最近实际运行",
+                    detail: lastRunLabel,
+                    healthy: lastHistoryEntry != nil
+                )
             } header: {
                 Text("系统调度")
             } footer: {
-                Text("iOS 不允许应用按固定分钟数常驻或准点唤醒。应用会以所选间隔作为最早执行时间提交任务，实际运行时刻由系统结合电量、网络与使用习惯决定。")
+                Text("iOS 不允许应用常驻或准点唤醒。App 会持续提交一个后台刷新任务；若系统延后执行，下一次打开 App 且已超过所选间隔时会自动补检，二者共用同一套比较与日志逻辑。")
             }
         }
         .listStyle(.insetGrouped)
@@ -650,32 +629,15 @@ struct BackgroundSupportScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Color.clear.frame(height: BottomClearance.height)
         }
-        .onAppear {
-            refreshStatus()
-            Task { await localNetwork.probe() }
-        }
+        .onAppear(perform: refreshStatus)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             refreshStatus()
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: PortalPollHistory.didChangeNotification)) { _ in
             refreshStatus()
         }
     }
 
-    /// The local-network answer, spelled out. A refused connection is otherwise invisible from the
-    /// UI: the load simply never finishes, which looks identical to a broken reader.
-    private var localNetworkDetail: String {
-        switch localNetwork.state {
-        case .unknown: return "尚未检测"
-        case .probing: return "正在连接教务服务器…"
-        case .allowed: return "已授权，可访问教务系统"
-        case .denied: return "未授权，校园网下无法加载教务页面"
-        case .unreachable(let reason): return reason
-        }
-    }
-
-    /// A status row with no chevron: nothing here can be fixed from inside the app except by
-    /// leaving for Settings, which the section below already offers.
     private func statusRow(
         icon: PortalRowIcon,
         title: String,
@@ -685,8 +647,7 @@ struct BackgroundSupportScreen: View {
         HStack(spacing: 12) {
             icon.glyph()
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body)
+                Text(title).font(.body)
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(healthy ? PortalPalette.secondaryText : PortalPalette.error)
@@ -749,12 +710,22 @@ struct BackgroundSupportScreen: View {
 
     private var backgroundScheduleLabel: String {
         guard notifications.monitorEnabled else { return "变动通知已关闭" }
+        guard notifications.anyEnabled else { return "未开启任何比较项目" }
         guard backgroundRefreshStatus == .available else { return "等待后台 App 刷新权限" }
-        guard hasPendingRefresh else { return "尚未发现待执行任务，重新进入应用后会补充调度" }
+        guard hasPendingRefresh else { return "正在补充系统调度" }
         if let pendingRefreshDate {
-            return "已请求系统调度，最早 \(pendingRefreshDate.formatted(date: .omitted, time: .shortened)) 后可运行"
+            return "已提交，最早 \(pendingRefreshDate.formatted(date: .omitted, time: .shortened)) 后可运行"
         }
         return "已请求系统调度，等待系统安排"
+    }
+
+    private var lastRunLabel: String {
+        guard let entry = lastHistoryEntry else { return "暂无比较日志" }
+        let automatic = lastAutomaticAttempt.map {
+            abs(entry.timestamp.timeIntervalSince($0)) < 120
+        } ?? false
+        let source = automatic ? "自动检查" : "手动检查或首次基线"
+        return "\(source) · \(entry.timestamp.formatted(date: .abbreviated, time: .shortened)) · \(entry.status)"
     }
 
     private func openSystemSettings() {
@@ -774,8 +745,9 @@ struct BackgroundSupportScreen: View {
     }
 
     private func refreshStatus() {
-        lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
         backgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
+        lastAutomaticAttempt = PortalPollTiming.lastAutomaticAttempt
+        lastHistoryEntry = PortalPollHistory.load().first
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             let status = settings.authorizationStatus
             Task { @MainActor in authorisation = status }

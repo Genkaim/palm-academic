@@ -17,6 +17,16 @@ import UserNotifications
 final class PortalPollWorker: @unchecked Sendable {
     static let shared = PortalPollWorker()
 
+    /// Same scheduler-facing result Android's `PortalPollEngine` returns. A changed page and a
+    /// retryable network failure are different signals; collapsing both to `false` caused iOS to
+    /// report failed fetches as successful no-data runs and reduced future launch opportunities.
+    struct RunResult: Sendable {
+        var started: Bool
+        var status: String
+        var shouldRetry: Bool
+        var notificationTriggered: Bool
+    }
+
     /// A point-in-time, sendable copy of the notification flags the worker was started with,
     /// captured on the main actor once so the background pass never touches UI state again.
     private struct PrefsSnapshot: Sendable {
@@ -31,7 +41,7 @@ final class PortalPollWorker: @unchecked Sendable {
 
     /// Port of `PortalPollWorker.doWork`.
     @discardableResult
-    func run(manual: Bool = false) async -> Bool {
+    func run(manual: Bool = false) async -> RunResult {
         let prefs = await MainActor.run {
             let preferences = NotificationPreferences.shared
             return PrefsSnapshot(
@@ -42,9 +52,19 @@ final class PortalPollWorker: @unchecked Sendable {
                 anyEnabled: preferences.anyEnabled
             )
         }
-        guard (manual || prefs.monitorEnabled), prefs.anyEnabled else { return false }
+        guard manual || prefs.monitorEnabled else {
+            return RunResult(started: false, status: "后台检查未开启", shouldRetry: false, notificationTriggered: false)
+        }
+        guard prefs.anyEnabled else {
+            return RunResult(started: false, status: "未开启任何变动提醒", shouldRetry: false, notificationTriggered: false)
+        }
 
         let checkedAt = Date()
+        if !manual {
+            // A BG task and a foreground activation can arrive close together. Marking the
+            // automatic attempt before networking prevents a duplicate comparison pass.
+            PortalPollTiming.recordAutomaticAttempt(at: checkedAt)
+        }
 
         // Mirrors Android's `runCatching { ... }.getOrElse { ... }` boundary: a failure in any
         // step becomes a log entry instead of killing the process. Network failures are labelled
@@ -64,16 +84,26 @@ final class PortalPollWorker: @unchecked Sendable {
             ]
             outcome = PollOutcome(
                 status: isNetwork ? "网络检查失败" : "检查失败",
-                details: failureDetails
+                details: failureDetails,
+                shouldRetry: true
             )
         }
+        let triggered = outcome.details.contains(where: \.notificationTriggered)
         PortalPollHistory.append(PortalPollHistoryEntry(
             timestamp: checkedAt,
             status: outcome.status,
-            notificationTriggered: outcome.details.contains(where: \.notificationTriggered),
+            notificationTriggered: triggered,
             details: outcome.details
         ))
-        return outcome.details.contains(where: \.notificationTriggered)
+        if !outcome.shouldRetry {
+            PortalPollTiming.recordCompletedCheck(at: checkedAt)
+        }
+        return RunResult(
+            started: true,
+            status: outcome.status,
+            shouldRetry: outcome.shouldRetry,
+            notificationTriggered: triggered
+        )
     }
 
     /// One finished poll pass: the status string written to history plus the per-category details
@@ -82,6 +112,7 @@ final class PortalPollWorker: @unchecked Sendable {
     private struct PollOutcome: Sendable {
         var status: String
         var details: [PortalPollHistoryDetail]
+        var shouldRetry: Bool = false
     }
 
     /// The actual poll sequence. Thrown errors are caught by `run(manual:)` and recorded.
@@ -648,6 +679,8 @@ final class PortalPollWorker: @unchecked Sendable {
 /// Registers the background refresh handler. Mirrors `PortalMonitor.restore`.
 @MainActor
 enum PortalBackgroundScheduler {
+    private static var foregroundCatchUp: Task<Void, Never>?
+
     static func register() {
         let registered = BGTaskScheduler.shared.register(
             forTaskWithIdentifier: PortalMonitor.refreshTaskIdentifier,
@@ -664,8 +697,8 @@ enum PortalBackgroundScheduler {
                 PortalMonitor.shared.schedule(intervalMinutes: preferences.intervalMinutes)
             }
             let work = Task {
-                await PortalPollWorker.shared.run()
-                refreshTask.setTaskCompleted(success: true)
+                let result = await PortalPollWorker.shared.run()
+                refreshTask.setTaskCompleted(success: !result.shouldRetry)
             }
             refreshTask.expirationHandler = {
                 work.cancel()
@@ -674,6 +707,33 @@ enum PortalBackgroundScheduler {
         }
         if !registered {
             NSLog("portal monitor registration failed for \(PortalMonitor.refreshTaskIdentifier)")
+        }
+    }
+
+    /// iOS has no supported Android-style keep-alive service. A chained BGAppRefreshTask is the
+    /// durable mechanism; app activation is an additional system-approved opportunity. If iOS
+    /// deferred the background slot beyond the chosen interval, run the same worker once while
+    /// active and then restore the pending refresh request.
+    static func catchUpIfDueAfterActivation() {
+        let preferences = NotificationPreferences.shared
+        preferences.reschedule()
+        guard foregroundCatchUp == nil,
+              preferences.monitorEnabled,
+              preferences.anyEnabled,
+              PortalHTTP.hasSessionCookie,
+              PortalPollTiming.automaticCheckIsDue(intervalMinutes: preferences.intervalMinutes)
+        else { return }
+
+        foregroundCatchUp = Task {
+            // Give cookie restoration and the launch-time session probe the first run-loop turns.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else {
+                foregroundCatchUp = nil
+                return
+            }
+            _ = await PortalPollWorker.shared.run()
+            NotificationPreferences.shared.reschedule()
+            foregroundCatchUp = nil
         }
     }
 }

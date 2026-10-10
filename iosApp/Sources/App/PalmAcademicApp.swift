@@ -80,6 +80,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         NotificationPreferences.shared.reschedule()
     }
 
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        PortalBackgroundScheduler.catchUpIfDueAfterActivation()
+    }
+
     /// Legacy background fetch remains a useful fallback on iOS versions/devices that rarely grant
     /// a BGAppRefreshTask. Both entry points run the exact same comparison worker and write the same
     /// history record; the next BG request is re-enqueued regardless of the result.
@@ -88,10 +92,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         Task {
-            let notified = await PortalPollWorker.shared.run()
+            let result = await PortalPollWorker.shared.run()
             await MainActor.run {
                 NotificationPreferences.shared.reschedule()
-                completionHandler(notified ? .newData : .noData)
+                completionHandler(
+                    result.shouldRetry
+                        ? .failed
+                        : (result.notificationTriggered ? .newData : .noData)
+                )
             }
         }
     }

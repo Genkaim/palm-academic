@@ -140,6 +140,15 @@ function validateDefinition(assetPath) {
             }
           });
         }
+        for (const key of ["captcha", "rejected"]) {
+          const rule = engine.outcome?.[key];
+          if (rule !== undefined) {
+            requireValue(Array.isArray(rule?.bodyContains) && rule.bodyContains.length > 0 &&
+              rule.bodyContains.every((marker) => typeof marker === "string" && marker.trim()),
+            `${assetPath}.auth.engine.outcome.${key}`,
+            "bodyContains 必须包含明确的响应正文标记，不能只凭 HTTP 状态认定密码错误");
+          }
+        }
       }
     }
     if (type === "web" || type === "engine") {

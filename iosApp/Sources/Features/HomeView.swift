@@ -148,6 +148,21 @@ struct HomeView: View {
                 }
             }
             .animation(sessionChromeAnimation, value: state.sessionStatus)
+            .onChange(of: state.searchPresentationRequest) { request in
+                // Search filters the Home root, never a pushed reader/web page. Pop first without
+                // a backwards slide, then acknowledge on the next run-loop turn. That ordering
+                // guarantees the search pill cannot expand over a still-visible detail screen.
+                if !path.isEmpty {
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        path.removeAll()
+                    }
+                }
+                DispatchQueue.main.async {
+                    state.completeSearchPresentation(request)
+                }
+            }
             .navigationDestination(for: PortalRoute.self) { route in
                 switch route {
                 case .item(let item):

@@ -438,3 +438,42 @@ enum BGTaskRequestFactory {
         return request
     }
 }
+
+/// Timing metadata for deciding whether an iOS execution opportunity should invoke the shared
+/// comparison worker. Detailed results continue to live in `PortalPollHistory`, just as on Android.
+enum PortalPollTiming {
+    private static let automaticAttemptKey = "poll_last_automatic_attempt"
+    private static let completedCheckKey = "last_checked"
+
+    static var lastAutomaticAttempt: Date? {
+        UserDefaults.standard.object(forKey: automaticAttemptKey) as? Date
+    }
+
+    static var lastCompletedCheck: Date? {
+        UserDefaults.standard.object(forKey: completedCheckKey) as? Date
+    }
+
+    static func recordAutomaticAttempt(at date: Date) {
+        UserDefaults.standard.set(date, forKey: automaticAttemptKey)
+    }
+
+    static func recordCompletedCheck(at date: Date) {
+        UserDefaults.standard.set(date, forKey: completedCheckKey)
+    }
+
+    static func resetForFreshSession() {
+        UserDefaults.standard.removeObject(forKey: automaticAttemptKey)
+        UserDefaults.standard.removeObject(forKey: completedCheckKey)
+    }
+
+    static func automaticCheckIsDue(intervalMinutes: Int, now: Date = Date()) -> Bool {
+        if let attempt = lastAutomaticAttempt,
+           lastCompletedCheck == nil || lastCompletedCheck! < attempt {
+            // The last automatic pass started but did not complete successfully. Mirror
+            // WorkManager's retry behaviour without spinning every time the app becomes active.
+            return now.timeIntervalSince(attempt) >= 5 * 60
+        }
+        let latest = [lastAutomaticAttempt, lastCompletedCheck].compactMap { $0 }.max() ?? .distantPast
+        return now.timeIntervalSince(latest) >= Double(max(15, intervalMinutes)) * 60
+    }
+}

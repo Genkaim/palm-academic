@@ -46,6 +46,9 @@ final class AppState: ObservableObject {
     /// rather than as a page. Keeping that state here lets the shell own focus and animation while
     /// `HomeView` owns only the filtering of its rows.
     @Published var isSearchPresented = false
+    /// Search is a two-step request: HomeView first clears any pushed detail page, then acknowledges
+    /// this generation on the next run-loop turn so the bottom glass field can expand.
+    @Published private(set) var searchPresentationRequest = 0
     @Published var searchQuery = ""
     @Published private(set) var isDark = false
     /// The user's display-mode choice. `isDark` is derived from this and the current system
@@ -372,6 +375,11 @@ private func revalidateQuietly() async {
 
     func presentSearch() {
         selectedTab = .home
+        searchPresentationRequest &+= 1
+    }
+
+    func completeSearchPresentation(_ request: Int) {
+        guard request == searchPresentationRequest else { return }
         isSearchPresented = true
     }
 
@@ -393,6 +401,9 @@ private func revalidateQuietly() async {
             // Home, mounts a fresh baseline warmer, and fetches all declared redrawn pages again.
             MaterialPageCache.clearAll()
             QuickEntryBaseline.request(schoolID: schoolID)
+            // Do not let the previous account's automatic-run timestamp suppress this account's
+            // first scheduled comparison after its new four-page baseline has been established.
+            PortalPollTiming.resetForFreshSession()
             selectedTab = .home
             isSearchPresented = false
             searchQuery = ""

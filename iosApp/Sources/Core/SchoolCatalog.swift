@@ -456,6 +456,18 @@ final class SchoolCatalog: ObservableObject {
                         }
                     }
                 }
+                if let outcome = engine["outcome"] as? [String: Any] {
+                    // A status code alone is not proof that the password is wrong: gateways and
+                    // expired pre-sessions commonly answer 401/403 too. Only a rule carrying an
+                    // explicit response-body marker may send the user back to the login form.
+                    for key in ["captcha", "rejected"] {
+                        guard let rule = outcome[key] as? [String: Any] else { continue }
+                        guard let markers = rule["bodyContains"] as? [String],
+                              !markers.isEmpty,
+                              markers.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                        else { throw PortalError.invalidSchoolDefinition }
+                    }
+                }
             }
             if type == "web" || type == "engine" {
                 guard let loginURL = auth["loginUrl"] as? String,
