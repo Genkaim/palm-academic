@@ -474,11 +474,38 @@ struct MaterialReaderView: UIViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            // The portal's SSO relay redirects an HTTPS request to the SAME host over plain HTTP
+            // (index_sso.jsp) and nginx bounces back to HTTPS. A non-HTTPS navigation used to be
+            // cancelled outright here, which killed that hop and left every reader spinning
+            // forever (the plain portal screen upgrades it, the hidden reader did not). Upgrade
+            // the same-host hop instead, matching the browser/Android behaviour.
+            if url.scheme?.lowercased() == "http",
+               let upgraded = Self.upgradeSameHostHTTPS(url, webView: webView, parent: parent.url) {
+                decisionHandler(.cancel)
+                webView.load(URLRequest(url: upgraded, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60))
+                return
+            }
             if !Self.isReadOnlyRequest(navigationAction.request, url: url) {
                 decisionHandler(.cancel)
                 return
             }
             decisionHandler(.allow)
+        }
+
+        private static func upgradeSameHostHTTPS(_ url: URL, webView: WKWebView, parentURL: String) -> URL? {
+            guard url.scheme?.lowercased() == "http",
+                  let host = url.host?.lowercased() else { return nil }
+            // Only upgrade a hop on a host we are already on; never silently upgrade elsewhere.
+            let trustedHosts: [String] = [
+                webView.url?.host?.lowercased(),
+                URL(string: parentURL)?.host?.lowercased()
+            ].compactMap { $0 }
+            guard trustedHosts.contains(host),
+                  var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                return nil
+            }
+            components.scheme = "https"
+            return components.url
         }
 
         private static let safeReadPostMarkers = [

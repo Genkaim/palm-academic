@@ -364,7 +364,14 @@ internal class PortalPollEngine(private val appContext: Context) {
         if (canonicalUrl(entryResponse.finalUrl) == canonicalUrl(dataUrl)) {
             return entryResponse
         }
-        return get(dataUrl, referer = entryResponse.finalUrl)
+        val dataResponse = get(dataUrl, referer = entryResponse.finalUrl)
+        // Some deployments return the real data on the entry page (the GET redirects to a
+        // semester-index / info page rendered server-side) while the separate data URL in the
+        // rule errors out (e.g. /info/{studentId} -> HTTP 500). Use the redirected entry page,
+        // which already holds the tables, instead of recording a false failure.
+        if (dataResponse.isAuthenticationFailure()) return dataResponse
+        if (!dataResponse.isSuccessful() && entryResponse.isSuccessful()) return entryResponse
+        return dataResponse
     }
 
     private fun canonicalUrl(value: String): String = value.substringBefore('#').trimEnd('/')
@@ -380,15 +387,15 @@ internal class PortalPollEngine(private val appContext: Context) {
         nativeType: String,
         responseBody: String
     ): String {
-        val responseSnapshot = PortalSnapshot.parsedDataJson(responseBody, type = nativeType)
-        if (PortalSnapshot.parsedHtmlHasRows(responseBody)) return responseSnapshot
+        // Prefer the adapter's latest publication: it is the exact format the first-login baseline
+        // stored, so warm-cache/foreground comparisons are like for like and a server-rendered
+        // entry page of a different shape cannot trigger a false "changed".
         val item = school.quickItems.firstOrNull { it.nativeType == nativeType }
-            ?: return responseSnapshot
-        val renderedSnapshot = MaterialPageCache.loadRaw(appContext, item.url)
-            ?: return responseSnapshot
-        return renderedSnapshot.takeIf {
-            PortalSnapshot.materialPageHasData(it, nativeType)
-        }?.let(PortalSnapshot::historyDisplayContent) ?: responseSnapshot
+        val renderedSnapshot = item?.let { MaterialPageCache.loadRaw(appContext, it.url) }
+        renderedSnapshot?.takeIf { PortalSnapshot.materialPageHasData(it, nativeType) }
+            ?.let(PortalSnapshot::historyDisplayContent)
+            ?.let { return it }
+        return PortalSnapshot.parsedDataJson(responseBody, type = nativeType)
     }
 
     private fun authenticationDetail(notified: Boolean, reason: String) = PortalPollHistoryDetail(

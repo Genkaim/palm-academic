@@ -18,6 +18,7 @@ struct HomeView: View {
     /// the way Android acknowledges the notice and then opens the matching quick entry.
     @State private var path: [PortalRoute] = []
     @State private var historyVersion = 0
+    @State private var availableRelease: GitHubRelease?
     @Namespace private var quickEntryTransition
 
     private var definition: SchoolDefinition? { state.definition }
@@ -186,7 +187,45 @@ struct HomeView: View {
             .onReceive(NotificationCenter.default.publisher(for: PortalPollHistory.didChangeNotification)) { _ in
                 historyVersion &+= 1
             }
+            // Mirror Android HomeActivity: once the session is Ready, check GitHub Releases once
+            // (after a short delay) and offer a newer build. iOS cannot install an IPA in-app, so
+            // the alert opens the Release page rather than downloading an APK.
+            .task(id: state.isSignedIn) {
+                guard state.isSignedIn else { return }
+                await Self.releaseCheckDelay
+                if let release = try? await GitHubRepository.latestRelease(),
+                   release.isNewer(than: Self.appVersion),
+                   state.isSignedIn {
+                    availableRelease = release
+                }
+            }
+            .alert(
+                "发现新版本 \(availableRelease?.tagName ?? "")",
+                isPresented: Binding(
+                    get: { availableRelease != nil },
+                    set: { if !$0 { availableRelease = nil } }
+                ),
+                presenting: availableRelease
+            ) { release in
+                Button {
+                    availableRelease = nil
+                    if let url = URL(string: release.htmlUrl) { UIApplication.shared.open(url) }
+                } label: {
+                    Text("查看 Release")
+                }
+                Button("稍后", role: .cancel) { availableRelease = nil }
+            } message: { release in
+                Text((release.body?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? release.body!
+                    : "新版本已发布，可前往 GitHub 下载更新。").prefix(2000) + "")
+            }
         }
+    }
+
+    private static let releaseCheckDelay: Duration = .milliseconds(1500)
+
+    private static var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
     }
 
     // MARK: - Header

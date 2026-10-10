@@ -338,13 +338,16 @@ actor PortalPollWorker {
     // MARK: - Snapshot comparison
 
     private func renderedSnapshotOrResponse(school: SchoolDefinition, nativeType: String, responseBody: String) -> String {
-        let responseSnapshot = PortalSnapshot.parsedDataJSON(html: responseBody, type: nativeType)
-        if PortalSnapshot.parsedHTMLHasRows(responseBody) { return responseSnapshot }
-        guard let item = school.quickItems.first(where: { $0.nativeType == nativeType }) else { return responseSnapshot }
-        let url = item.url(baseURL: school.baseUrl)
-        guard let cached = MaterialPageCache.loadRaw(url: url),
-              PortalSnapshot.materialPageHasData(cached, nativeType: nativeType) else { return responseSnapshot }
-        return PortalSnapshot.historyDisplayContent(cached)
+        // Prefer the adapter's latest publication when it has real data: it is the exact format
+        // the first-login baseline stored, so warm-cache/foreground comparisons are like for like.
+        // A server-rendered entry page (possibly a different shape) must not replace it and
+        // reintroduce a false "changed".
+        if let item = school.quickItems.first(where: { $0.nativeType == nativeType }),
+           let cached = MaterialPageCache.loadRaw(url: item.url(baseURL: school.baseUrl)),
+           PortalSnapshot.materialPageHasData(cached, nativeType: nativeType) {
+            return PortalSnapshot.historyDisplayContent(cached)
+        }
+        return PortalSnapshot.parsedDataJSON(html: responseBody, type: nativeType)
     }
 
     private func updateCourseSnapshot(
@@ -660,7 +663,14 @@ actor PortalPollWorker {
         let entry = await get(entryURL, referer: initialReferer)
         if !entry.isSuccessful || entry.isAuthenticationFailure { return entry }
         if canonicalURL(entry.finalURL) == canonicalURL(dataURL) { return entry }
-        return await get(dataURL, referer: entry.finalURL)
+        let data = await get(dataURL, referer: entry.finalURL)
+        // Some deployments return the real data on the entry page (the GET redirects to a
+        // semester-index / info page rendered server-side) while the separate data URL in the
+        // rule errors out (e.g. /info/{studentId} -> HTTP 500). In that case the redirected
+        // entry page already holds the tables; use it instead of recording a false failure.
+        if data.isAuthenticationFailure { return data }
+        if !data.isSuccessful, entry.isSuccessful { return entry }
+        return data
     }
 
     private func canonicalURL(_ value: String) -> String {

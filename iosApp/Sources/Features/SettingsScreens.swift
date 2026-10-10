@@ -164,7 +164,11 @@ struct SettingsScreen: View {
         } header: {
             Text("应用")
         } footer: {
-            Text(release.map { "发现新版本 \($0.tagName)" } ?? "更新会检查 GitHub Releases，不会自动安装。")
+            if let release, release.isNewer(than: appVersion) {
+                Text("发现新版本 \(release.tagName)")
+            } else {
+                Text("更新会检查 GitHub Releases，不会自动安装。")
+            }
         }
     }
 

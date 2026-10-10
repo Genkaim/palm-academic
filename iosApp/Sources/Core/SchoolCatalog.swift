@@ -762,4 +762,25 @@ struct GitHubRelease: Decodable {
         case publishedAt = "published_at"
         case body
     }
+
+    /// Mirrors Android's `GitHubRelease.isNewerThan`: dot-separated numeric segments, with the
+    /// leading "v" and any "-suffix" stripped and missing segments treated as 0.
+    func isNewer(than currentVersion: String) -> Bool {
+        let latest = Self.numericSegments(tagName)
+        let current = Self.numericSegments(currentVersion)
+        for index in 0..<max(latest.count, current.count) {
+            let lhs = index < latest.count ? latest[index] : 0
+            let rhs = index < current.count ? current[index] : 0
+            if lhs != rhs { return lhs > rhs }
+        }
+        return false
+    }
+
+    private static func numericSegments(_ version: String) -> [Int] {
+        version
+            .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+            .components(separatedBy: "-").first?
+            .components(separatedBy: ".")
+            .map { Int($0) ?? 0 } ?? []
+    }
 }
