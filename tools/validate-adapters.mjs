@@ -107,6 +107,13 @@ function validateDefinition(assetPath) {
     const type = auth?.type ?? "salted-sha1";
     requireValue(type === "salted-sha1" || type === "web" || type === "engine", assetPath,
       "auth.type 仅支持 salted-sha1、web 或 engine");
+    if (auth.captcha?.required === true) {
+      requireValue(isHttpsUrl(auth.captcha.imageUrl), assetPath,
+        "auth.captcha.imageUrl 必须是 HTTPS 地址");
+      requireValue(auth.captcha.refreshQueryParameter === undefined ||
+        (typeof auth.captcha.refreshQueryParameter === "string" && auth.captcha.refreshQueryParameter.trim()),
+      assetPath, "auth.captcha.refreshQueryParameter 不能为空");
+    }
     if (type === "engine") {
       const engine = auth.engine;
       if (requireValue(engine && typeof engine === "object", assetPath,

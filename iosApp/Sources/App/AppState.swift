@@ -25,6 +25,10 @@ final class AppState: ObservableObject {
     @Published private(set) var phase: Phase = .launching
     @Published var username = ""
     @Published var password = ""
+    @Published var captcha = ""
+    @Published private(set) var captchaImageData: Data?
+    @Published private(set) var captchaLoading = false
+    @Published private(set) var captchaError: String?
     @Published var rememberPassword = false
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
@@ -70,6 +74,7 @@ final class AppState: ObservableObject {
     /// The in-flight password-login retry loop. A new login attempt cancels the previous one so
     /// two loops cannot interleave their backoff and cookie writes.
     private var loginTask: Task<Void, Never>?
+    private var captchaTask: Task<Void, Never>?
     /// Bumped on every explicit authentication success / content-arrived / sign-out. A quiet
     /// revalidation loop captures the value at entry and stops the moment it changes, so a loop
     /// that was started by a hidden reader's transient login-redirect can never surface a
@@ -81,6 +86,38 @@ final class AppState: ObservableObject {
     var selectedSchool: SchoolProfile? { SchoolCatalog.shared.activeProfile }
     var definition: SchoolDefinition? { SchoolCatalog.shared.definition }
     var isSignedIn: Bool { phase == .signedIn }
+    var captchaRequired: Bool { definition?.auth?.captcha?.required == true }
+
+    func refreshCaptchaIfNeeded() async {
+        guard captchaRequired, phase != .signedIn else {
+            captchaImageData = nil
+            captchaError = nil
+            captchaLoading = false
+            return
+        }
+        captchaTask?.cancel()
+        captcha = ""
+        captchaImageData = nil
+        captchaLoading = true
+        captchaError = nil
+        let task = Task { @MainActor in
+            do {
+                let data = try await auth.refreshCaptcha()
+                guard !Task.isCancelled else { return }
+                captchaImageData = data
+                captchaLoading = false
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                captchaImageData = nil
+                captchaLoading = false
+                captchaError = "验证码加载失败，点按重试"
+            }
+        }
+        captchaTask = task
+        await task.value
+    }
 
     func bootstrap() async {
         SchoolCatalog.shared.initialize()
@@ -239,6 +276,10 @@ private func revalidateQuietly() async {
             errorMessage = "请输入账号和密码"
             return
         }
+        if captchaRequired && captcha.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errorMessage = "请输入验证码"
+            return
+        }
         loginTask?.cancel()
         isLoading = true
         errorMessage = nil
@@ -252,7 +293,7 @@ private func revalidateQuietly() async {
             // the Android client. The user is never bounced back to the form for a network error.
             while !Task.isCancelled {
                 do {
-                    try await auth.login(username: user, password: password)
+                    try await auth.login(username: user, password: password, captcha: captcha)
                     // Match Android: only a completed login is allowed to replace the remembered
                     // secret. A typo or transient failed attempt must not overwrite the last
                     // working credential.
@@ -269,6 +310,7 @@ private func revalidateQuietly() async {
                     isLoading = false
                     loginRetryMessage = nil
                     errorMessage = message
+                    if captchaRequired { await refreshCaptchaIfNeeded() }
                     return
                 } catch is CancellationError {
                     return
@@ -422,6 +464,11 @@ private func revalidateQuietly() async {
     /// Port of `LoginViewModel.selectSchool`: switching clears the session because the previous
     /// cookie belongs to the old university origin.
     func selectSchool(_ school: SchoolProfile) {
+        captchaTask?.cancel()
+        auth.discardPreparedLogin()
+        captcha = ""
+        captchaImageData = nil
+        captchaError = nil
         errorMessage = nil
         let changed = SchoolCatalog.shared.select(schoolID: school.id)
         // The pick persists the id, and this flag is what makes the next cold launch reopen the
@@ -444,6 +491,9 @@ private func revalidateQuietly() async {
                 // redundant and noisy.
                 phase = .signedOut
             }
+        }
+        if captchaRequired, phase != .signedIn {
+            Task { await refreshCaptchaIfNeeded() }
         }
     }
 

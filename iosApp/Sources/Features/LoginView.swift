@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// Port of `LoginScreen.kt`.
@@ -47,6 +48,7 @@ struct LoginView: View {
     private enum Field: Hashable {
         case username
         case password
+        case captcha
     }
 
     private enum Metric {
@@ -147,6 +149,9 @@ struct LoginView: View {
                 _ = granted
             }
             openAutomaticWebLoginIfNeeded()
+            if state.captchaRequired && state.captchaImageData == nil && !state.captchaLoading {
+                Task { await state.refreshCaptchaIfNeeded() }
+            }
         }
         .onDisappear { stopObservingKeyboard() }
     }
@@ -206,10 +211,23 @@ struct LoginView: View {
                         GroupedCardShape(
                             large: Metric.fieldGroupRadius,
                             small: Metric.fieldGroupInnerRadius,
-                            position: .last
+                            position: state.captchaRequired ? .middle : .last
                         )
                         .fill(PortalPalette.surface)
                     )
+                if state.captchaRequired {
+                    Divider()
+                        .padding(.leading, 34)
+                    captchaField
+                        .background(
+                            GroupedCardShape(
+                                large: Metric.fieldGroupRadius,
+                                small: Metric.fieldGroupInnerRadius,
+                                position: .last
+                            )
+                            .fill(PortalPalette.surface)
+                        )
+                }
             }
             rememberRow
             if let errorMessage = state.errorMessage {
@@ -495,17 +513,17 @@ struct LoginView: View {
                     .textContentType(.password)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .submitLabel(.go)
+                    .submitLabel(state.captchaRequired ? .next : .go)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .focused($focusedField, equals: .password)
-                    .onSubmit { submit() }
+                    .onSubmit { passwordSubmitted() }
             } else {
                 SecureField("密码", text: $state.password)
                     .textContentType(.password)
-                    .submitLabel(.go)
+                    .submitLabel(state.captchaRequired ? .next : .go)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .focused($focusedField, equals: .password)
-                    .onSubmit { submit() }
+                    .onSubmit { passwordSubmitted() }
             }
             if !state.isLoading {
                 Button {
@@ -541,6 +559,66 @@ struct LoginView: View {
     /// gesture whether it landed on a sibling, so the button marks the moment itself.
     @State private var revealButtonIsHit = false
 
+    private func passwordSubmitted() {
+        if state.captchaRequired {
+            focusedField = .captcha
+        } else {
+            submit()
+        }
+    }
+
+    private var captchaField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "number.square")
+                .foregroundStyle(PortalPalette.secondaryText)
+                .frame(width: 22)
+            TextField("验证码", text: $state.captcha)
+                .textContentType(.oneTimeCode)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.go)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .focused($focusedField, equals: .captcha)
+                .onSubmit { submit() }
+                .accessibilityLabel("验证码")
+            Button {
+                focusedField = nil
+                Task { await state.refreshCaptchaIfNeeded() }
+            } label: {
+                Group {
+                    if state.captchaLoading {
+                        ProgressView()
+                    } else if let data = state.captchaImageData, let image = UIImage(data: data) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                    } else {
+                        VStack(spacing: 2) {
+                            Image(systemName: "arrow.clockwise")
+                            Text("重试").font(.caption2)
+                        }
+                        .foregroundStyle(PortalPalette.secondaryText)
+                    }
+                }
+                .frame(width: 106, height: 44)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(PortalPalette.page)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(state.captchaLoading || state.isLoading)
+            .accessibilityLabel(state.captchaError ?? "刷新验证码")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 9)
+        .frame(height: Metric.fieldHeight)
+        .disabled(state.isLoading)
+        .contentShape(Rectangle())
+        .onTapGesture { focusedField = .captcha }
+    }
+
     private func submit() {
         guard canSubmit else { return }
         focusedField = nil
@@ -551,6 +629,10 @@ struct LoginView: View {
         !state.isLoading
             && !state.username.trimmingCharacters(in: .whitespaces).isEmpty
             && !state.password.isEmpty
+            && (!state.captchaRequired || (
+                !state.captcha.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && state.captchaImageData != nil
+            ))
     }
 
     private func errorBanner(_ message: String) -> some View {

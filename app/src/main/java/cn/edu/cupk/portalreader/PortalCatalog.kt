@@ -55,6 +55,7 @@ data class PortalAuthDefinition(
     val successUrlPrefixes: List<String> = emptyList(),
     val sessionCookieHosts: List<String> = emptyList(),
     val sessionCookieNames: List<String> = listOf("SESSION"),
+    val captcha: PortalCaptchaDefinition = PortalCaptchaDefinition(),
     val engine: JSONObject? = null
 ) {
     val webOnly: Boolean get() = type == "web"
@@ -72,6 +73,12 @@ data class PortalAuthDefinition(
         addAll(sessionCookieHosts)
     }
 }
+
+data class PortalCaptchaDefinition(
+    val required: Boolean = false,
+    val imageUrl: String? = null,
+    val refreshQueryParameter: String = "id"
+)
 
 data class PortalItem(
     val title: String,
@@ -462,6 +469,13 @@ object SchoolAdapterRepository {
                 sessionCookieNames = authJson.optJSONArray("sessionCookieNames")?.let { values ->
                     (0 until values.length()).map(values::getString)
                 } ?: listOf("SESSION"),
+                captcha = authJson.optJSONObject("captcha")?.let { captcha ->
+                    PortalCaptchaDefinition(
+                        required = captcha.optBoolean("required", false),
+                        imageUrl = captcha.optString("imageUrl").takeIf(String::isNotBlank),
+                        refreshQueryParameter = captcha.optString("refreshQueryParameter", "id")
+                    )
+                } ?: PortalCaptchaDefinition(),
                 engine = authJson.optJSONObject("engine")
             )
         ).also { cachedDefinition = it }
@@ -653,6 +667,16 @@ object SchoolAdapterRepository {
             val type = auth.optString("type", "salted-sha1")
             require(type == "salted-sha1" || type == "web" || type == "engine") {
                 "auth.type 仅支持 salted-sha1、web 或 engine"
+            }
+            auth.optJSONObject("captcha")?.let { captcha ->
+                if (captcha.optBoolean("required", false)) {
+                    require(captcha.optString("imageUrl").startsWith("https://")) {
+                        "auth.captcha.imageUrl 必须使用 HTTPS"
+                    }
+                    require(captcha.optString("refreshQueryParameter", "id").isNotBlank()) {
+                        "auth.captcha.refreshQueryParameter 不能为空"
+                    }
+                }
             }
             if (type == "engine") {
                 val engine = auth.optJSONObject("engine")

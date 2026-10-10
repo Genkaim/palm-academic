@@ -14,11 +14,56 @@ final class SessionStore {
     static let shared = SessionStore()
 
     private let cookieHeaderKey = "academic_session_cookie_header"
+    private let cookieRecordsKey = "academic_session_cookies_v2"
     private let lock = NSLock()
     private var pendingWebKitClear: Task<Void, Never>?
     private var clearRevision = 0
 
     private init() {}
+
+    private struct CookieRecord: Codable {
+        let name: String
+        let value: String
+        let domain: String
+        let path: String
+        let secure: Bool
+        let httpOnly: Bool
+        let expiresAt: Date?
+
+        init(_ cookie: HTTPCookie) {
+            name = cookie.name
+            value = cookie.value
+            domain = cookie.domain
+            path = cookie.path
+            secure = cookie.isSecure
+            httpOnly = cookie.isHTTPOnly
+            expiresAt = cookie.expiresDate
+        }
+
+        var cookie: HTTPCookie? {
+            guard expiresAt.map({ $0 > Date() }) != false else { return nil }
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: name,
+                .value: value,
+                .domain: domain,
+                .path: path.isEmpty ? "/" : path
+            ]
+            if secure { properties[.secure] = "TRUE" }
+            if httpOnly { properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE" }
+            if let expiresAt { properties[.expires] = expiresAt }
+            return HTTPCookie(properties: properties)
+        }
+    }
+
+    private var persistedCookies: [HTTPCookie] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let data = UserDefaults.standard.data(forKey: cookieRecordsKey),
+              let records = try? JSONDecoder().decode([CookieRecord].self, from: data) else {
+            return []
+        }
+        return records.compactMap(\.cookie)
+    }
 
     var persistedCookieHeader: String? {
         lock.lock()
@@ -29,8 +74,16 @@ final class SessionStore {
     }
 
     var hasPersistedSession: Bool {
-        guard let header = persistedCookieHeader else { return false }
         let accepted = SchoolCatalog.shared.definition?.auth?.resolvedCookieNames ?? ["SESSION"]
+        let exactCookies = persistedCookies
+        if !exactCookies.isEmpty {
+            return accepted.isEmpty || exactCookies.contains { cookie in
+                !cookie.value.isEmpty && accepted.contains {
+                    $0.caseInsensitiveCompare(cookie.name) == .orderedSame
+                }
+            }
+        }
+        guard let header = persistedCookieHeader else { return false }
         if accepted.isEmpty { return true }
         let names = header.split(separator: ";").compactMap { part -> String? in
             let trimmed = part.trimmingCharacters(in: .whitespaces)
@@ -47,9 +100,57 @@ final class SessionStore {
         lock.unlock()
     }
 
+    /// Persists the complete cookie identity. CAS and the destination portal can both issue a
+    /// cookie named `JSESSIONID`; a plain `name=value` header collapses those two cookies and makes
+    /// a login look successful to the HTTP client while the WebView is immediately redirected.
+    func saveCookies(_ cookies: [HTTPCookie]) {
+        let live = cookies.filter { !$0.value.isEmpty && $0.expiresDate.map({ $0 > Date() }) != false }
+        guard !live.isEmpty else { return }
+        let records = live.map(CookieRecord.init)
+        let header = live
+            .sorted { lhs, rhs in
+                lhs.name == rhs.name ? lhs.domain < rhs.domain : lhs.name < rhs.name
+            }
+            .map { "\($0.name)=\($0.value)" }
+            .joined(separator: "; ")
+        lock.lock()
+        if let data = try? JSONEncoder().encode(records) {
+            UserDefaults.standard.set(data, forKey: cookieRecordsKey)
+        }
+        UserDefaults.standard.set(header, forKey: cookieHeaderKey)
+        lock.unlock()
+    }
+
     /// Port of `PortalSessionStore.mergeCookies`: `nil` removes a cookie.
     func mergeCookies(_ values: [String: String?]) {
         guard !values.isEmpty else { return }
+        let exactCookies = persistedCookies
+        if !exactCookies.isEmpty {
+            var merged = exactCookies
+            for (name, value) in values {
+                guard let value else {
+                    merged.removeAll { $0.name == name }
+                    continue
+                }
+                var replaced = false
+                merged = merged.compactMap { cookie in
+                    guard cookie.name == name else { return cookie }
+                    replaced = true
+                    var properties = cookie.properties ?? [:]
+                    properties[.value] = value
+                    return HTTPCookie(properties: properties)
+                }
+                if !replaced {
+                    let host = SchoolCatalog.shared.definition?.auth?.resolvedCookieHosts.first
+                        ?? URL(string: SchoolCatalog.shared.origin)?.host ?? ""
+                    if let cookie = HTTPCookie(properties: [
+                        .name: name, .value: value, .domain: host, .path: "/", .secure: "TRUE"
+                    ]) { merged.append(cookie) }
+                }
+            }
+            saveCookies(merged)
+            return
+        }
         var cookies: [String: String] = [:]
         var order: [String] = []
         if let header = persistedCookieHeader {
@@ -82,6 +183,11 @@ final class SessionStore {
     /// Replays the persisted cookie into `HTTPCookieStorage` so WKWebView shares the session.
     @discardableResult
     func restoreToCookieStorage() -> Bool {
+        let exactCookies = persistedCookies
+        if !exactCookies.isEmpty {
+            exactCookies.forEach(HTTPCookieStorage.shared.setCookie)
+            return true
+        }
         guard let header = persistedCookieHeader else { return false }
         let pairs = header.split(separator: ";")
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -158,11 +264,7 @@ final class SessionStore {
             !cookie.value.isEmpty && names.contains { $0.caseInsensitiveCompare(cookie.name) == .orderedSame }
         }
         guard hasSession else { return false }
-        let header = filtered
-            .sorted(by: { $0.name < $1.name })
-            .map { "\($0.name)=\($0.value)" }
-            .joined(separator: "; ")
-        saveCookieHeader(header)
+        saveCookies(filtered)
         // Make URLSession requests see the same cookies immediately, mirroring
         // `WebViewCookieJar.loadForRequest` which merges persisted and live cookies per request.
         restoreToCookieStorage()
@@ -175,36 +277,26 @@ final class SessionStore {
     /// will answer with a fresh login redirect.
     @discardableResult
     func restoreToWebView(completion: (() -> Void)? = nil) -> Bool {
-        guard let header = persistedCookieHeader else {
-            completion?()
-            return false
-        }
-        let pairs = header.split(separator: ";")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.contains("=") }
-        guard !pairs.isEmpty else {
-            completion?()
-            return false
-        }
-        let configuredHosts = SchoolCatalog.shared.definition?.auth?.resolvedCookieHosts ?? []
-        let host = configuredHosts.first ?? URL(string: SchoolCatalog.shared.origin)?.host ?? ""
-        let isSecure = true
-        let path = configuredHosts.isEmpty ? "/student" : "/"
-        let cookies: [HTTPCookie] = pairs.compactMap { pair in
-            guard let sep = pair.firstIndex(of: "=") else { return nil }
-            let name = String(pair[pair.startIndex..<sep])
-            let value = String(pair[pair.index(after: sep)...])
-            var properties: [HTTPCookiePropertyKey: Any] = [
-                .name: name,
-                .value: value,
-                .domain: host,
-                .path: path
-            ]
-            if isSecure { properties[.secure] = "TRUE" }
-            if name.uppercased() == "SESSION" {
-                properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE"
+        var cookies = persistedCookies
+        if cookies.isEmpty, let header = persistedCookieHeader {
+            let pairs = header.split(separator: ";")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { $0.contains("=") }
+            let configuredHosts = SchoolCatalog.shared.definition?.auth?.resolvedCookieHosts ?? []
+            let host = configuredHosts.first ?? URL(string: SchoolCatalog.shared.origin)?.host ?? ""
+            let path = configuredHosts.isEmpty ? "/student" : "/"
+            cookies = pairs.compactMap { pair in
+                guard let sep = pair.firstIndex(of: "=") else { return nil }
+                let name = String(pair[pair.startIndex..<sep])
+                let value = String(pair[pair.index(after: sep)...])
+                var properties: [HTTPCookiePropertyKey: Any] = [
+                    .name: name, .value: value, .domain: host, .path: path, .secure: "TRUE"
+                ]
+                if name.uppercased() == "SESSION" {
+                    properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE"
+                }
+                return HTTPCookie(properties: properties)
             }
-            return HTTPCookie(properties: properties)
         }
         guard !cookies.isEmpty else {
             completion?()
@@ -232,9 +324,7 @@ final class SessionStore {
             }
             group.notify(queue: .main) {
                 Task { @MainActor in
-                    self?.saveCookieHeader(
-                        cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-                    )
+                    self?.saveCookies(cookies)
                     completion?()
                 }
             }
@@ -258,6 +348,7 @@ final class SessionStore {
     func clear() {
         lock.lock()
         UserDefaults.standard.removeObject(forKey: cookieHeaderKey)
+        UserDefaults.standard.removeObject(forKey: cookieRecordsKey)
         lock.unlock()
         let configuredHosts = SchoolCatalog.shared.definition?.auth?.resolvedCookieHosts ?? []
         let originHost = URL(string: SchoolCatalog.shared.origin)?.host.map { [$0] } ?? []
@@ -317,8 +408,14 @@ enum SessionValidation {
 /// Main-actor isolated because persisting and restoring the session goes through
 /// `SessionStore`, which is main-actor isolated.
 @MainActor
-struct AuthRepository {
+final class AuthRepository {
     private let session: URLSession
+    private var preparedLogin: PreparedLogin?
+
+    private struct PreparedLogin {
+        let client: URLSession
+        let cookies: LoginCookieJar
+    }
 
     init(session: URLSession = PortalHTTP.session) {
         self.session = session
@@ -336,9 +433,60 @@ struct AuthRepository {
     /// The salt, login and cookie persistence all happen inside one continuous `URLSession`
     /// cookie context. Splitting them allows the server to see a request without the pre-session
     /// cookie and answer with a captcha challenge instead of accepting valid credentials.
-    func login(username: String, password: String) async throws {
+    var captchaRequired: Bool {
+        SchoolCatalog.shared.definition?.auth?.captcha?.required == true
+    }
+
+    /// Loads the challenge after priming the login page and retains that exact HTTP session for
+    /// the credential POST. Loading the image through an unrelated AsyncImage session produces a
+    /// captcha that the server can never validate.
+    func refreshCaptcha() async throws -> Data {
+        guard let auth = SchoolCatalog.shared.definition?.auth,
+              auth.captcha?.required == true,
+              let rawImageURL = auth.captcha?.imageUrl,
+              var components = URLComponents(string: rawImageURL) else {
+            throw PortalError.engineFailed("当前学校没有配置验证码图片")
+        }
+        await SessionStore.shared.waitForPendingClear()
+        preparedLogin?.client.invalidateAndCancel()
+        preparedLogin = nil
+
+        let context = makeLoginContext(manualRedirects: auth.usesEngine)
+        let pageURL = auth.loginUrl ?? loginURL
+        guard let url = URL(string: pageURL) else { throw PortalError.invalidResponse }
+        var pageRequest = URLRequest(url: url)
+        pageRequest.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        pageRequest.setValue(Self.languageHeader, forHTTPHeaderField: "Accept-Language")
+        _ = try await perform(context.client, pageRequest, cookies: context.cookies)
+
+        let parameter = auth.captcha?.refreshQueryParameter?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let parameter, !parameter.isEmpty {
+            var items = components.queryItems ?? []
+            items.removeAll { $0.name == parameter }
+            items.append(URLQueryItem(name: parameter, value: String(Int(Date().timeIntervalSince1970 * 1000))))
+            components.queryItems = items
+        }
+        guard let imageURL = components.url else { throw PortalError.invalidResponse }
+        var imageRequest = URLRequest(url: imageURL)
+        imageRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        imageRequest.setValue(pageURL, forHTTPHeaderField: "Referer")
+        let image = try await perform(context.client, imageRequest, cookies: context.cookies)
+        guard !image.isEmpty else { throw PortalError.invalidResponse }
+        preparedLogin = context
+        return image
+    }
+
+    func discardPreparedLogin() {
+        preparedLogin?.client.invalidateAndCancel()
+        preparedLogin = nil
+    }
+
+    func login(username: String, password: String, captcha: String = "") async throws {
         let trimmed = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !password.isEmpty else { throw PortalError.loginRejected("请输入账号和密码") }
+        if captchaRequired && captcha.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw PortalError.loginRejected("请输入验证码")
+        }
 
         // Logout clears WebKit asynchronously. Wait for it before any new cookie is created, or its
         // completion can erase the successful login after this method returns.
@@ -346,22 +494,33 @@ struct AuthRepository {
 
         // A dedicated client and an in-memory cookie jar keep the login handshake isolated from the
         // cached global session, matching Android's LoginCookieJar.
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
-        configuration.httpCookieAcceptPolicy = .always
-        configuration.timeoutIntervalForRequest = 40
-        let client = URLSession(configuration: configuration)
-        let loginCookies = LoginCookieJar()
+        let auth = SchoolCatalog.shared.definition?.auth
+        let context: PreparedLogin
+        if captchaRequired, let preparedLogin {
+            context = preparedLogin
+        } else {
+            context = makeLoginContext(manualRedirects: auth?.usesEngine == true)
+        }
+        let client = context.client
+        let loginCookies = context.cookies
 
         // 通用登录引擎：学校定义自己描述整个握手（请求/提取/加密/判定），App 只负责执行，
         // 与 Android `AuthRepository.login` 的 engine 分支一一对应。
-        if let auth = SchoolCatalog.shared.definition?.auth, auth.usesEngine, let engine = auth.engine {
-            try await loginWithEngine(engine, username: trimmed, password: password, auth: auth, cookies: loginCookies)
-            SessionStore.shared.saveCookieHeader(loginCookies.header)
+        if let auth, auth.usesEngine, let engine = auth.engine {
+            try await loginWithEngine(
+                engine,
+                username: trimmed,
+                password: password,
+                captcha: captcha,
+                auth: auth,
+                client: client,
+                cookies: loginCookies
+            )
+            SessionStore.shared.saveCookies(loginCookies.allCookies)
             SessionStore.shared.restoreToCookieStorage()
             let installed = await SessionStore.shared.restoreToWebViewAndWait()
             if !installed { throw PortalError.webViewSessionMissing }
+            discardPreparedLogin()
             return
         }
 
@@ -392,7 +551,7 @@ struct AuthRepository {
         loginRequest.httpBody = try JSONSerialization.data(withJSONObject: [
             "username": trimmed,
             "password": Self.sha1Hex("\(salt)-\(password)"),
-            "captchaToken": ""
+            "captchaToken": captcha
         ])
         let responseData = try await perform(client, loginRequest, cookies: loginCookies)
 
@@ -413,7 +572,7 @@ struct AuthRepository {
         }
         // The login endpoint accepted the request, so persist the session immediately. Home page
         // structure detection is content reading and must not invalidate a completed login.
-        SessionStore.shared.saveCookieHeader(loginCookies.header)
+        SessionStore.shared.saveCookies(loginCookies.allCookies)
         SessionStore.shared.restoreToCookieStorage()
         // Mirror Android: install the cookies into the WebView's own store before declaring the
         // login successful. Without this, the first page navigation bounces off a login redirect
@@ -422,6 +581,19 @@ struct AuthRepository {
         if !installed {
             throw PortalError.webViewSessionMissing
         }
+        discardPreparedLogin()
+    }
+
+    private func makeLoginContext(manualRedirects: Bool) -> PreparedLogin {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .always
+        configuration.timeoutIntervalForRequest = 40
+        let client = manualRedirects
+            ? URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
+            : URLSession(configuration: configuration)
+        return PreparedLogin(client: client, cookies: LoginCookieJar())
     }
 
     /// Port of `AuthRepository.validateSession`.
@@ -529,22 +701,15 @@ struct AuthRepository {
         _ engine: SchoolDefinition.AuthEnginePayload,
         username: String,
         password: String,
+        captcha: String,
         auth: SchoolDefinition.AuthPayload,
+        client: URLSession,
         cookies: LoginCookieJar
     ) async throws {
-        // URLSession's automatic redirect following hides the intermediate responses, so a 302's
-        // `Set-Cookie` headers -- exactly where CAS puts its ticket-granting cookie -- would never
-        // reach the jar. The engine declines every redirect and re-issues the request itself.
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
-        configuration.timeoutIntervalForRequest = 40
-        let client = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
-        defer { client.finishTasksAndInvalidate() }
-
         var variables: [String: String] = [
             "username": username,
             "password": password,
+            "captcha": captcha,
             "baseUrl": SchoolCatalog.shared.definition?.baseUrl ?? baseURL,
             "loginUrl": auth.loginUrl ?? ""
         ]
@@ -792,9 +957,20 @@ private final class LoginCookieJar {
             .joined(separator: "; ")
     }
 
+    var allCookies: [HTTPCookie] { Array(values.values) }
+
     func apply(to request: inout URLRequest) {
-        guard !values.isEmpty else { return }
-        HTTPCookie.requestHeaderFields(with: Array(values.values)).forEach {
+        guard let url = request.url, let host = url.host?.lowercased() else { return }
+        let requestPath = url.path.isEmpty ? "/" : url.path
+        let matching = values.values.filter { cookie in
+            let domain = cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+            let domainMatches = host == domain || host.hasSuffix(".\(domain)")
+            let pathMatches = requestPath.hasPrefix(cookie.path.isEmpty ? "/" : cookie.path)
+            let schemeMatches = !cookie.isSecure || url.scheme?.lowercased() == "https"
+            return domainMatches && pathMatches && schemeMatches
+        }
+        guard !matching.isEmpty else { return }
+        HTTPCookie.requestHeaderFields(with: matching).forEach {
             request.setValue($0.value, forHTTPHeaderField: $0.key)
         }
     }

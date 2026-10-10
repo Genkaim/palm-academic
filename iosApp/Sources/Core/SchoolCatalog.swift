@@ -427,6 +427,17 @@ final class SchoolCatalog: ObservableObject {
             guard type == "salted-sha1" || type == "web" || type == "engine" else {
                 throw PortalError.invalidSchoolDefinition
             }
+            if let captcha = auth["captcha"] as? [String: Any],
+               (captcha["required"] as? Bool) == true {
+                guard let imageURL = captcha["imageUrl"] as? String,
+                      imageURL.hasPrefix("https://") else {
+                    throw PortalError.invalidSchoolDefinition
+                }
+                if let parameter = captcha["refreshQueryParameter"] as? String,
+                   parameter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw PortalError.invalidSchoolDefinition
+                }
+            }
             if type == "engine" {
                 // Mirrors Android `validateDefinition`: every engine step must be exactly one of
                 // request / extract / transform, carrying the fields its kind requires.

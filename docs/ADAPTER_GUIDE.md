@@ -19,8 +19,10 @@ PalmAcademic 的 Android 渲染层与学校网页解析逻辑彼此独立。每�
 
 - [`examples/local-adapters/genkaim-top.json`](../examples/local-adapters/genkaim-top.json)
 - [`examples/local-adapters/genkaim-top-reader.js`](../examples/local-adapters/genkaim-top-reader.js)
+- [`examples/local-adapters/portal-cupk-test.json`](../examples/local-adapters/portal-cupk-test.json)
+- [`examples/local-adapters/portal-cupk-test-reader.js`](../examples/local-adapters/portal-cupk-test-reader.js)
 
-该示例的学校目标为 `https://genkaim.top`，用 `auth.type: "engine"` 把中石大克拉玛依校区 CAS（`https://cas.cupk.edu.cn/`）的账密握手完整描述进学校配置：GET 登录页提取 `execution` 隐藏字段、RSA-PKCS1 加密密码、POST 表单并按最终落点 URL 判定成功；错误密码命中 401 + `Invalid credentials.` 规则，直接提示“账号或密码错误”。登录成功回到融合门户后，普通功能只放了“融合门户首页”和“服务大厅”两个入口，另外四个重绘演示分别读取首页真实可见的任务计数（`.todoBox`）、应用系统（`#thirdSystem .microserSort a`）、网上服务（`#hallList li`）和常用服务（`#resource li a`），覆盖四种原生重绘数据结构。示例只读取页面，不包含账号、Cookie、Token 或任何固定的个人数据。
+`genkaim-top` 用于演示自定义目标地址；`portal-cupk-test` 直接以 `https://portal.cupk.edu.cn/portal` 为目标，并完整演示验证码位置与同会话提交。两者都用 `auth.type: "engine"` 描述 CUPK CAS 握手：带 `service` 参数打开登录页、提取 `execution`、RSA-PKCS1 加密密码、提交账号/密码/验证码，再按最终落点和明确的错误正文判定结果。测试脚本只读取登录后门户页面的可见链接并生成几个演示功能，不包含账号、Cookie、Token 或固定个人数据。
 
 如果需要一份“学校声明 + 适配器脚本”的真实完整参考，可以在线查看仓库内置的中石大（北京）`cupk` 学校：
 
@@ -157,6 +159,23 @@ app/src/main/assets/
 
 当前双端支持三种登录方式：内置的 salted-SHA1 密码流程、学校规则自描述的通用引擎账密流程（`engine`），以及 Web-only/CAS 网页登录流程（`web`）。未提供 `auth.loginUrl` 时保持原来的 `<origin>/student/login` 行为。
 
+`auth.captcha` 明确声明密码登录是否使用图片验证码。无验证码的学校仍建议写
+`"captcha": {"required": false}`，便于阅读规则时直接确认；需要验证码时必须提供 HTTPS
+图片地址。App 会先在独立登录会话中打开 `loginUrl`，再用同一 Cookie 会话加载图片并提交
+`{captcha}`，点按图片会携带 `refreshQueryParameter` 重新获取，避免展示与提交属于不同会话。
+
+```json
+"captcha": {
+  "required": true,
+  "imageUrl": "https://cas.example.edu.cn/cas/captcha.jpg",
+  "refreshQueryParameter": "id"
+}
+```
+
+仓库内置 `cup`、`cupk` 均显式声明 `"captcha": {"required": false}`；测试学校
+`portal-cupk-test` 声明 `required: true`。是否显示验证码完全由当前 school JSON 决定，
+不按域名硬编码。
+
 CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会优先直接打开 `loginUrl`；WebView 进入任一 `successUrlPrefixes` 后视为登录完成，并只从 `sessionCookieHosts` 指定的站点捕获会话。`sessionCookieNames` 为空数组表示接受成功落点主机写入的任意非空 Cookie；若学校的会话 Cookie 名称稳定，建议明确列出，例如 `SESSION` 或 `JSESSIONID`。
 
 ```json
@@ -183,7 +202,7 @@ CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会
 | `extract` | 用正则从响应正文提取变量 | `from`（请求步骤 id，默认上一个请求步骤）、`regex`（默认取第一捕获组）、`group` |
 | `transform` | 对变量做加密/摘要 | `algorithm`（`rsa-pkcs1-base64`/`sha1`/`md5`）、`publicKey`（RSA 时为 X.509 Base64 公钥）、`input` |
 
-内置变量：`{username}`、`{password}`、`{baseUrl}`、`{loginUrl}`；`extract`/`transform` 的输出变量名即该步骤的 `id`，后续步骤用 `{id}` 插值。`form` 的键值在插值后自动 URL 编码。
+内置变量：`{username}`、`{password}`、`{captcha}`、`{baseUrl}`、`{loginUrl}`；`extract`/`transform` 的输出变量名即该步骤的 `id`，后续步骤用 `{id}` 插值。`form` 的键值在插值后自动 URL 编码。
 
 `outcome` 作用于最后一个 `request` 步骤的最终响应：
 
@@ -191,16 +210,21 @@ CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会
 - `success`：`finalUrlPrefixes`（默认取 `auth.successUrlPrefixes`）、`cookies`（默认取 `auth.sessionCookieNames`，空数组表示不校验 Cookie 名）、`statusCodes` 三类条件全部满足才判定登录成功；
 - 都不匹配视为网络/会话类错误，App 会持续重试，不会弹回登录页。
 
-以中石大克拉玛依校区 CAS 为例（可直接导入的完整文件见文首 genkaim-top 示例）：
+以中石大克拉玛依校区 CAS 为例（可直接导入的完整文件见文首 `portal-cupk-test` 示例）：
 
 ```json
 {
   "auth": {
     "type": "engine",
-    "loginUrl": "https://cas.cupk.edu.cn/cas/login",
+    "loginUrl": "https://cas.cupk.edu.cn/cas/login?service=https%3A%2F%2Fportal.cupk.edu.cn%2Fportal%2F",
     "successUrlPrefixes": ["https://portal.cupk.edu.cn/portal/"],
     "sessionCookieHosts": ["portal.cupk.edu.cn", "cas.cupk.edu.cn"],
     "sessionCookieNames": [],
+    "captcha": {
+      "required": true,
+      "imageUrl": "https://cas.cupk.edu.cn/cas/captcha.jpg",
+      "refreshQueryParameter": "id"
+    },
     "engine": {
       "steps": [
         {"id": "loginPage", "request": {"method": "GET", "url": "{loginUrl}"}},
@@ -217,13 +241,15 @@ CAS/SSO 学校可使用下面的配置。选择 `type: "web"` 后，登录页会
           "form": {
             "username": "{username}",
             "password": "{encryptedPassword}",
+            "captcha": "{captcha}",
             "execution": "{execution}",
             "_eventId": "submit"
           }
         }}
       ],
       "outcome": {
-        "rejected": {"statusCodes": [401], "bodyContains": ["Invalid credentials."], "message": "账号或密码错误"},
+        "captcha": {"bodyContains": ["验证码错误", "验证码不能为空"], "message": "验证码错误，请刷新后重试"},
+        "rejected": {"bodyContains": ["用户名或密码错误", "Invalid credentials"], "message": "账号或密码错误"},
         "success": {"finalUrlPrefixes": ["https://portal.cupk.edu.cn/"]}
       }
     }

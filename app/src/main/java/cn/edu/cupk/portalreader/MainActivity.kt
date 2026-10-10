@@ -115,11 +115,48 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { SchoolAdapterRepository.load(application).auth.webOnly }.getOrDefault(false)
     )
         private set
+    var captchaRequired by mutableStateOf(
+        runCatching { SchoolAdapterRepository.load(application).auth.captcha.required }.getOrDefault(false)
+    )
+        private set
+    var captchaImage by mutableStateOf<ByteArray?>(null)
+        private set
+    var captchaLoading by mutableStateOf(false)
+        private set
+    var captchaError by mutableStateOf<String?>(null)
+        private set
+    var captchaGeneration by mutableStateOf(0)
+        private set
 
     private val auth = AuthRepository()
     private var loginJob: Job? = null
+    private var captchaJob: Job? = null
 
-    fun login(username: String, password: String, rememberPassword: Boolean = false) {
+    fun refreshCaptcha() {
+        if (!captchaRequired || authenticated) return
+        captchaJob?.cancel()
+        auth.discardPreparedLogin()
+        captchaImage = null
+        captchaGeneration += 1
+        captchaLoading = true
+        captchaError = null
+        captchaJob = viewModelScope.launch {
+            val result = auth.refreshCaptcha()
+            captchaLoading = false
+            result.onSuccess { captchaImage = it }
+                .onFailure {
+                    captchaImage = null
+                    captchaError = "验证码加载失败，点按重试"
+                }
+        }
+    }
+
+    fun login(
+        username: String,
+        password: String,
+        rememberPassword: Boolean = false,
+        captcha: String = ""
+    ) {
         loginJob?.cancel()
         loading = true
         error = null
@@ -133,7 +170,7 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
             // back to the form for it. Backoff caps at 15s and the loop runs indefinitely until
             // one of the terminal outcomes.
             while (true) {
-                val result = auth.login(username, password)
+                val result = auth.login(username, password, captcha)
                 if (result.isSuccess) {
                     if (rememberPassword) {
                         PasswordCredentialStore.save(getApplication(), username, password, loginSchoolId)
@@ -148,6 +185,7 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
                     loading = false
                     retryStatus = null
                     error = failure.message
+                    if (captchaRequired) refreshCaptcha()
                     return@launch
                 }
                 attempt += 1
@@ -163,6 +201,10 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectSchool(schoolId: String) {
+        captchaJob?.cancel()
+        auth.discardPreparedLogin()
+        captchaImage = null
+        captchaError = null
         schoolOptions = SchoolAdapterRepository.options(getApplication())
         if (loading) return
         val changed = SchoolAdapterRepository.select(getApplication(), schoolId)
@@ -171,6 +213,9 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         webLoginOnly = runCatching {
             SchoolAdapterRepository.load(getApplication()).auth.webOnly
         }.getOrDefault(false)
+        captchaRequired = runCatching {
+            SchoolAdapterRepository.load(getApplication()).auth.captcha.required
+        }.getOrDefault(false)
         rememberedCredential = PasswordCredentialStore.load(getApplication(), schoolId)
         error = null
         if (changed) {
@@ -178,6 +223,7 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
             PortalHttp.clearSession()
             PortalSessionCoordinator.clear()
         }
+        if (captchaRequired) refreshCaptcha()
     }
 
     fun completeAuthentication() {

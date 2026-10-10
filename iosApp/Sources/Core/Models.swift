@@ -93,6 +93,7 @@ struct SchoolDefinition: Codable {
         let successUrlPrefixes: [String]?
         let sessionCookieHosts: [String]?
         let sessionCookieNames: [String]?
+        let captcha: CaptchaPayload?
         let engine: AuthEnginePayload?
 
         var isWebOnly: Bool { type == "web" }
@@ -100,6 +101,12 @@ struct SchoolDefinition: Codable {
         var resolvedSuccessPrefixes: [String] { successUrlPrefixes ?? [] }
         var resolvedCookieHosts: [String] { sessionCookieHosts ?? [] }
         var resolvedCookieNames: [String] { sessionCookieNames ?? ["SESSION"] }
+
+        struct CaptchaPayload: Codable {
+            let required: Bool
+            let imageUrl: String?
+            let refreshQueryParameter: String?
+        }
     }
 
     /// Mirrors the `auth.engine` object consumed by `AuthRepository.loginWithEngine` on Android:

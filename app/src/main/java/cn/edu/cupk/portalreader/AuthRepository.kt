@@ -8,6 +8,7 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.FormBody
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,27 +31,88 @@ import javax.crypto.Cipher
 class LoginRejectedException(message: String) : IllegalStateException(message)
 
 class AuthRepository {
-    suspend fun login(username: String, password: String): Result<Unit> = withContext(Dispatchers.IO) {
+    private data class PreparedLogin(val cookies: LoginCookieJar, val client: OkHttpClient)
+    @Volatile private var preparedLogin: PreparedLogin? = null
+
+    suspend fun refreshCaptcha(): Result<ByteArray> = withContext(Dispatchers.IO) {
+        runCatching {
+            val auth = SchoolAdapterRepository.activeDefinitionOrNull()?.auth
+                ?: error("学校配置缺少登录信息")
+            val captcha = auth.captcha
+            require(captcha.required && !captcha.imageUrl.isNullOrBlank()) { "当前学校没有配置验证码图片" }
+
+            val cookies = LoginCookieJar()
+            val client = PortalHttp.client.newBuilder().cookieJar(cookies).build()
+            val loginUrl = auth.loginUrl ?: PortalConfig.LOGIN
+            client.newCall(
+                Request.Builder()
+                    .url(loginUrl)
+                    .header("Accept", "text/html,application/xhtml+xml")
+                    .header("Accept-Language", "zh-CN,zh;q=0.9")
+                    .get()
+                    .build()
+            ).execute().use { response ->
+                response.body?.close()
+                if (!response.isSuccessful) error("无法打开登录页（${response.code}）")
+            }
+            val imageUrl = captcha.imageUrl.toHttpUrl().newBuilder()
+                .apply {
+                    captcha.refreshQueryParameter.takeIf(String::isNotBlank)?.let { key ->
+                        removeAllQueryParameters(key)
+                        addQueryParameter(key, System.currentTimeMillis().toString())
+                    }
+                }
+                .build()
+            val bytes = client.newCall(
+                Request.Builder()
+                    .url(imageUrl)
+                    .header("Referer", loginUrl)
+                    .header("Cache-Control", "no-cache")
+                    .get()
+                    .build()
+            ).execute().use { response ->
+                if (!response.isSuccessful) error("验证码加载失败（${response.code}）")
+                response.body?.bytes()?.takeIf(ByteArray::isNotEmpty) ?: error("验证码图片为空")
+            }
+            preparedLogin = PreparedLogin(cookies, client)
+            bytes
+        }
+    }
+
+    fun discardPreparedLogin() {
+        preparedLogin = null
+    }
+
+    suspend fun login(
+        username: String,
+        password: String,
+        captcha: String = ""
+    ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             require(username.isNotBlank() && password.isNotBlank()) { "请输入账号和密码" }
+
+            val auth = SchoolAdapterRepository.activeDefinitionOrNull()?.auth
+            if (auth?.captcha?.required == true && captcha.isBlank()) {
+                throw LoginRejectedException("请输入验证码")
+            }
 
             // 盐值、登录和首页验证必须处于同一个连续 HTTP 会话中。首次登录时直接
             // 借用 WebView CookieManager 可能发生异步写入竞争，进而被服务端当作
             // 无效登录并提前触发验证码。
-            val loginCookies = LoginCookieJar()
-            val loginClient = PortalHttp.client.newBuilder()
-                .cookieJar(loginCookies)
-                .build()
+            val context = if (auth?.captcha?.required == true) preparedLogin else null
+            val loginCookies = context?.cookies ?: LoginCookieJar()
+            val loginClient = context?.client ?: PortalHttp.client.newBuilder()
+                .cookieJar(loginCookies).build()
 
             // 通用登录引擎：学校定义自己描述整个握手（请求/提取/加密/判定），App 只负责执行。
             // 内置的 salted-sha1 流程本质上是引擎的一条具体配置。
-            val auth = SchoolAdapterRepository.activeDefinitionOrNull()?.auth
             if (auth?.usesEngine == true) {
-                loginWithEngine(username.trim(), password, auth, loginCookies, loginClient)
+                loginWithEngine(username.trim(), password, captcha, auth, loginCookies, loginClient)
                 loginCookies.persistSession()
                 if (!PortalSessionStore.restoreToWebViewAndWait()) {
                     error("登录会话未能写入系统 WebView")
                 }
+                discardPreparedLogin()
                 return@runCatching
             }
 
@@ -82,7 +144,7 @@ class AuthRepository {
             val payload = JSONObject()
                 .put("username", username.trim())
                 .put("password", sha1("$salt-$password"))
-                .put("captchaToken", "")
+                .put("captchaToken", captcha)
                 .toString()
 
             val loginRequest = Request.Builder()
@@ -120,6 +182,7 @@ class AuthRepository {
             if (!PortalSessionStore.restoreToWebViewAndWait()) {
                 error("登录会话未能写入系统 WebView")
             }
+            discardPreparedLogin()
         }
     }
 
@@ -148,6 +211,7 @@ class AuthRepository {
     private fun loginWithEngine(
         username: String,
         password: String,
+        captcha: String,
         auth: PortalAuthDefinition,
         loginCookies: LoginCookieJar,
         loginClient: OkHttpClient
@@ -156,6 +220,7 @@ class AuthRepository {
         val variables = mutableMapOf(
             "username" to username,
             "password" to password,
+            "captcha" to captcha,
             "baseUrl" to (SchoolAdapterRepository.activeDefinitionOrNull()?.baseUrl.orEmpty()),
             "loginUrl" to (auth.loginUrl.orEmpty())
         )

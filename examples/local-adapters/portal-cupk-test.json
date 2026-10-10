@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "id": "genkaim-top",
-  "name": "genkaim.top 测试学校",
+  "id": "portal-cupk-test",
+  "name": "CUPK 融合门户（验证码测试）",
   "author": {
     "name": "Genkaim",
     "email": "genkaim@outlook.com"
   },
   "baseUrl": "https://portal.cupk.edu.cn/portal",
-  "readerAdapter": "adapters/genkaim-top-reader.js",
+  "readerAdapter": "adapters/portal-cupk-test-reader.js",
   "auth": {
     "type": "engine",
     "loginUrl": "https://cas.cupk.edu.cn/cas/login?service=https%3A%2F%2Fportal.cupk.edu.cn%2Fportal%2F",
@@ -40,6 +40,7 @@
         {
           "id": "execution",
           "extract": {
+            "from": "loginPage",
             "regex": "name=\"execution\" value=\"([^\"]+)\""
           }
         },
@@ -85,64 +86,34 @@
           "message": "账号或密码错误"
         },
         "success": {
-          "finalUrlPrefixes": ["https://portal.cupk.edu.cn/"]
+          "finalUrlPrefixes": ["https://portal.cupk.edu.cn/portal/"]
         }
       }
     }
   },
   "monitor": {
     "coursePagePath": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME",
-    "courseDataPathTemplate": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&view={semesterId}",
+    "courseDataPathTemplate": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&semester={semesterId}",
     "gradeDataPathTemplate": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME",
     "examDataPathTemplate": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME",
-    "semesterIdPatterns": [
-      "cmd=([A-Z_]+)"
-    ],
-    "studentIdPatterns": [
-      "id=\"userName\"[^>]*>\\s*([^<\\s]+)"
-    ]
+    "semesterIdPatterns": ["cmd=([A-Z_]+)"],
+    "studentIdPatterns": ["id=\"userName\"[^>]*>\\s*([^<\\s]+)"]
   },
   "groups": [
     {
       "title": "门户功能",
       "items": [
-        {
-          "title": "融合门户首页",
-          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME"
-        },
-        {
-          "title": "服务大厅",
-          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=com.awspaas.user.apps.cupk.theme.v3_to_service_hall"
-        }
+        {"title": "融合门户首页", "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME"},
+        {"title": "服务大厅", "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=com.awspaas.user.apps.cupk.theme.v3_to_service_hall"}
       ]
     },
     {
-      "title": "重绘演示（登录后首页数据）",
+      "title": "重绘测试",
       "items": [
-        {
-          "title": "任务概览",
-          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&paView=schedule#pa-schedule",
-          "quick": true,
-          "nativeType": "schedule"
-        },
-        {
-          "title": "应用系统",
-          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&paView=grade#pa-grade",
-          "quick": true,
-          "nativeType": "grade"
-        },
-        {
-          "title": "网上服务",
-          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&paView=exam#pa-exam",
-          "quick": true,
-          "nativeType": "exam"
-        },
-        {
-          "title": "常用服务",
-          "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&paView=program#pa-program",
-          "quick": true,
-          "nativeType": "program"
-        }
+        {"title": "门户概览", "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&paView=schedule", "quick": true, "nativeType": "schedule"},
+        {"title": "应用入口", "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&paView=grade", "quick": true, "nativeType": "grade"},
+        {"title": "网上服务", "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&paView=exam", "quick": true, "nativeType": "exam"},
+        {"title": "常用功能", "path": "https://portal.cupk.edu.cn/portal/r/w?cmd=CLIENT_USER_HOME&paView=program", "quick": true, "nativeType": "program"}
       ]
     }
   ],
@@ -151,9 +122,9 @@
       {
         "locationPattern": "",
         "unitTimes": {
-          "1": ["08:00", "08:45"],
-          "2": ["08:50", "09:35"],
-          "3": ["10:00", "10:45"]
+          "1": ["09:30", "10:15"],
+          "2": ["10:20", "11:05"],
+          "3": ["11:25", "12:10"]
         }
       }
     ]

@@ -1,5 +1,6 @@
 package cn.edu.cupk.portalreader
 
+import android.graphics.BitmapFactory
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.OpenInBrowser
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -71,6 +73,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
@@ -100,10 +103,12 @@ internal fun RefactoredLoginContent(
 ) {
     var username by remember { mutableStateOf(model.rememberedCredential?.username.orEmpty()) }
     var password by remember { mutableStateOf(model.rememberedCredential?.password.orEmpty()) }
+    var captcha by remember { mutableStateOf("") }
     var rememberPassword by remember { mutableStateOf(model.rememberedCredential != null) }
     var revealPassword by remember { mutableStateOf(false) }
     var restingContentHeightPx by remember { mutableStateOf(0) }
     val passwordFocusRequester = remember { FocusRequester() }
+    val captchaFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
     val density = LocalDensity.current
@@ -133,7 +138,14 @@ internal fun RefactoredLoginContent(
     LaunchedEffect(model.selectedSchoolId, model.hasSelectedSchool) {
         username = model.rememberedCredential?.username.orEmpty()
         password = model.rememberedCredential?.password.orEmpty()
+        captcha = ""
         rememberPassword = model.rememberedCredential != null
+        if (model.captchaRequired && model.captchaImage == null && !model.captchaLoading) {
+            model.refreshCaptcha()
+        }
+    }
+    LaunchedEffect(model.captchaGeneration) {
+        captcha = ""
     }
     LaunchedEffect(keyboardVisible) {
         if (!keyboardVisible) {
@@ -305,19 +317,22 @@ internal fun RefactoredLoginContent(
                                     },
                                     keyboardOptions = KeyboardOptions(
                                         keyboardType = KeyboardType.Password,
-                                        imeAction = ImeAction.Done
+                                        imeAction = if (model.captchaRequired) ImeAction.Next else ImeAction.Done
                                     ),
-                                    keyboardActions = KeyboardActions(onDone = {
-                                        if (username.isNotBlank() && password.isNotBlank()) {
-                                            focusManager.clearFocus()
-                                            model.login(username, password, rememberPassword)
+                                    keyboardActions = KeyboardActions(
+                                        onNext = { captchaFocusRequester.requestFocus() },
+                                        onDone = {
+                                            if (username.isNotBlank() && password.isNotBlank()) {
+                                                focusManager.clearFocus()
+                                                model.login(username, password, rememberPassword, captcha)
+                                            }
                                         }
-                                    }),
+                                    ),
                                     shape = RoundedCornerShape(
                                         topStart = 6.dp,
                                         topEnd = 6.dp,
-                                        bottomStart = 18.dp,
-                                        bottomEnd = 18.dp
+                                        bottomStart = if (model.captchaRequired) 6.dp else 18.dp,
+                                        bottomEnd = if (model.captchaRequired) 6.dp else 18.dp
                                     ),
                                     colors = fieldColors,
                                     modifier = Modifier
@@ -325,6 +340,75 @@ internal fun RefactoredLoginContent(
                                         .height(LoginTextFieldHeight)
                                         .focusRequester(passwordFocusRequester)
                                 )
+                                if (model.captchaRequired) {
+                                    TextField(
+                                        value = captcha,
+                                        onValueChange = { captcha = it },
+                                        label = { Text("验证码") },
+                                        leadingIcon = { Icon(Icons.Outlined.Lock, null) },
+                                        trailingIcon = {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(width = 112.dp, height = 48.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(MaterialTheme.colorScheme.background)
+                                                    .clickable(
+                                                        enabled = !model.captchaLoading && !model.loading
+                                                    ) { model.refreshCaptcha() },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                when {
+                                                    model.captchaLoading -> CircularProgressIndicator(
+                                                        modifier = Modifier.size(20.dp),
+                                                        strokeWidth = 2.dp
+                                                    )
+                                                    model.captchaImage != null -> {
+                                                        val bytes = model.captchaImage!!
+                                                        val bitmap = remember(bytes) {
+                                                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                                        }
+                                                        if (bitmap != null) {
+                                                            Image(
+                                                                bitmap = bitmap.asImageBitmap(),
+                                                                contentDescription = "验证码图片，点按刷新",
+                                                                contentScale = ContentScale.Fit,
+                                                                modifier = Modifier.fillMaxSize()
+                                                            )
+                                                        }
+                                                    }
+                                                    else -> Icon(
+                                                        Icons.Outlined.Refresh,
+                                                        contentDescription = model.captchaError ?: "刷新验证码"
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(
+                                            keyboardType = KeyboardType.Text,
+                                            imeAction = ImeAction.Done
+                                        ),
+                                        keyboardActions = KeyboardActions(onDone = {
+                                            if (username.isNotBlank() && password.isNotBlank() &&
+                                                captcha.isNotBlank() && model.captchaImage != null
+                                            ) {
+                                                focusManager.clearFocus()
+                                                model.login(username, password, rememberPassword, captcha)
+                                            }
+                                        }),
+                                        shape = RoundedCornerShape(
+                                            topStart = 6.dp,
+                                            topEnd = 6.dp,
+                                            bottomStart = 18.dp,
+                                            bottomEnd = 18.dp
+                                        ),
+                                        colors = fieldColors,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(LoginTextFieldHeight)
+                                            .focusRequester(captchaFocusRequester)
+                                    )
+                                }
                             }
 
                             Card(
@@ -430,10 +514,11 @@ internal fun RefactoredLoginContent(
                     .height(54.dp)
                     .graphicsLayer { translationY = loginTranslationYPx },
                 loading = model.loading,
-                canSubmit = username.isNotBlank() && password.isNotBlank(),
+                canSubmit = username.isNotBlank() && password.isNotBlank() &&
+                    (!model.captchaRequired || (captcha.isNotBlank() && model.captchaImage != null)),
                 onPassword = {
                     focusManager.clearFocus()
-                    model.login(username, password, rememberPassword)
+                    model.login(username, password, rememberPassword, captcha)
                 }
             )
         }

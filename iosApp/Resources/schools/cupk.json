@@ -10,6 +10,7 @@
   "readerAdapter": "adapters/cupk-reader.js",
   "auth": {
     "type": "salted-sha1",
+    "captcha": {"required": false},
     "loginPath": "/login",
     "saltPath": "/login-salt",
     "homePath": "/home"
