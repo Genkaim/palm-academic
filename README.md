@@ -1,63 +1,99 @@
 # 掌上教务（PalmAcademic）
 
-一个基于 Jetpack Compose + Material 3 的 Android 教务客户端。项目通过“学校配置 + JavaScript 阅读适配器”隔离不同学校的域名、菜单、页面 DOM、后台检查接口与作息时间，不需要为每所学校复制 Android UI。Android 是当前维护和发布的正式客户端；仓库中的 iOS 工程仅为实验原型。
+掌上教务是一个同时支持 Android 与 iOS 的教务客户端。项目用“学校定义 JSON + 独立 JavaScript 阅读适配器”描述学校差异，两端共用同一套菜单、登录、页面读取、后台检查和作息配置。
 
-## 功能
+## 主要功能
 
-- 历史会话可用时直接进入首页，并在后台验证登录状态。
-- 支持账号密码登录和应用内网页登录。
-- 课表、成绩、考试、培养方案等页面可转换为原生 Material 界面，支持保留上次数据、进入后刷新和下拉刷新；其他入口直接显示学校官网页面。
-- 课表可导出 iCalendar、WakeUp CSV 和 JSON。
-- WorkManager 后台检测课表、成绩与考试变化，日志保存解析后的前后 JSON、通知状态和诊断信息，并支持逐项复制。
-- 学校选择为独立页面，可从本仓库动态刷新学校配置和阅读适配器。
-- 在设置中通过 GitHub Releases 检查新版本并下载 APK。
-- 支持浅色、深色和跟随系统主题。
+- 支持账号密码、验证码密码、应用内网页三类登录流程，并复用已登录会话。
+- 普通入口直接在应用内打开学校网页；课表、成绩、考试、培养方案可显示为原生界面。
+- 登录后自动预取原生重绘页面并建立后台比较基线；命中缓存时立即显示旧数据，同时在后台刷新。
+- Cookie 过期时按登录类型处理：无验证码密码登录静默重试；验证码登录发出通知并等待用户输入；网页登录引导返回登录页。
+- 后台检查课表、成绩和考试变化，并发送系统通知。
+- 课表可导出为 iCalendar、WakeUp CSV 和 JSON。
+- 支持浅色、深色和跟随系统主题，可从 GitHub 检查应用更新与学校规则更新。
+- 支持本地导入学校 JSON 与适配器 JS；导入相同 ID 时可确认覆盖，便于真机调试。
 
-## 学校适配
+## 使用现有学校
 
-完整规范见 [学校适配指南](docs/ADAPTER_GUIDE.md)。新增学校通常只需要：
+在学校选择页选择学校并登录即可。学校系统若只允许校园网或 VPN 访问，设备也必须处于相应网络环境；应用不会绕过学校的访问限制。
 
-1. 在 `app/src/main/assets/schools/index.json` 注册学校、域名和作息时间。
-2. 新增 `schools/<school>.json`，声明菜单入口及哪些页面使用原生重绘。
-3. 新增该校独立的 `adapters/<school>-reader.js`，在同一脚本中提供四个快捷入口，通过 `PalmAcademicHost.publish()` 发布结构化页面；不得依赖其他学校脚本。
-4. 务必配置 `readerConfig.scheduleProfiles[].unitTimes`；缺少时间会导致课表看似正常，但导出的日历/WakeUp 文件没有正确的上课时间。
-5. 在学校定义中提供适配作者名称和可联系邮箱；邮箱会公开显示在 GitHub，可使用 GitHub `noreply` 邮箱。
+普通页面由内置 WebView 加载，无法读取系统浏览器的 Cookie。需要网页登录时，请在应用内完成登录。
 
-建议通过 Fork + Pull Request 提交适配，不接受 App 直接上传远程脚本。具体文件范围、PR 内容和自测要求见 [贡献指南](CONTRIBUTING.md)。
+## 新增或调试学校适配
 
-提交前可运行 `node tools/validate-adapters.mjs`；仓库会在 Pull Request 中自动重复检查配置结构、作者邮箱、作息时间和 JavaScript 语法。
+推荐先做本地适配，再提交到仓库：
 
-App 刷新学校规则时先读取 `app/src/main/assets/schools/index.json`，再下载其中每个 `definitionAsset` 指向的学校定义，最后下载学校定义中 `readerAdapter` 指向的独立脚本。不会递归扫描整个 `schools/` 或 `adapters/` 目录。
+1. 从 `examples/local-adapters/` 复制一组 JSON 与 JS 示例。
+2. 在 JSON 中配置学校地址、登录方式、普通入口、四个原生重绘入口和后台检查地址。
+3. 在 JS 中读取当前页面，并通过 `PalmAcademicHost.publish()` 发布结构化数据。
+4. 在 Android 或 iOS 的学校选择页依次导入 JSON、JS；修改后用相同 ID 再次导入并确认覆盖。
+5. 两端验证登录、普通网页、四个重绘页面、缓存刷新和 Cookie 过期行为。
+6. 运行校验器，通过后再同步到内置资源并提交 Pull Request。
 
-远程文件会经过 HTTPS、路径、大小、JSON schema 和适配器引用校验，并保存到 App 私有目录；更新失败时继续使用 APK 内置版本。
+完整字段、示例和验收清单见 [学校适配指南](docs/ADAPTER_GUIDE.md)。协作约定见 [贡献指南](CONTRIBUTING.md)。
 
-## 构建
+```powershell
+node tools/validate-adapters.mjs
+```
 
-需要 Android SDK、JDK 17 和网络连接：
+## 项目结构
+
+```text
+app/                         Android 客户端
+iosApp/                      iOS 客户端
+app/src/main/assets/
+  schools/                   内置学校索引与定义
+  adapters/                  内置阅读适配器
+iosApp/Resources/
+  schools/                   iOS 随包学校资源
+  adapters/                  iOS 随包阅读适配器
+examples/local-adapters/     可直接导入的本地测试示例
+docs/ADAPTER_GUIDE.md        最新适配流程与字段说明
+tools/validate-adapters.mjs  适配配置校验器
+```
+
+在线更新从仓库 `main` 分支的 `app/src/main/assets/` 读取。下载失败或配置校验失败时，应用继续使用上一次可用版本或随包版本。远程适配器只接受本仓库固定来源，并在已登录的学校 WebView 中运行。
+
+## 构建 Android
+
+需要 JDK 17、Android SDK 和项目依赖所需的网络连接。
 
 ```powershell
 .\gradlew.bat assembleDebug
 ```
 
-Debug 和 Release 均连接学校正式教务地址。Debug APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。
+Debug APK 输出到 `app/build/outputs/apk/debug/app-debug.apk`。
 
-Release 签名配置不进入仓库。复制 `signing.properties.example` 为 `signing.properties`，填写本机密钥信息后运行：
+Release 签名信息不进入仓库。复制 `signing.properties.example` 为 `signing.properties`，填写本机密钥后运行：
 
 ```powershell
 .\gradlew.bat assembleRelease
 ```
 
-iOS 原型位于 `iosApp/`，需要 macOS、Xcode 和 XcodeGen。仓库的 `Build unsigned iOS IPA` 工作流可生成未签名 IPA；该包必须使用 Apple 开发者证书或侧载工具重签名后才能安装，并不具备 Android 客户端的完整原生功能。
+## 构建 iOS
 
-## 在线更新
+本地构建需要 macOS、Xcode 与 XcodeGen：
 
-- 学校适配：读取 GitHub 仓库 `main` 分支中上述 assets 目录。
-- App 版本：读取 `Genkaim/palm-academic` 的 latest Release；版本标签使用 `v<versionName>`，例如 `v0.3.0`。
-- Release 中建议附加一个 `.apk` 文件，App 会优先打开该资产的下载地址；没有 APK 时打开 Release 页面。
+```bash
+cd iosApp
+xcodegen generate
+```
 
-## 注意事项
+随后可用生成的 `PalmAcademicIOS.xcodeproj` 在 Xcode 中运行或归档。仓库也提供以下 GitHub Actions：
 
-- 部分学校的教务系统仅允许校园网或学校 VPN 访问，App 无法绕过网络访问限制。
-- Android 周期后台任务最短间隔为 15 分钟，实际执行时间还会受到系统省电策略影响。
-- App 不能读取系统 Chrome 的 Cookie；网页登录必须在应用内完成。
-- 远程 JavaScript 适配器会在已登录的教务 WebView 内运行，因此 App 只信任代码中固定的官方仓库。
+- `Build unsigned iOS IPA`：生成未签名 IPA，安装前必须重签名。
+- `Build signed iOS IPA (macOS, Liquid Glass)`：使用新版本 Xcode SDK 构建并生成临时签名产物。
+- `Build signed iOS IPA (developer certificate)`：使用仓库密钥中的证书和描述文件生成设备可安装 IPA。
+
+## 发布与更新
+
+- 学校适配更新：提升 `app/src/main/assets/schools/index.json` 的 `configVersion`，并保持 Android、iOS 随包资源一致。
+- 应用更新：发布 GitHub Release，标签使用 `v<version>`，例如 `v0.4.7`。
+- Android Release 建议附加 `.apk`；客户端优先打开安装包资产，没有匹配资产时打开 Release 页面。
+- iOS 客户端同样检查 latest Release，但安装方式取决于签名和分发渠道。
+
+## 安全边界
+
+- 适配器应只读取页面或学校官方只读接口，不得代替用户选课、退课、评教、提交申请或执行其他写操作。
+- 不要把账号、密码、Cookie、Token、私钥或真实学生数据写入配置、脚本、日志和提交记录。
+- 新域名、登录链路或 Cookie 范围应保持最小化，并在 Android 与 iOS 真机上分别验证。
