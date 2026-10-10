@@ -910,12 +910,18 @@ private struct LocalRuleImportView: View {
     @ObservedObject private var catalog = SchoolCatalog.shared
     @State private var definitionURL: URL?
     @State private var adapterURL: URL?
-    @State private var choosingDefinition = false
-    @State private var choosingAdapter = false
+    @State private var pickerTarget: RuleFileKind?
     @State private var errorMessage: String?
     @State private var importing = false
     @State private var pendingOverwrite: LocalRuleImportConflict?
     let onImported: (SchoolProfile) -> Void
+
+    /// Which rule file the document picker is currently choosing.
+    private enum RuleFileKind: String, Identifiable {
+        case definition
+        case adapter
+        var id: String { rawValue }
+    }
 
     var body: some View {
         NavigationStack {
@@ -925,13 +931,13 @@ private struct LocalRuleImportView: View {
                         title: "学校定义 JSON",
                         fileName: definitionURL?.lastPathComponent,
                         systemImage: "doc.text",
-                        action: { choosingDefinition = true }
+                        action: { pickerTarget = .definition }
                     )
                     fileRow(
                         title: "适配器 JavaScript",
                         fileName: adapterURL?.lastPathComponent,
                         systemImage: "curlybraces",
-                        action: { choosingAdapter = true }
+                        action: { pickerTarget = .adapter }
                     )
                 } footer: {
                     Text("两个文件将复制到本机独立存储；刷新云端内置规则不会覆盖本地导入。学校 ID 与现有条目冲突时，确认后可覆盖。")
@@ -965,25 +971,26 @@ private struct LocalRuleImportView: View {
                 }
             }
         }
-        .fileImporter(
-            isPresented: $choosingDefinition,
-            // Accept any byte-based file, not just the exact .json UTI. Files inside third-party
-            // providers (LocalSend container, chat apps, USB-copied items) are sometimes typed as
-            // generic/dynamic UTIs on newer iOS, so a strict .json/.plainText filter greyed them
-            // out and they could not be tapped. public.data matches every real file but not
-            // folders; importLocalSchool validates the content and rejects non-JSON. Mirrors the
-            // MIME-open Android picker plus its own content validation.
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: false
-        ) { result in
-            handle(result, target: &definitionURL)
-        }
-        .fileImporter(
-            isPresented: $choosingAdapter,
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: false
-        ) { result in
-            handle(result, target: &adapterURL)
+        // Use the UIKit UIDocumentPickerViewController directly instead of SwiftUI's
+        // .fileImporter: under LiveContainer (and on some real-device/iOS combinations) the SwiftUI
+        // picker presents with files greyed out and "Open" never enabled, while UIKit's picker is
+        // selectable and is also what LiveContainer's "Fix File Picker" toggle hooks. asCopy: true
+        // hands us a local copy, avoiding fragile security-scoped reads in sandboxed launchers.
+        .sheet(item: $pickerTarget) { kind in
+            RuleDocumentPicker(onPick: { url in
+                errorMessage = nil
+                switch kind {
+                case .definition: definitionURL = url
+                case .adapter: adapterURL = url
+                }
+                pickerTarget = nil
+            }, onCancel: {
+                pickerTarget = nil
+            }, onError: { message in
+                errorMessage = message
+                pickerTarget = nil
+            })
+            .ignoresSafeArea(edges: .bottom)
         }
         .alert(
             "覆盖同 ID 规则？",
@@ -1027,16 +1034,6 @@ private struct LocalRuleImportView: View {
         }
     }
 
-    private func handle(_ result: Result<[URL], Error>, target: inout URL?) {
-        switch result {
-        case .success(let urls):
-            target = urls.first
-            errorMessage = nil
-        case .failure(let error):
-            errorMessage = error.localizedDescription
-        }
-    }
-
     private func importFiles(overwriteExisting: Bool) {
         guard let definitionURL, let adapterURL else { return }
         importing = true
@@ -1073,6 +1070,80 @@ private struct LocalRuleImportView: View {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         return try Data(contentsOf: url, options: [.mappedIfSafe])
+    }
+}
+
+/// UIKit `UIDocumentPickerViewController` bridge for choosing a local rule file.
+///
+/// SwiftUI's `.fileImporter` presents files as non-selectable under LiveContainer (and on a subset
+/// of real-device/iOS configurations); the UIKit picker stays selectable and is also the class
+/// LiveContainer's own "Fix File Picker" toggle swizzles. A transparent host controller presents
+/// the picker once it appears, and `asCopy: true` yields a readable local copy instead of a
+/// security-scoped URL that sandboxed launchers sometimes refuse.
+private struct RuleDocumentPicker: UIViewControllerRepresentable {
+    var onPick: (URL) -> Void
+    var onCancel: () -> Void
+    var onError: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIViewController(context: Context) -> HostController {
+        HostController(coordinator: context.coordinator)
+    }
+
+    func updateUIViewController(_ controller: HostController, context: Context) {
+        context.coordinator.parent = self
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        var parent: RuleDocumentPicker
+        init(parent: RuleDocumentPicker) { self.parent = parent }
+
+        func documentPicker(
+            _ controller: UIDocumentPickerViewController,
+            didPickDocumentsAt urls: [URL]
+        ) {
+            guard let url = urls.first else {
+                parent.onError("未能读取所选文件")
+                return
+            }
+            parent.onPick(url)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.onCancel()
+        }
+    }
+
+    /// An invisible presenter: the document browser has to be presented modally to dismiss itself,
+    /// so the sheet hosts this controller which presents the real picker on first appearance.
+    final class HostController: UIViewController {
+        private let coordinator: Coordinator
+        private var hasPresented = false
+
+        init(coordinator: Coordinator) {
+            self.coordinator = coordinator
+            super.init(nibName: nil, bundle: nil)
+            view.backgroundColor = .clear
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            guard !hasPresented, presentedViewController == nil else { return }
+            hasPresented = true
+            // public.data matches every byte-based file but not folders; the importer validates
+            // JSON / JS content itself, so a loose type filter keeps oddly-typed providers usable.
+            let picker = UIDocumentPickerViewController(
+                forOpeningContentTypes: [.data],
+                asCopy: true
+            )
+            picker.delegate = coordinator
+            picker.modalPresentationStyle = .formSheet
+            present(picker, animated: true)
+        }
     }
 }
 
