@@ -34,6 +34,12 @@ internal object PortalLogDetails {
 
     fun courseRows(payload: String): List<String> {
         val root = parseJson(payload) ?: return emptyList()
+        // EAMS `course-table/get-data` nests the real course name under each lesson's `course`
+        // object and puts the human schedule in `scheduleText`. Recognise that shape first; the
+        // generic walker below does not know these keys and used to fall back to bare lesson IDs,
+        // which never matched the rich rows the adapter rendered for the baseline.
+        eamsGetDataRows(root).takeIf { it.isNotEmpty() }?.let { return it }
+
         val lessons = mutableListOf<JSONObject>()
         collectLessonObjects(root, parentKey = "", destination = lessons)
         val rows = lessons.flatMap(::formatLesson).normalizeRows()
@@ -42,6 +48,45 @@ internal object PortalLogDetails {
         val lessonIds = mutableListOf<String>()
         collectValuesForKey(root, "lessonids", lessonIds)
         return lessonIds.distinct().sorted().map { "课程 ID：$it" }
+    }
+
+    /**
+     * EAMS get-data: `lessons[].course.nameZh`, `lessons[].code` and
+     * `lessons[].scheduleText.dateTimePlacePersonText.text`. The latter already packs
+     * weeks/weekday/section/campus/room/teacher ("4~12周 星期三 6~7节 校区 机房 张老师") and may
+     * carry several segments separated by `;` or newlines. Rows are normalised to a stable form
+     * so repeated polls of the same timetable compare equal.
+     */
+    private fun eamsGetDataRows(root: Any?): List<String> {
+        val lessons = (root as? JSONObject)?.optJSONArray("lessons") ?: return emptyList()
+        val rows = mutableListOf<String>()
+        for (index in 0 until lessons.length()) {
+            val lesson = lessons.optJSONObject(index) ?: continue
+            val course = lesson.optJSONObject("course")
+            val title = (course?.optString("nameZh")?.takeIf { it.isNotBlank() }
+                ?: course?.optString("nameEn")?.takeIf { it.isNotBlank() }
+                ?: lesson.optString("nameZh").takeIf { it.isNotBlank() })
+                ?: continue
+            val code = lesson.optString("code").trim()
+            val idText = scalarText(lesson.opt("id"))
+            val base = courseName(title, code.ifBlank { idText })
+            val text = lesson.optJSONObject("scheduleText")
+                ?.optJSONObject("dateTimePlacePersonText")
+                ?.optString("text")
+                ?.takeIf { it.isNotBlank() }
+            if (text == null) {
+                rows += base
+                continue
+            }
+            text.split(';', '；', '\n')
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .forEach { segment ->
+                    val normalised = segment.replace('~', '-').replace(Regex("\\s+"), " ").trim()
+                    rows += "$base｜$normalised".trimSeparators()
+                }
+        }
+        return rows.normalizeRows()
     }
 
     fun materialRows(content: String, nativeType: String?): List<String> {

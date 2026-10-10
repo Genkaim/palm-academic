@@ -303,6 +303,12 @@ enum PortalLogDetails {
     static func courseRows(_ payload: String) -> [String] {
         guard let data = payload.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        // EAMS `course-table/get-data` nests the real course name under each lesson's `course`
+        // object and puts the human schedule in `scheduleText`. Recognise that shape first; the
+        // generic walker below does not know these keys and used to fall back to bare lesson IDs,
+        // which never matched the rich rows the adapter rendered for the baseline.
+        let eams = eamsGetDataRows(root)
+        if !eams.isEmpty { return eams }
         var lessons: [[String: Any]] = []
         collectLessonObjects(root, parentKey: "", destination: &lessons)
         let formatted = normalizeRows(lessons.flatMap(formatLesson))
@@ -310,6 +316,49 @@ enum PortalLogDetails {
         var lessonIDs: [String] = []
         collectValues(for: "lessonids", in: root, destination: &lessonIDs)
         return Array(Set(lessonIDs)).sorted().map { "课程 ID：\($0)" }
+    }
+
+    /// EAMS get-data: `lessons[].course.nameZh`, `lessons[].code` and
+    /// `lessons[].scheduleText.dateTimePlacePersonText.text`. The latter already packs
+    /// weeks/weekday/section/campus/room/teacher and may carry several segments separated by
+    /// `;`/newlines. Rows are normalised to a stable form so repeated polls compare equal.
+    private static func eamsGetDataRows(_ root: Any) -> [String] {
+        guard let object = root as? [String: Any],
+              let lessons = object["lessons"] as? [Any] else { return [] }
+        var rows: [String] = []
+        for case let lesson as [String: Any] in lessons {
+            let course = lesson["course"] as? [String: Any]
+            let title = nonEmpty(course?["nameZh"] as? String)
+                ?? nonEmpty(course?["nameEn"] as? String)
+                ?? nonEmpty(lesson["nameZh"] as? String)
+            guard let title else { continue }
+            let code = (lesson["code"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+            let base = courseName(title, code.isEmpty ? scalarText(lesson["id"]) : code)
+            guard let text = (lesson["scheduleText"] as? [String: Any])
+                .flatMap({ $0["dateTimePlacePersonText"] as? [String: Any] })
+                .flatMap({ $0["text"] as? String })?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else {
+                rows.append(base)
+                continue
+            }
+            let segments = text.components(separatedBy: CharacterSet(charactersIn: ";\u{ff1b}\n"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            for segment in segments {
+                let normalised = segment
+                    .replacingOccurrences(of: "~", with: "-")
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespaces)
+                rows.append(trimSeparators("\(base)｜\(normalised)"))
+            }
+        }
+        return normalizeRows(rows)
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return value
     }
 
     static func materialRows(_ content: String, nativeType: String?) -> [String] {

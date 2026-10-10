@@ -559,11 +559,11 @@ final class AuthRepository {
                 client: client,
                 cookies: loginCookies
             )
-            // A CAS/engine flow is not complete merely because its last redirect URL and cookie
-            // names look plausible. Prove that the cookies can authenticate a brand-new HTTP
-            // client before copying them into WebKit; this catches ticket exchanges that reached
-            // the portal but never established the portal session.
-            try await confirmAuthenticatedHome(cookies: loginCookies)
+            // Match Android's engine branch: the engine outcome already verified the final URL
+            // prefixes and session cookies (`judgeEngineOutcome`), so no second home probe runs.
+            // CAS portals answer that extra ephemeral probe with a re-login/SSO bounce that is
+            // perfectly recoverable in the WebView; treating it as fatal made iOS loop forever on
+            // "网络不稳定，正在重试" even though the browser opened the portal normally.
             SessionStore.shared.saveCookies(loginCookies.allCookies)
             SessionStore.shared.restoreToCookieStorage()
             let installed = await SessionStore.shared.restoreToWebViewAndWait()

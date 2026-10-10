@@ -355,8 +355,13 @@ actor PortalPollWorker {
     ) async -> PortalPollHistoryDetail {
         let defaults = UserDefaults.standard
         let parsed = PortalSnapshot.courseDataJSON(payload: response.body, semesterId: semesterID)
-        let rawRows = PortalLogDetails.courseRows(response.body)
-        let currentRows = rawRows.isEmpty ? PortalLogDetails.materialRows(renderedContent, nativeType: "schedule") : rawRows
+        // Prefer the adapter's rendered rows: they are exactly what the first-login baseline
+        // stored, so a poll right after login compares like with like and cannot fire a false
+        // "changed" notification. Raw get-data rows are only used without a warm rendered cache.
+        let renderedRows = PortalLogDetails.materialRows(renderedContent, nativeType: "schedule")
+        let currentRows = renderedRows.isEmpty
+            ? PortalLogDetails.courseRows(response.body)
+            : renderedRows
         let snapshot = currentRows.isEmpty
             ? "fallback:\(PortalSnapshot.stableHash(parsed))"
             : PortalLogDetails.encode(currentRows)

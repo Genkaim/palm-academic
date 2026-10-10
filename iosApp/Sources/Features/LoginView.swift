@@ -112,6 +112,11 @@ struct LoginView: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
+            // Keep the brand title and the input fields exactly where they are when the keyboard
+            // appears: do not let the system compress/reflow this scroll content. The login button
+            // band below still lifts with the keyboard through its own safeAreaInset, and the
+            // scroll view remains manually scrollable if a field needs more room.
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             // The bottom area sits *inside* the scroll view's bottom safe area rather than on top
             // of the screen. That single choice is what makes the login button follow the input
             // method: `safeAreaInset` places its content in the region the system reserves for the

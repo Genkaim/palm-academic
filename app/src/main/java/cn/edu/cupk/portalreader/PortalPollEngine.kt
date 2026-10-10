@@ -407,8 +407,13 @@ internal class PortalPollEngine(private val appContext: Context) {
     ): PortalPollHistoryDetail {
         val courseBody = response.body
         val parsedCourse = PortalSnapshot.courseDataJson(courseBody, semesterId)
-        val currentRows = PortalLogDetails.courseRows(courseBody).ifEmpty {
-            PortalLogDetails.materialRows(renderedContent, "schedule")
+        // Prefer the adapter's rendered rows: they are exactly what the first-login baseline
+        // stored, so a poll right after login compares like with like. The raw get-data rows are
+        // only used when there is no warm rendered cache (e.g. a purely background poll the user
+        // never opened); they are already semantic course rows, not bare lesson IDs.
+        val renderedRows = PortalLogDetails.materialRows(renderedContent, "schedule")
+        val currentRows = renderedRows.ifEmpty {
+            PortalLogDetails.courseRows(courseBody)
         }
         val newSnapshot = currentRows.takeIf(List<String>::isNotEmpty)
             ?.let(PortalLogDetails::encode)
