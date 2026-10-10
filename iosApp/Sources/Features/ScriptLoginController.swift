@@ -294,13 +294,13 @@ final class ScriptLoginController: ObservableObject {
         }
         // 优先使用脚本在需要验证码时动态给出的验证码图片地址。
         if result.kind == "captcha", let url = result.captchaUrl, !url.isEmpty {
-            openCaptchaChallenge(url, result.captchaRefreshParam, "captcha")
+            openCaptchaChallenge(url, refreshParam: result.captchaRefreshParam, targetKey: "captcha")
             return
         }
         // 其次使用该方式声明的常驻图形验证码字段。
         if let field = method.fields.first(where: { $0.type == "captcha" }),
            let url = field.captchaImageUrl, !url.isEmpty {
-            openCaptchaChallenge(url, field.captchaRefreshParam, field.id)
+            openCaptchaChallenge(url, refreshParam: field.captchaRefreshParam, targetKey: field.id)
         } else {
             // 无验证码密码登录：直接重试。
             submit()
