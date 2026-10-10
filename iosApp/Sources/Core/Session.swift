@@ -673,10 +673,10 @@ final class AuthRepository {
 
             if (300..<400).contains(http.statusCode),
                let location = http.value(forHTTPHeaderField: "Location"),
-               let nextURL = URL(string: location, relativeTo: currentURL)?.absoluteURL {
+               let resolved = URL(string: location, relativeTo: currentURL)?.absoluteURL {
                 guard redirectCount < 10 else { throw PortalError.invalidResponse }
                 redirectCount += 1
-                currentURL = nextURL
+                currentURL = Self.upgradeSameHostHTTPS(resolved, previous: currentURL)
                 continue
             }
 
@@ -756,6 +756,26 @@ final class AuthRepository {
     }
 
     private static let languageHeader = "zh-CN,zh;q=0.9"
+
+    /// Upgrade a redirect to the same host from `http` to `https`.
+    ///
+    /// Some portals answer an HTTPS request with a 302 to an `http://` URL on the identical host
+    /// (their SSO relay, e.g. `index_sso.jsp`), which nginx then bounces straight back to HTTPS.
+    /// ATS blocks the cleartext hop, while Android's OkHttp (`followSslRedirects`) and the WKWebView
+    /// (the page's `upgrade-insecure-requests`) both upgrade it transparently. Without this, the
+    /// login handshake ends one hop early: the engine still sees a portal-prefixed URL and reports
+    /// success, but the portal session cookie was never established, so every in-app web view then
+    /// spins on the SSO bounce. Cross-host redirects are left untouched.
+    static func upgradeSameHostHTTPS(_ url: URL, previous: URL) -> URL {
+        guard url.scheme?.lowercased() == "http",
+              let host = url.host?.lowercased(),
+              host == previous.host?.lowercased(),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        components.scheme = "https"
+        return components.url ?? url
+    }
 
     private func applyAjaxHeaders(_ request: inout URLRequest, referer: String) {
         request.httpMethod = "GET"
@@ -918,10 +938,14 @@ final class AuthRepository {
             if (300..<400).contains(http.statusCode),
                let location = http.value(forHTTPHeaderField: "Location"),
                redirectCount < 10,
-               let nextURL = URL(string: location, relativeTo: currentURL)?.absoluteURL {
+               let resolved = URL(string: location, relativeTo: currentURL)?.absoluteURL {
                 // A redirect drops the body and switches to GET, like a browser after a form POST.
                 redirectCount += 1
-                currentURL = nextURL
+                // This portal briefly bounces an HTTPS entry to the SAME host over plain HTTP
+                // (index_sso.jsp) and nginx redirects back to HTTPS. ATS forbids the cleartext
+                // hop and OkHttp/WebKit both silently upgrade it, so the manual redirect chain has
+                // to do the same or the SSO handshake ends one hop early with an unusable session.
+                currentURL = Self.upgradeSameHostHTTPS(resolved, previous: currentURL)
                 method = "GET"
                 body = nil
                 continue
@@ -969,7 +993,13 @@ final class AuthRepository {
         let statusCodes = success?.statusCodes ?? []
         let urlOK = prefixes.isEmpty || prefixes.contains(where: { response.finalURL.hasPrefix($0) })
         let cookiesOK = cookies.hasAnyCookie(cookieNames)
-        let statusOK = statusCodes.isEmpty || statusCodes.contains(response.code)
+        // When a rule does not declare explicit success codes, require a final 2xx. Android's
+        // OkHttp follows every Location automatically, so its final response is never a 3xx; the
+        // manual chain can otherwise stop on a portal-prefixed SSO relay (302 with a cleartext or
+        // missing Location) and report success before the portal session exists.
+        let statusOK = statusCodes.isEmpty
+            ? (200...299).contains(response.code)
+            : statusCodes.contains(response.code)
         guard urlOK, cookiesOK, statusOK else {
             throw PortalError.engineFailed("登录请求已完成，但未确认登录成功，请重试")
         }
