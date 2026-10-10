@@ -40,6 +40,11 @@ struct QuickEntryBaselinePrefetch: View {
     /// "serially" means here: four concurrent readers would fight over one cookie jar and one
     /// network, and Android deliberately does not do that either.
     @State private var currentItem: PortalItem?
+    /// The entry list captured once when the run starts. `items` is a computed property backed by
+    /// `state.definition`; if the definition is briefly reloaded (nil/reparse) while the warm-up
+    /// is walking entries, indexing the live, emptied list at `items[index + 1]` trapped. The
+    /// warmer must walk exactly the list it started with.
+    @State private var runItems: [PortalItem] = []
     @State private var snapshots: [Snapshot] = []
     /// The latest publication for the current item, plus a counter that forces the settle effect
     /// to restart whenever a newer one arrives.
@@ -108,8 +113,9 @@ struct QuickEntryBaselinePrefetch: View {
             return
         }
         NSLog("PalmAcademic/baseline: warm-up started for school %@ with %d entries", schoolID, items.count)
+        runItems = items
         phase = .running(index: 0, failure: false)
-        currentItem = items[0]
+        currentItem = runItems[0]
     }
 
     private func finish(_ item: PortalItem, snapshot: Snapshot?) {
@@ -119,7 +125,13 @@ struct QuickEntryBaselinePrefetch: View {
         if let snapshot { collected.append(snapshot) }
         let anyFailure = snapshot == nil || failedEarlier
         guard case .running(let index, _) = phase else { return }
-        if index == items.count - 1 {
+        // Work off the frozen run list; never re-index a live list that may have changed.
+        guard runItems.indices.contains(index) else {
+            phase = .finished
+            currentItem = nil
+            return
+        }
+        if index == runItems.count - 1 {
             // Every quick entry has to have produced something. A partial baseline would make the
             // next check compare against a mixture of real and missing data, and the missing ones
             // would then read as "changed" forever.
@@ -127,31 +139,34 @@ struct QuickEntryBaselinePrefetch: View {
             // The count is the item list's own length rather than a fixed four: the earlier literal
             // meant a school that declared a fifth quick entry never established a baseline at all,
             // and the fetch looked like it simply did not happen.
-            if !anyFailure && collected.count == items.count {
+            if !anyFailure && collected.count == runItems.count {
                 NSLog("PalmAcademic/baseline: all %d entries captured, recording baseline", collected.count)
                 QuickEntryBaseline.complete(
                     schoolID: schoolID,
                     snapshots: collected.map { ($0.item, $0.json) },
-                    expectedCount: items.count
+                    expectedCount: runItems.count
                 )
             } else {
                 // The common reason "首次基线没有日志": one entry never produced data within its
                 // window, so the run stays pending instead of writing the baseline entry.
                 NSLog(
                     "PalmAcademic/baseline: incomplete run, keeping pending (captured=%d, required=%d, failedEarlier=%@, lastHadSnapshot=%@)",
-                    collected.count, items.count, failedEarlier ? "yes" : "no", snapshot != nil ? "yes" : "no"
+                    collected.count, runItems.count, failedEarlier ? "yes" : "no", snapshot != nil ? "yes" : "no"
                 )
             }
             phase = .finished
             currentItem = nil
-        } else {
+        } else if runItems.indices.contains(index + 1) {
             NSLog(
                 "PalmAcademic/baseline: entry %@ finished (snapshot=%@), moving to next",
                 item.title, snapshot != nil ? "yes" : "no"
             )
             snapshots = collected
             phase = .running(index: index + 1, failure: anyFailure)
-            currentItem = items[index + 1]
+            currentItem = runItems[index + 1]
+        } else {
+            phase = .finished
+            currentItem = nil
         }
     }
 

@@ -227,9 +227,26 @@ enum PortalSnapshot {
     private static func canonicalSortKey(_ value: Any) -> String {
         if value is NSNull { return "null" }
         if let string = value as? String { return string }
-        if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
-           let text = String(data: data, encoding: .utf8) {
-            return text
+        // Mirrors Android's canonicalCourseSortKey, which uses plain toString() for everything
+        // that is not an object/array. Serialising a bare scalar (NSNumber in e.g.
+        // "lessonIds":[1,2,3]) WITHOUT .fragmentsAllowed makes NSJSONSerialization raise an
+        // NSInvalidArgumentException -- an Obj-C exception Swift's `try?` cannot catch, which
+        // aborted the app inside the background poll on schools whose JSON carries scalar arrays.
+        if value is [Any] || value is [String: Any] {
+            if let data = try? JSONSerialization.data(
+                withJSONObject: value,
+                options: [.sortedKeys, .fragmentsAllowed]
+            ),
+               let text = String(data: data, encoding: .utf8) {
+                return text
+            }
+        }
+        if let number = value as? NSNumber {
+            // JSON booleans bridge to NSNumber; keep parity with Kotlin's Boolean.toString().
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return number.boolValue ? "true" : "false"
+            }
+            return number.stringValue
         }
         return String(describing: value)
     }
