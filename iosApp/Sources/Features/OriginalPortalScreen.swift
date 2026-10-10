@@ -216,6 +216,18 @@ struct OriginalPortalScreen: View {
     /// block, so the path is the one the portal itself uses -- the same `/home` Android's
     /// `PortalConfig.HOME` points at.
     private var homeURL: String {
+        if let configured = state.definition?.auth?.homePath,
+           !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if configured.hasPrefix("http://") || configured.hasPrefix("https://") {
+                return configured
+            }
+            let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+            return base + (configured.hasPrefix("/") ? configured : "/\(configured)")
+        }
+        if let success = state.definition?.auth?.resolvedSuccessPrefixes.first,
+           !success.isEmpty {
+            return success
+        }
         let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         return base + "/home"
     }

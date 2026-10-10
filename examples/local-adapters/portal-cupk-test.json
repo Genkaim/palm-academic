@@ -11,6 +11,7 @@
   "auth": {
     "type": "engine",
     "loginUrl": "https://cas.cupk.edu.cn/cas/login?service=https%3A%2F%2Fportal.cupk.edu.cn%2Fportal%2F",
+    "homePath": "/r/w?cmd=CLIENT_USER_HOME",
     "successUrlPrefixes": [
       "https://portal.cupk.edu.cn/portal/"
     ],

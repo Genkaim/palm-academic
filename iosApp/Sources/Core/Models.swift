@@ -90,6 +90,7 @@ struct SchoolDefinition: Codable {
     struct AuthPayload: Codable {
         let type: String?
         let loginUrl: String?
+        let homePath: String?
         let successUrlPrefixes: [String]?
         let sessionCookieHosts: [String]?
         let sessionCookieNames: [String]?

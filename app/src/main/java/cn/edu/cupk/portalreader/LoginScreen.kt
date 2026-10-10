@@ -349,9 +349,9 @@ internal fun RefactoredLoginContent(
                                         trailingIcon = {
                                             Box(
                                                 modifier = Modifier
+                                                    .padding(end = 8.dp)
                                                     .size(width = 112.dp, height = 48.dp)
                                                     .clip(RoundedCornerShape(8.dp))
-                                                    .background(MaterialTheme.colorScheme.background)
                                                     .clickable(
                                                         enabled = !model.captchaLoading && !model.loading
                                                     ) { model.refreshCaptcha() },

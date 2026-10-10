@@ -306,11 +306,12 @@ final class SessionStore {
         // Fast path: skip the writes when the WebView already has the exact cookies we want.
         store.getAllCookies { [weak self] existing in
             let alreadyInstalled = cookies.allSatisfy { cookie in
-                existing.contains { existingCookie in
-                    existingCookie.name == cookie.name &&
-                    existingCookie.value == cookie.value &&
-                    (existingCookie.domain == cookie.domain ||
-                        existingCookie.domain == "." + cookie.domain)
+                    existing.contains { existingCookie in
+                        existingCookie.name == cookie.name &&
+                        existingCookie.value == cookie.value &&
+                        existingCookie.path == cookie.path &&
+                        (existingCookie.domain == cookie.domain ||
+                            existingCookie.domain == "." + cookie.domain)
                 }
             }
             if alreadyInstalled {
@@ -425,7 +426,14 @@ final class AuthRepository {
     private var baseURL: String { SchoolCatalog.shared.baseURL }
     private var loginURL: String { "\(baseURL)/login" }
     private var homeURL: String {
-        SchoolCatalog.shared.definition?.auth?.resolvedSuccessPrefixes.first ?? "\(baseURL)/home"
+        guard let auth = SchoolCatalog.shared.definition?.auth else { return "\(baseURL)/home" }
+        if let configured = auth.homePath,
+           !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if configured.hasPrefix("http://") || configured.hasPrefix("https://") { return configured }
+            let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+            return base + (configured.hasPrefix("/") ? configured : "/\(configured)")
+        }
+        return auth.resolvedSuccessPrefixes.first ?? "\(baseURL)/home"
     }
 
     /// Port of `AuthRepository.login`.

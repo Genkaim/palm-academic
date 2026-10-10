@@ -37,8 +37,15 @@ object PortalConfig {
         else SchoolAdapterRepository.activeOrigin()
     val BASE: String get() = SchoolAdapterRepository.activeDefinitionOrNull()?.baseUrl ?: "$ORIGIN/student"
     val LOGIN: String get() = SchoolAdapterRepository.activeDefinitionOrNull()?.auth?.loginUrl ?: "$BASE/login"
-    val HOME: String get() = SchoolAdapterRepository.activeDefinitionOrNull()?.auth
-        ?.successUrlPrefixes?.firstOrNull() ?: "$BASE/home"
+    val HOME: String get() {
+        val auth = SchoolAdapterRepository.activeDefinitionOrNull()?.auth
+        val configured = auth?.homePath?.trim().orEmpty()
+        if (configured.isNotEmpty()) {
+            if (configured.startsWith("http://") || configured.startsWith("https://")) return configured
+            return BASE.trimEnd('/') + "/" + configured.trimStart('/')
+        }
+        return auth?.successUrlPrefixes?.firstOrNull() ?: "$BASE/home"
+    }
     val SESSION_SCOPE: String get() = SchoolAdapterRepository.activeDefinitionOrNull()?.auth
         ?.sessionCookieHosts?.firstOrNull()?.let { "https://$it/" } ?: BASE
     val SESSION_PATH: String get() = if (
@@ -52,6 +59,7 @@ object PortalConfig {
 data class PortalAuthDefinition(
     val type: String = "salted-sha1",
     val loginUrl: String? = null,
+    val homePath: String? = null,
     val successUrlPrefixes: List<String> = emptyList(),
     val sessionCookieHosts: List<String> = emptyList(),
     val sessionCookieNames: List<String> = listOf("SESSION"),
@@ -460,6 +468,7 @@ object SchoolAdapterRepository {
             auth = PortalAuthDefinition(
                 type = authJson.optString("type", "salted-sha1"),
                 loginUrl = authJson.optString("loginUrl").takeIf(String::isNotBlank),
+                homePath = authJson.optString("homePath").takeIf(String::isNotBlank),
                 successUrlPrefixes = authJson.optJSONArray("successUrlPrefixes")?.let { values ->
                     (0 until values.length()).map(values::getString)
                 }.orEmpty(),

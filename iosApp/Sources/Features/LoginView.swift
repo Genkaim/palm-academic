@@ -601,11 +601,6 @@ struct LoginView: View {
                     }
                 }
                 .frame(width: 106, height: 44)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(PortalPalette.page)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
             .disabled(state.captchaLoading || state.isLoading)
