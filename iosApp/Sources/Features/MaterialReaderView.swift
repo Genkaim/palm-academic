@@ -286,6 +286,7 @@ struct MaterialReaderView: UIViewRepresentable {
             transientRetryCount = 0
         }
 
+        @MainActor
         func beginInitialLoad(_ webView: WKWebView, target: URL) {
             guard !initialRestoreRequested else { return }
             initialRestoreRequested = true

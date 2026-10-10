@@ -299,35 +299,70 @@ final class SessionStore {
             }
         }
         guard !cookies.isEmpty else {
-            completion?()
             return false
         }
         let store = WKWebsiteDataStore.default().httpCookieStore
-        // Fast path: skip the writes when the WebView already has the exact cookies we want.
+        // A previous attempt can leave SESSION at the same host under another path/value. WebKit
+        // will send both cookies, and many portal stacks read the stale one first. Installing the
+        // new cookie is therefore not enough: delete only same-name/same-domain records that are
+        // not part of the freshly authenticated jar, then write the complete jar in a second phase.
         store.getAllCookies { [weak self] existing in
+            func normalisedDomain(_ cookie: HTTPCookie) -> String {
+                cookie.domain
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                    .lowercased()
+            }
+            func sameIdentity(_ lhs: HTTPCookie, _ rhs: HTTPCookie) -> Bool {
+                lhs.name.caseInsensitiveCompare(rhs.name) == .orderedSame &&
+                    normalisedDomain(lhs) == normalisedDomain(rhs) &&
+                    lhs.path == rhs.path
+            }
+
             let alreadyInstalled = cookies.allSatisfy { cookie in
-                    existing.contains { existingCookie in
-                        existingCookie.name == cookie.name &&
-                        existingCookie.value == cookie.value &&
-                        existingCookie.path == cookie.path &&
-                        (existingCookie.domain == cookie.domain ||
-                            existingCookie.domain == "." + cookie.domain)
+                existing.contains { existingCookie in
+                    sameIdentity(existingCookie, cookie) && existingCookie.value == cookie.value
                 }
             }
-            if alreadyInstalled {
+            let conflicts = existing.filter { existingCookie in
+                let sharesScope = cookies.contains { desired in
+                    desired.name.caseInsensitiveCompare(existingCookie.name) == .orderedSame &&
+                        normalisedDomain(desired) == normalisedDomain(existingCookie)
+                }
+                let isDesired = cookies.contains { desired in
+                    sameIdentity(existingCookie, desired) && existingCookie.value == desired.value
+                }
+                return sharesScope && !isDesired
+            }
+            if alreadyInstalled && conflicts.isEmpty {
                 Task { @MainActor in completion?() }
                 return
             }
-            let group = DispatchGroup()
-            for cookie in cookies {
-                group.enter()
-                store.setCookie(cookie) { group.leave() }
-            }
-            group.notify(queue: .main) {
-                Task { @MainActor in
-                    self?.saveCookies(cookies)
-                    completion?()
+
+            let install = {
+                let group = DispatchGroup()
+                for cookie in cookies {
+                    group.enter()
+                    store.setCookie(cookie) { group.leave() }
                 }
+                group.notify(queue: .main) {
+                    Task { @MainActor in
+                        self?.saveCookies(cookies)
+                        completion?()
+                    }
+                }
+            }
+
+            guard !conflicts.isEmpty else {
+                install()
+                return
+            }
+            let deletionGroup = DispatchGroup()
+            for cookie in conflicts {
+                deletionGroup.enter()
+                store.delete(cookie) { deletionGroup.leave() }
+            }
+            deletionGroup.notify(queue: .main) {
+                install()
             }
         }
         return true
@@ -524,6 +559,11 @@ final class AuthRepository {
                 client: client,
                 cookies: loginCookies
             )
+            // A CAS/engine flow is not complete merely because its last redirect URL and cookie
+            // names look plausible. Prove that the cookies can authenticate a brand-new HTTP
+            // client before copying them into WebKit; this catches ticket exchanges that reached
+            // the portal but never established the portal session.
+            try await confirmAuthenticatedHome(cookies: loginCookies)
             SessionStore.shared.saveCookies(loginCookies.allCookies)
             SessionStore.shared.restoreToCookieStorage()
             let installed = await SessionStore.shared.restoreToWebViewAndWait()
@@ -578,8 +618,12 @@ final class AuthRepository {
         guard loginCookies.hasSession else {
             throw PortalError.noSession
         }
-        // The login endpoint accepted the request, so persist the session immediately. Home page
-        // structure detection is content reading and must not invalidate a completed login.
+        // A pre-login SESSION cookie has the same name as an authenticated SESSION on several EAMS
+        // deployments. Cookie presence therefore cannot be the success signal: use the exact jar
+        // created above to open the authenticated landing and make sure it does not return the
+        // login page. This is also the first request that some deployments use to finish/rotate the
+        // session, so persist only after it has completed.
+        try await confirmAuthenticatedHome(cookies: loginCookies)
         SessionStore.shared.saveCookies(loginCookies.allCookies)
         SessionStore.shared.restoreToCookieStorage()
         // Mirror Android: install the cookies into the WebView's own store before declaring the
@@ -590,6 +634,71 @@ final class AuthRepository {
             throw PortalError.webViewSessionMissing
         }
         discardPreparedLogin()
+    }
+
+    /// Confirms that a password handshake produced a session that can open real portal pages.
+    ///
+    /// The probe intentionally uses a fresh URLSession with no shared cookie storage. Every cookie
+    /// has to come from `LoginCookieJar`, which proves that the same records we are about to install
+    /// into WKWebView are sufficient. Redirects are followed by hand so cookies issued by a CAS
+    /// service callback are captured at every hop rather than being hidden inside URLSession.
+    private func confirmAuthenticatedHome(cookies: LoginCookieJar) async throws {
+        guard let initialURL = URL(string: homeURL) else { throw PortalError.invalidResponse }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .always
+        configuration.timeoutIntervalForRequest = 40
+        let client = URLSession(
+            configuration: configuration,
+            delegate: NoRedirectDelegate(),
+            delegateQueue: nil
+        )
+        defer { client.finishTasksAndInvalidate() }
+
+        var currentURL = initialURL
+        var redirectCount = 0
+        while true {
+            var request = URLRequest(url: currentURL)
+            request.httpMethod = "GET"
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+            request.setValue(Self.languageHeader, forHTTPHeaderField: "Accept-Language")
+            cookies.apply(to: &request)
+
+            let (data, response) = try await client.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw PortalError.invalidResponse }
+            cookies.capture(from: http, fallbackURL: currentURL)
+
+            if (300..<400).contains(http.statusCode),
+               let location = http.value(forHTTPHeaderField: "Location"),
+               let nextURL = URL(string: location, relativeTo: currentURL)?.absoluteURL {
+                guard redirectCount < 10 else { throw PortalError.invalidResponse }
+                redirectCount += 1
+                currentURL = nextURL
+                continue
+            }
+
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw PortalError.loginRejected("登录未建立可用的网页会话，请重试或改用网页登录")
+            }
+            guard (200..<400).contains(http.statusCode) else {
+                throw PortalError.requestFailed(http.statusCode)
+            }
+
+            let html = String(data: data, encoding: .utf8) ?? ""
+            let finalURL = http.url?.absoluteString ?? currentURL.absoluteString
+            if Self.isLoginPage(html, finalURL: finalURL) {
+                throw PortalError.loginRejected("登录接口未建立可用的网页会话，请重试或改用网页登录")
+            }
+
+            let prefixes = SchoolCatalog.shared.definition?.auth?.resolvedSuccessPrefixes ?? []
+            if !prefixes.isEmpty && !prefixes.contains(where: finalURL.hasPrefix) {
+                throw PortalError.loginRejected("登录后未进入教务网页，请重试或改用网页登录")
+            }
+            return
+        }
     }
 
     private func makeLoginContext(manualRedirects: Bool) -> PreparedLogin {

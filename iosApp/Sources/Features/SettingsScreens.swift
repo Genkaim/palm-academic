@@ -538,22 +538,24 @@ struct NoticeHistoryScreen: View {
                     .font(.caption2.monospaced())
                     .foregroundStyle(PortalPalette.secondaryText)
             }
-            if !detail.difference.isEmpty { Text(detail.difference).font(.caption).foregroundStyle(PortalPalette.secondaryText) }
-            if let previous = detail.previousContent, !previous.isEmpty {
-                Text("比较前快照")
-                    .font(.caption.weight(.semibold))
-                Text(previous)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(PortalPalette.secondaryText)
+            Group {
+                if !detail.difference.isEmpty { Text(detail.difference).font(.caption).foregroundStyle(PortalPalette.secondaryText) }
+                if let previous = detail.previousContent, !previous.isEmpty {
+                    Text("比较前快照")
+                        .font(.caption.weight(.semibold))
+                    Text(previous)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(PortalPalette.secondaryText)
+                }
+                if let current = detail.currentContent, !current.isEmpty {
+                    Text("比较后快照")
+                        .font(.caption.weight(.semibold))
+                    Text(current)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(PortalPalette.secondaryText)
+                }
+                if let technical = detail.technicalDetails, !technical.isEmpty { Text(technical).font(.caption2).foregroundStyle(PortalPalette.outline) }
             }
-            if let current = detail.currentContent, !current.isEmpty {
-                Text("比较后快照")
-                    .font(.caption.weight(.semibold))
-                Text(current)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(PortalPalette.secondaryText)
-            }
-            if let technical = detail.technicalDetails, !technical.isEmpty { Text(technical).font(.caption2).foregroundStyle(PortalPalette.outline) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
