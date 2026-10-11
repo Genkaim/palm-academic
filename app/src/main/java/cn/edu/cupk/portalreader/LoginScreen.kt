@@ -11,8 +11,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -768,16 +766,15 @@ private fun ScriptLoginFormSection(
         if (script.methodSwitch && script.methods.size > 1) {
             ScriptMethodTabs(script)
         }
-        // 方式切换时整块内容横向滑入滑出 + 淡入淡出（与 iOS methodSwitch 转场同向）。
+        // 登录方式切换时，整个表单作为一个整体交叉淡入淡出。输入框、开关、
+        // 状态提示和二维码面板共享同一动画进度，避免部分控件先出现或单独滑动。
         AnimatedContent(
             targetState = method.id,
             transitionSpec = {
-                (fadeIn(tween(220)) +
-                    slideInHorizontally(tween(280)) { it / 6 }) togetherWith
-                    (fadeOut(tween(160)) +
-                        slideOutHorizontally(tween(200)) { -it / 6 })
+                fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
+                    fadeOut(tween(180, easing = FastOutSlowInEasing))
             },
-            label = "scriptMethodBody"
+            label = "scriptMethodFormFade"
         ) { currentMethodId ->
             val current = script.methods.firstOrNull { it.id == currentMethodId } ?: method
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -793,19 +790,7 @@ private fun ScriptLoginFormSection(
                                 index == current.fields.lastIndex -> ScriptFieldPosition.LAST
                                 else -> ScriptFieldPosition.MIDDLE
                             }
-                            // 每个输入框首次出现时依次淡入（切换方式时随新方法重新播放）。
-                            var fieldAppeared by remember(current.id, field.id) {
-                                mutableStateOf(false)
-                            }
-                            LaunchedEffect(Unit) { fieldAppeared = true }
-                            AnimatedVisibility(
-                                visible = fieldAppeared,
-                                enter = fadeIn(
-                                    animationSpec = tween(durationMillis = 260, delayMillis = index * 55)
-                                )
-                            ) {
-                                ScriptField(script, field, position, fieldColors)
-                            }
+                            ScriptField(script, field, position, fieldColors)
                         }
                     }
                     current.checkboxes.forEach { checkbox ->
