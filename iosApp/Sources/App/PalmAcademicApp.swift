@@ -36,6 +36,9 @@ private struct AppRoot: View {
             .onReceive(NotificationCenter.default.publisher(for: .portalCaptchaReauthenticationRequested)) { _ in
                 state.requireCaptchaReauthentication()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .portalInteractiveReauthenticationRequested)) { _ in
+                state.requireInteractiveReauthentication()
+            }
     }
 }
 
@@ -127,6 +130,8 @@ final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelega
     ) {
         if response.notification.request.content.userInfo["source"] as? String == "captcha_reauthentication" {
             NotificationCenter.default.post(name: .portalCaptchaReauthenticationRequested, object: nil)
+        } else if response.notification.request.content.userInfo["source"] as? String == "interactive_reauthentication" {
+            NotificationCenter.default.post(name: .portalInteractiveReauthenticationRequested, object: nil)
         }
         completionHandler()
     }
@@ -135,6 +140,9 @@ final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelega
 extension Notification.Name {
     static let portalCaptchaReauthenticationRequested = Notification.Name(
         "portalCaptchaReauthenticationRequested"
+    )
+    static let portalInteractiveReauthenticationRequested = Notification.Name(
+        "portalInteractiveReauthenticationRequested"
     )
 }
 

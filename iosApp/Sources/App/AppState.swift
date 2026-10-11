@@ -95,7 +95,7 @@ final class AppState: ObservableObject {
     var isSignedIn: Bool { phase == .signedIn }
     var captchaRequired: Bool { definition?.auth?.captcha?.required == true }
     var supportsSilentPasswordReauthentication: Bool {
-        definition?.auth?.isWebOnly != true && definition?.auth?.usesScript != true &&
+        definition?.auth?.isWebOnly != true &&
             !captchaRequired &&
             CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID) != nil
     }
@@ -154,6 +154,10 @@ final class AppState: ObservableObject {
 
         if captchaRequired && NotificationPreferences.shared.captchaReauthenticationRequired {
             requireCaptchaReauthentication()
+            return
+        }
+        if NotificationPreferences.shared.interactiveReauthenticationRequired {
+            requireInteractiveReauthentication()
             return
         }
 
@@ -274,6 +278,33 @@ private func revalidateQuietly() async {
         }
         var attempt = 0
         while revision == sessionRevision && !Task.isCancelled {
+            if definition?.auth?.usesScript == true, let definition {
+                let result = await ScriptSilentLogin.attempt(
+                    definition: definition,
+                    credential: credential
+                )
+                switch result.state {
+                case .success:
+                    guard revision == sessionRevision else { return }
+                    onAuthenticationCompleted(freshLogin: false)
+                    SessionRefreshBus.shared.bump()
+                    return
+                case .interactionRequired:
+                    requireInteractiveReauthentication(
+                        message: result.message.isEmpty ? "登录需要完成安全验证" : result.message
+                    )
+                    return
+                case .rejected:
+                    signOut(message: result.message.isEmpty ? "保存的密码已失效" : result.message)
+                    return
+                case .retry:
+                    attempt += 1
+                    sessionNotice = "正在重新登录（第 \(attempt) 次）…"
+                    let delay = UInt64([1, 2, 4, 8, 16][min(attempt - 1, 4)]) * 1_000_000_000
+                    try? await Task.sleep(nanoseconds: delay)
+                    continue
+                }
+            }
             do {
                 try await auth.login(username: credential.username, password: credential.password)
                 guard revision == sessionRevision else { return }
@@ -461,6 +492,12 @@ private func revalidateQuietly() async {
         NotificationPreferences.shared.markCaptchaReauthenticationRequired()
         signOut(message: "登录已过期，请输入验证码重新登录")
         Task { await refreshCaptchaIfNeeded() }
+    }
+
+    func requireInteractiveReauthentication(message: String = "登录已过期，请完成安全验证") {
+        NotificationPreferences.shared.clearInteractiveReauthenticationRequired()
+        signOut(message: message)
+        scriptLogin?.requestAutomaticPasswordSubmit()
     }
 
     // MARK: - Search

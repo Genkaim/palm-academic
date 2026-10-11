@@ -62,6 +62,19 @@ class ScriptLoginController(
     /** 短信/扫码等方式登录失败时的模态弹窗消息（null=不显示）。 */
     var failureDialog by mutableStateOf<String?>(null)
         private set
+    /** 密码校验通过后由脚本请求 App 展示的通用多因子认证弹窗。 */
+    var mfaChallenge by mutableStateOf<LoginScriptRuntime.Challenge?>(null)
+        private set
+    var mfaCode by mutableStateOf("")
+        private set
+    var mfaRemember by mutableStateOf(true)
+        private set
+    var mfaBusy by mutableStateOf(false)
+        private set
+    var mfaError by mutableStateOf<String?>(null)
+        private set
+    var mfaCooldown by mutableStateOf(0)
+        private set
 
     data class CaptchaChallenge(
         val imageUrl: String,
@@ -79,6 +92,8 @@ class ScriptLoginController(
     private var runtime: LoginScriptRuntime? = null
     private var submitJob: Job? = null
     private var cooldownJob: Job? = null
+    private var mfaCooldownJob: Job? = null
+    private var automaticPasswordSubmitRequested = false
 
     enum class Phase { LOADING, READY }
 
@@ -88,13 +103,21 @@ class ScriptLoginController(
         val auth = definition.auth
         val scriptPath = auth.loginScript ?: definition.adapterAsset
         val script = SchoolAdapterRepository.readLoginScript(appContext, scriptPath)
+        val volatileNames = (auth.sessionCookieNames + listOf("JSESSIONID", "CASTGC"))
+            .map(String::uppercase)
+            .toSet()
+        val initialCookies = PortalSessionStore.persistedCookies().filter { cookie ->
+            cookie.name.uppercase() !in volatileNames &&
+                !cookie.name.uppercase().contains("TICKET")
+        }
         val rt = LoginScriptRuntime(
             context = appContext,
             adapterScript = script,
             allowedHosts = auth.allowedHosts(definition.baseUrl),
             sessionCookieNames = auth.sessionCookieNames,
             successUrlPrefixes = auth.successUrlPrefixes,
-            loginUrl = auth.loginUrl
+            loginUrl = auth.loginUrl,
+            initialCookies = initialCookies
         ) { event -> applyUiEvent(event) }
         runtime = rt
         scope.launch {
@@ -106,7 +129,12 @@ class ScriptLoginController(
                 val default = schema.methods.firstOrNull { it.isDefault } ?: schema.methods.first()
                 bindMethod(default)
                 phase = Phase.READY
-                if (default.kind == "qrcode") launchQr(default)
+                if (automaticPasswordSubmitRequested && default.kind == "password") {
+                    automaticPasswordSubmitRequested = false
+                    submit()
+                } else if (default.kind == "qrcode") {
+                    launchQr(default)
+                }
             }.onFailure {
                 initError = it.message ?: "登录脚本初始化失败"
                 phase = Phase.READY
@@ -117,8 +145,19 @@ class ScriptLoginController(
     fun close() {
         submitJob?.cancel()
         cooldownJob?.cancel()
+        mfaCooldownJob?.cancel()
         runtime?.close()
         runtime = null
+    }
+
+    /** Replays saved credentials once so an expired background session opens the native MFA
+     * challenge directly instead of making the user press the password-login button again. */
+    fun requestAutomaticPasswordSubmit() {
+        automaticPasswordSubmitRequested = true
+        if (phase == Phase.READY && currentMethod()?.kind == "password") {
+            automaticPasswordSubmitRequested = false
+            submit()
+        }
     }
 
     fun currentMethod(): LoginScriptRuntime.Method? =
@@ -154,6 +193,7 @@ class ScriptLoginController(
         method.checkboxes.forEach { checkboxes[it.id] = it.defaultChecked }
         qrImage = null; qrState = ""; qrMessage = ""
         captchaChallenge = null; captchaDialogInput = ""; captchaDialogImage = null
+        mfaChallenge = null; mfaCode = ""; mfaError = null; mfaBusy = false
         method.fields.filter { it.type == "captcha" }.forEach { refreshCaptcha(it) }
     }
 
@@ -164,8 +204,17 @@ class ScriptLoginController(
         val url = field.captchaImageUrl ?: return
         scope.launch {
             runCatching { runtime?.fetchCaptcha(url, field.captchaRefreshParam) }
-                .onSuccess { if (it != null) captchaImages[field.id] = it }
-                .onFailure { captchaImages.remove(field.id) }
+                .onSuccess {
+                    if (it != null) {
+                        captchaImages[field.id] = it
+                        error = null
+                    }
+                }
+                .onFailure {
+                    captchaImages.remove(field.id)
+                    // 给出可见原因，用户可点击尾部图片区域直接重试（UI 本身就是刷新按钮）。
+                    error = "图形验证码加载失败，请点击验证码图片重试"
+                }
         }
     }
 
@@ -209,7 +258,10 @@ class ScriptLoginController(
         submitJob?.cancel()
         submitJob = scope.launch {
             var attempt = 0
-            while (true) {
+            // 密码方式的网络异常无限静默重试（用户无需操作）；短信/扫码是短交互，
+            // 持续失败时必须有出口：最多 3 轮后弹“登录失败”，避免界面一直转圈。
+            val maxAttempts = if (method.kind == "password") Int.MAX_VALUE else 3
+            while (attempt < maxAttempts) {
                 busy = true; error = null
                 status = when {
                     attempt == 0 -> "正在登录…"
@@ -225,8 +277,11 @@ class ScriptLoginController(
                     handleDefinitiveFailure(method, r)
                     return@launch
                 }.onFailure {
-                    // 网络类异常对所有方式都持续重试，不打断用户。
                     attempt += 1
+                    if (attempt >= maxAttempts) {
+                        failureDialog = "网络异常，登录失败，请重新登录"
+                        return@launch
+                    }
                     delay(1000L shl minOf(attempt - 1, 4))
                 }
             }
@@ -243,6 +298,13 @@ class ScriptLoginController(
         method: LoginScriptRuntime.Method,
         r: LoginScriptRuntime.SubmitResult
     ) {
+        if (r.kind == "mfa" && r.challenge != null) {
+            mfaChallenge = r.challenge
+            mfaCode = ""
+            mfaRemember = r.challenge.rememberDefault
+            mfaError = null
+            return
+        }
         if (method.kind != "password") {
             failureDialog = r.message.ifBlank { "登录失败，请检查后重试" }
             return
@@ -258,8 +320,8 @@ class ScriptLoginController(
             openCaptchaChallenge(field.captchaImageUrl, field.captchaRefreshParam, field.id)
             return
         }
-        // 无验证码密码登录：直接重试。
-        submit()
+        // 密码被明确拒绝属于终态；网络异常由 submit() 的异常分支自动重试。
+        error = r.message.ifBlank { "账号或密码错误" }
     }
 
     private fun openCaptchaChallenge(imageUrl: String, refreshParam: String?, targetKey: String) {
@@ -296,19 +358,119 @@ class ScriptLoginController(
         captchaDialogImage = null
     }
 
+    /**
+     * “登录失败”弹窗的“重新登录”：不直接重放旧请求，而是把一次性输入清空、图形验证码
+     * 换一张，把用户引导回登录表单重新填写提交（扫码方式则重新生成二维码）。
+     */
     fun retryAfterFailure() {
         failureDialog = null
         val method = currentMethod() ?: return
-        if (method.kind == "qrcode") launchQr(method) else submit()
+        busy = false; error = null; status = null
+        if (method.kind == "qrcode") {
+            qrImage = null; qrState = ""; qrMessage = ""
+            launchQr(method)
+            return
+        }
+        method.fields.forEach { field ->
+            when (field.type) {
+                // 图形/短信验证码一次性使用，必须清空并换新；账号保留便于用户直接重试。
+                "captcha", "smsCode" -> values[field.id] = ""
+            }
+        }
+        method.fields.filter { it.type == "captcha" }.forEach { refreshCaptcha(it) }
     }
 
     fun dismissFailure() { failureDialog = null }
+
+    fun typeMfaCode(value: String) { mfaCode = value }
+
+    fun toggleMfaRemember() { mfaRemember = !mfaRemember }
+
+    fun sendMfaCode() {
+        val method = currentMethod() ?: return
+        val challenge = mfaChallenge ?: return
+        if (mfaBusy || mfaCooldown > 0) return
+        scope.launch {
+            mfaBusy = true
+            mfaError = null
+            runCatching {
+                runtime!!.sendChallenge(
+                    method.id,
+                    publicValues(),
+                    checkboxes.toMap(),
+                    challenge.id,
+                    secretPassword()
+                )
+            }.onSuccess { json ->
+                mfaBusy = false
+                if (json.optBoolean("ok", false)) {
+                    val seconds = json.optInt("cooldownSeconds", 60).coerceAtLeast(1)
+                    mfaCooldownJob?.cancel()
+                    mfaCooldown = seconds
+                    mfaCooldownJob = scope.launch {
+                        while (mfaCooldown > 0) { delay(1000); mfaCooldown -= 1 }
+                    }
+                } else {
+                    mfaError = json.optString("message", "验证码发送失败")
+                }
+            }.onFailure {
+                mfaBusy = false
+                mfaError = it.message ?: "网络异常，验证码未发送"
+            }
+        }
+    }
+
+    fun confirmMfaChallenge() {
+        val method = currentMethod() ?: return
+        val challenge = mfaChallenge ?: return
+        if (mfaBusy || mfaCode.isBlank()) return
+        scope.launch {
+            mfaBusy = true
+            mfaError = null
+            runCatching {
+                runtime!!.submitChallenge(
+                    method.id,
+                    publicValues(),
+                    checkboxes.toMap(),
+                    challenge.id,
+                    mfaCode.trim(),
+                    mfaRemember,
+                    secretPassword()
+                )
+            }.onSuccess { result ->
+                mfaBusy = false
+                if (result.ok) {
+                    mfaChallenge = null
+                    persistAndFinish()
+                } else {
+                    result.challenge?.let {
+                        mfaChallenge = it
+                        mfaRemember = mfaRemember || it.rememberDefault
+                    }
+                    mfaError = result.message.ifBlank { "安全验证码错误，请重试" }
+                }
+            }.onFailure {
+                mfaBusy = false
+                mfaError = it.message ?: "安全验证失败，请重试"
+            }
+        }
+    }
+
+    fun dismissMfaChallenge() {
+        mfaChallenge = null
+        mfaCode = ""
+        mfaError = null
+        mfaBusy = false
+        mfaCooldownJob?.cancel()
+        mfaCooldown = 0
+    }
 
     private fun launchQr(method: LoginScriptRuntime.Method) {
         submitJob?.cancel()
         submitJob = scope.launch {
             var attempt = 0
-            while (true) {
+            // JS 内部轮询本身会容错；外层网络整体不可用时最多重启 3 轮，随后弹失败框。
+            while (attempt < 3) {
                 // 只有首张二维码尚未到达时才显示忙碌提示。submit 内部包含 JS 轮询循环，
                 // 会持续到扫码成功/失败，期间不能一直占用 busy，否则切换栏会被永久禁用；
                 // 轮询中的状态（已扫码/已刷新/失效）由二维码面板的 qrMessage 展示。
@@ -322,10 +484,14 @@ class ScriptLoginController(
                 busy = false; status = null
                 result.onSuccess { r ->
                     if (r.ok) { persistAndFinish(); return@launch }
-                    failureDialog = r.message.ifBlank { "二维码登录失败，请重试" }
+                    failureDialog = r.message.ifBlank { "二维码登录失败，请重新登录" }
                     return@launch
                 }.onFailure {
                     attempt += 1
+                    if (attempt >= 3) {
+                        failureDialog = "网络异常，二维码登录失败，请重新登录"
+                        return@launch
+                    }
                     delay(1000L shl minOf(attempt - 1, 4))
                 }
             }
@@ -369,10 +535,17 @@ class ScriptLoginController(
             status = "正在进入…"
             val ok = runCatching { PortalSessionStore.restoreToWebViewAndWait() }.getOrDefault(false)
             if (!ok) { error = "登录会话未能写入系统 WebView"; busy = false; status = null; return@launch }
-            // local/request 作用域的“记住账号/密码”复选框，id 统一为 rememberCredential。
-            val remember = checkboxes.getOrDefault("rememberCredential", false)
-            val username = values["username"].orEmpty()
-            if (remember && username.isNotBlank()) onRemember(username, secretPassword()) else onForget()
+            // 保存密码关键词只由密码方式维护：勾选则用本次账号密码覆盖旧记录，未勾选则清除；
+            // 短信/扫码方式没有密码字段，绝不能顺手删掉已保存的密码（切换方式登录后仍要保留）。
+            if (currentMethod()?.kind == "password") {
+                val remember = checkboxes.getOrDefault("rememberCredential", false)
+                val username = values["username"].orEmpty()
+                if (remember && username.isNotBlank()) {
+                    onRemember(username, secretPassword())
+                } else {
+                    onForget()
+                }
+            }
             busy = false; status = null
             onAuthenticated()
         }

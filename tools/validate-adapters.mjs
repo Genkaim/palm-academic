@@ -69,6 +69,10 @@ function validateLoginAdapter(source, scriptPath) {
     "PalmAcademicLoginAdapter.describe 必须是函数")) return;
   requireValue(typeof adapter.submit === "function", scriptPath,
     "PalmAcademicLoginAdapter.submit 必须是函数");
+  const hasSendChallenge = typeof adapter.sendChallenge === "function";
+  const hasSubmitChallenge = typeof adapter.submitChallenge === "function";
+  requireValue(hasSendChallenge === hasSubmitChallenge, scriptPath,
+    "多因子认证必须同时实现 PalmAcademicLoginAdapter.sendChallenge 与 submitChallenge");
 
   let schema;
   try {

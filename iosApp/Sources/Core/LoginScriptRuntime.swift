@@ -57,9 +57,22 @@ final class LoginScriptRuntime: @unchecked Sendable {
         let message: String
         let captchaUrl: String?
         let captchaRefreshParam: String?
+        let challenge: Challenge?
         /// ok=true 时携带沙箱 cookie 罐中的完整会话 cookie，由 MainActor 控制器持久化
         /// （SessionStore 是 @MainActor，不能在 jsQueue 上触碰）。
         let sessionCookies: [HTTPCookie]
+    }
+
+    struct Challenge {
+        let id: String
+        let title: String
+        let message: String
+        let inputLabel: String
+        let placeholder: String
+        let sendCode: Bool
+        let sendLabel: String
+        let rememberLabel: String?
+        let rememberDefault: Bool
     }
 
     enum UIEvent {
@@ -77,6 +90,9 @@ final class LoginScriptRuntime: @unchecked Sendable {
 
     static let passwordToken = "__PA_PASSWORD__"
     private static let keyboardChars = Array("ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678")
+    private static let loginUserAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
 
     private let adapterScript: String
     private let allowedHosts: Set<String>
@@ -107,6 +123,7 @@ final class LoginScriptRuntime: @unchecked Sendable {
         sessionCookieNames: [String],
         successUrlPrefixes: [String],
         loginUrl: String?,
+        initialCookies: [HTTPCookie] = [],
         onEvent: @escaping (UIEvent) -> Void
     ) {
         self.adapterScript = adapterScript
@@ -121,6 +138,7 @@ final class LoginScriptRuntime: @unchecked Sendable {
 
         let jar = HTTPCookieStorage()
         jar.cookieAcceptPolicy = .always
+        initialCookies.forEach(jar.setCookie)
         cookieStorage = jar
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = jar
@@ -235,20 +253,39 @@ final class LoginScriptRuntime: @unchecked Sendable {
             payload: ["methodId": methodId, "values": values, "checkboxes": checkboxes],
             secret: secretPassword
         )
-        guard
-            let data = raw.data(using: .utf8),
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return try await parseSubmitResult(raw)
+    }
+
+    private func parseSubmitResult(_ raw: String) async throws -> SubmitResult {
+        guard let data = raw.data(using: .utf8),
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { throw RuntimeError.generic("登录脚本返回值无效") }
         let ok = (json["ok"] as? Bool) ?? false
         let kind = json.string("kind") ?? (ok ? "success" : "rejected")
         let captcha = json["captcha"] as? [String: Any]
+        let challengeObject = json["challenge"] as? [String: Any]
+        let message = json.string("message") ?? ""
+        let challenge = challengeObject.map { value in
+            Challenge(
+                id: value.string("id") ?? "mfa",
+                title: value.string("title") ?? "安全验证",
+                message: value.string("message") ?? message,
+                inputLabel: value.string("inputLabel") ?? "验证码",
+                placeholder: value.string("placeholder") ?? "请输入验证码",
+                sendCode: (value["sendCode"] as? Bool) ?? false,
+                sendLabel: value.string("sendLabel") ?? "获取验证码",
+                rememberLabel: value.string("rememberLabel").flatMap { $0.isEmpty ? nil : $0 },
+                rememberDefault: (value["rememberDefault"] as? Bool) ?? true
+            )
+        }
         let sessionCookies: [HTTPCookie] = ok ? (try await verifiedCookiesOnJSQueue()) : []
         let result = SubmitResult(
             ok: ok,
             kind: kind,
-            message: json.string("message") ?? "",
+            message: message,
             captchaUrl: captcha?["url"] as? String,
             captchaRefreshParam: captcha?["refreshParam"] as? String,
+            challenge: challenge,
             sessionCookies: sessionCookies
         )
         return result
@@ -286,41 +323,124 @@ final class LoginScriptRuntime: @unchecked Sendable {
         return json
     }
 
+    func sendChallenge(
+        methodId: String,
+        values: [String: String],
+        checkboxes: [String: Bool],
+        challengeId: String,
+        secretPassword: String
+    ) async throws -> [String: Any] {
+        let raw = try await callAdapter(
+            "sendChallenge",
+            payload: [
+                "methodId": methodId,
+                "values": values,
+                "checkboxes": checkboxes,
+                "challengeId": challengeId
+            ],
+            secret: secretPassword
+        )
+        guard let data = raw.data(using: .utf8),
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { throw RuntimeError.generic("安全验证码发送返回值无效") }
+        return json
+    }
+
+    func submitChallenge(
+        methodId: String,
+        values: [String: String],
+        checkboxes: [String: Bool],
+        challengeId: String,
+        code: String,
+        remember: Bool,
+        secretPassword: String
+    ) async throws -> SubmitResult {
+        let raw = try await callAdapter(
+            "submitChallenge",
+            payload: [
+                "methodId": methodId,
+                "values": values,
+                "checkboxes": checkboxes,
+                "challengeId": challengeId,
+                "code": code,
+                "remember": remember
+            ],
+            secret: secretPassword
+        )
+        return try await parseSubmitResult(raw)
+    }
+
     /// 拉取图形验证码。首次取图前先 GET 一次登录页建立服务端预会话（金智验证码依赖会话
-    /// cookie），与后续 submit 共用同一个 cookie 罐。
+    /// cookie），与后续 submit 共用同一个 cookie 罐；响应若为安全防护拦截页则重建预会话重试。
     func fetchCaptcha(_ rawURLString: String, refreshParam: String?) async throws -> Data {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             jsQueue.async {
                 do {
+                    let baseURL = try self.authorizedURL(rawURLString)
+                    func captchaRequest() throws -> URLRequest {
+                        var url = baseURL
+                        if let refreshParam, !refreshParam.isEmpty,
+                           var components = URLComponents(
+                               url: url, resolvingAgainstBaseURL: false
+                           ) {
+                            var items = components.queryItems ?? []
+                            items.removeAll { $0.name == refreshParam }
+                            items.append(URLQueryItem(
+                                name: refreshParam,
+                                value: String(Int64(Date().timeIntervalSince1970 * 1000))
+                            ))
+                            components.queryItems = items
+                            if let rebuilt = components.url { url = rebuilt }
+                        }
+                        var request = URLRequest(url: url)
+                        request.setValue(Self.loginUserAgent, forHTTPHeaderField: "User-Agent")
+                        request.setValue(
+                            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                            forHTTPHeaderField: "Accept"
+                        )
+                        request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
+                        request.setValue(self.loginUrl ?? url.absoluteString, forHTTPHeaderField: "Referer")
+                        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+                        return request
+                    }
+
                     try self.ensurePrimed()
-                    var url = try self.authorizedURL(rawURLString)
-                    if let refreshParam, !refreshParam.isEmpty,
-                       var components = URLComponents(
-                           url: url, resolvingAgainstBaseURL: false
-                       ) {
-                        var items = components.queryItems ?? []
-                        items.removeAll { $0.name == refreshParam }
-                        items.append(URLQueryItem(
-                            name: refreshParam,
-                            value: String(Int64(Date().timeIntervalSince1970 * 1000))
-                        ))
-                        components.queryItems = items
-                        if let rebuilt = components.url { url = rebuilt }
+                    for round in 0..<2 {
+                        let (data, response) = try self.blockingLoad(try captchaRequest())
+                        guard (200..<300).contains(response.statusCode) else {
+                            throw RuntimeError.generic("验证码加载失败（\(response.statusCode)）")
+                        }
+                        if Self.isImageBytes(data) {
+                            continuation.resume(returning: data)
+                            return
+                        }
+                        // 拦截页/空响应：重新建立预会话后只再试一轮。
+                        if round == 0,
+                           let host = self.loginUrl.flatMap({ URL(string: $0)?.host }) {
+                            self.primedHosts.remove(host)
+                            try? self.ensurePrimed()
+                        }
                     }
-                    var request = URLRequest(url: url)
-                    request.setValue(self.loginUrl ?? url.absoluteString, forHTTPHeaderField: "Referer")
-                    request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-                    let (data, response) = try self.blockingLoad(request)
-                    guard (200..<300).contains(response.statusCode) else {
-                        throw RuntimeError.generic("验证码加载失败（\(response.statusCode)）")
-                    }
-                    guard !data.isEmpty else { throw RuntimeError.generic("验证码图片为空") }
-                    continuation.resume(returning: data)
+                    throw RuntimeError.generic("验证码响应被安全防护拦截，请点击刷新重试")
                 } catch {
                     continuation.resume(throwing: error)
                 }
             }
         }
+    }
+
+    /// 嗅探常见图片格式魔数，避免把拦截页 HTML 当作验证码渲染。
+    private static func isImageBytes(_ data: Data) -> Bool {
+        guard data.count >= 12 else { return false }
+        let b = [UInt8](data.prefix(12))
+        // JPEG FF D8 FF | PNG 89 50 4E 47 | GIF 47 49 46 | BMP 42 4D | WEBP RIFF....WEBP
+        if b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF { return true }
+        if b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47 { return true }
+        if b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 { return true }
+        if b[0] == 0x42 && b[1] == 0x4D { return true }
+        if b[0] == 0x52 && b[1] == 0x49 && b[8] == 0x57 &&
+            b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50 { return true }
+        return false
     }
 
     // MARK: - Adapter invocation
@@ -431,6 +551,7 @@ final class LoginScriptRuntime: @unchecked Sendable {
         let url = try authorizedURL(rawURLString)
 
         var request = URLRequest(url: url)
+        request.setValue(Self.loginUserAgent, forHTTPHeaderField: "User-Agent")
         request.httpMethod = (args.string("method") ?? "GET").uppercased()
         if let headers = args["headers"] as? [String: Any] {
             for (key, value) in headers {
@@ -519,8 +640,12 @@ final class LoginScriptRuntime: @unchecked Sendable {
         guard let host = url.host, allowedHosts.contains(host), primedHosts.insert(host).inserted
         else { return }
         var request = URLRequest(url: url)
-        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        request.setValue(
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            forHTTPHeaderField: "Accept"
+        )
         request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue("1", forHTTPHeaderField: "Upgrade-Insecure-Requests")
         _ = try? blockingLoad(request)
     }
 
@@ -876,4 +1001,96 @@ window = this;
 
 extension LoginScriptRuntime {
     fileprivate static var shim: String { loginRuntimeShim }
+}
+
+enum ScriptSilentLoginState: Sendable { case success, interactionRequired, rejected, retry }
+
+struct ScriptSilentLoginResult: Sendable {
+    let state: ScriptSilentLoginState
+    let message: String
+}
+
+/// Replays the script adapter's password method without presenting UI. MFA/captcha are returned as
+/// interactionRequired; only transport/runtime errors are retryable.
+@MainActor
+enum ScriptSilentLogin {
+    static func attempt(
+        definition: SchoolDefinition,
+        credential: (username: String, password: String)
+    ) async -> ScriptSilentLoginResult {
+        guard let auth = definition.auth else {
+            return ScriptSilentLoginResult(state: .retry, message: "学校定义缺少 auth")
+        }
+        let scriptPath = auth.loginScript ?? definition.readerAdapter
+        let script = SchoolCatalog.shared.readAdapterScript(assetPath: scriptPath)
+        let volatileNames = Set((auth.resolvedCookieNames + ["JSESSIONID", "CASTGC"]).map {
+            $0.uppercased()
+        })
+        let initialCookies = SessionStore.shared.cookiesForScriptLogin.filter { cookie in
+            !volatileNames.contains(cookie.name.uppercased()) &&
+                !cookie.name.uppercased().contains("TICKET")
+        }
+        let runtime = LoginScriptRuntime(
+            adapterScript: script,
+            allowedHosts: auth.allowedHosts(baseURL: definition.baseUrl),
+            sessionCookieNames: auth.resolvedCookieNames,
+            successUrlPrefixes: auth.resolvedSuccessPrefixes,
+            loginUrl: auth.loginUrl,
+            initialCookies: initialCookies,
+            onEvent: { _ in }
+        )
+        defer { runtime.close() }
+        do {
+            try await runtime.start()
+            let schema = try await runtime.describe()
+            guard let method = schema.methods.first(where: { $0.kind == "password" && $0.isDefault })
+                    ?? schema.methods.first(where: { $0.kind == "password" }) else {
+                return ScriptSilentLoginResult(
+                    state: .interactionRequired,
+                    message: "当前学校未提供可自动重登的密码方式"
+                )
+            }
+            let usernameField = method.fields.first(where: { $0.id == "username" })
+                ?? method.fields.first(where: { $0.type == "text" || $0.type == "tel" })
+            guard let usernameField,
+                  let passwordField = method.fields.first(where: { $0.type == "password" }),
+                  !method.fields.contains(where: {
+                      $0.required && $0.id != usernameField.id && $0.id != passwordField.id
+                  }) else {
+                return ScriptSilentLoginResult(
+                    state: .interactionRequired,
+                    message: "自动登录需要补充安全验证"
+                )
+            }
+            var values = Dictionary(uniqueKeysWithValues: method.fields.map { ($0.id, "") })
+            values[usernameField.id] = credential.username
+            values[passwordField.id] = LoginScriptRuntime.passwordToken
+            let checks = Dictionary(uniqueKeysWithValues: method.checkboxes.map {
+                ($0.id, $0.defaultChecked)
+            })
+            let result = try await runtime.submit(
+                methodId: method.id,
+                values: values,
+                checkboxes: checks,
+                secretPassword: credential.password
+            )
+            if result.ok {
+                SessionStore.shared.saveCookies(result.sessionCookies)
+                SessionStore.shared.restoreToCookieStorage()
+                return ScriptSilentLoginResult(state: .success, message: "")
+            }
+            if result.kind == "mfa" || result.kind == "captcha" {
+                return ScriptSilentLoginResult(
+                    state: .interactionRequired,
+                    message: result.message.isEmpty ? "登录需要完成安全验证" : result.message
+                )
+            }
+            return ScriptSilentLoginResult(
+                state: .rejected,
+                message: result.message.isEmpty ? "保存的密码已失效" : result.message
+            )
+        } catch {
+            return ScriptSilentLoginResult(state: .retry, message: error.localizedDescription)
+        }
+    }
 }

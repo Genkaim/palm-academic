@@ -71,14 +71,45 @@ object PortalSessionCoordinator {
             when (AuthRepository().validateSession()) {
                 SessionValidation.VALID -> _state.value = PortalSessionState.Ready
                 SessionValidation.EXPIRED -> {
-                    val auth = runCatching { SchoolAdapterRepository.load(application).auth }.getOrNull()
+                    val definition = runCatching { SchoolAdapterRepository.load(application) }.getOrNull()
+                    val auth = definition?.auth
                     val credential = PasswordCredentialStore.load(application)
                     if (auth != null && !auth.webOnly && !auth.captcha.required && credential != null) {
-                        // A password-only adapter can renew without user interaction. Stay in the
-                        // checking state and keep the established retry behaviour; captcha and web
-                        // adapters are deliberately excluded from this branch.
+                        // Password adapters can renew without user interaction. Script adapters
+                        // replay their own protocol and stop only when the server asks for MFA;
+                        // captcha and web adapters remain interactive.
                         var attempt = 0
                         while (isActive) {
+                            if (auth.usesScript) {
+                                when (ScriptSilentLogin.attempt(application, definition, credential).state) {
+                                    ScriptSilentLoginState.SUCCESS -> {
+                                        _state.value = PortalSessionState.Ready
+                                        return@launch
+                                    }
+                                    ScriptSilentLoginState.INTERACTION_REQUIRED -> {
+                                        application.getSharedPreferences(
+                                            PortalPollWorker.PREFS,
+                                            android.content.Context.MODE_PRIVATE
+                                        ).edit().putBoolean(
+                                            PortalPollWorker.KEY_INTERACTIVE_REAUTH_REQUIRED,
+                                            true
+                                        ).apply()
+                                        PortalHttp.clearSession()
+                                        _state.value = PortalSessionState.Expired
+                                        return@launch
+                                    }
+                                    ScriptSilentLoginState.REJECTED -> {
+                                        PortalHttp.clearSession()
+                                        _state.value = PortalSessionState.Expired
+                                        return@launch
+                                    }
+                                    ScriptSilentLoginState.RETRY -> {
+                                        attempt++
+                                        delay((1000L shl minOf(attempt - 1, 4)))
+                                        continue
+                                    }
+                                }
+                            }
                             val result = AuthRepository().login(credential.username, credential.password)
                             if (result.isSuccess) {
                                 _state.value = PortalSessionState.Ready

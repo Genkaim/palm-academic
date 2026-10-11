@@ -288,6 +288,7 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
             .edit()
             .putBoolean(PortalPollWorker.KEY_AUTH_FAILURE_NOTIFIED, false)
             .putBoolean(PortalPollWorker.KEY_CAPTCHA_REAUTH_REQUIRED, false)
+            .putBoolean(PortalPollWorker.KEY_INTERACTIVE_REAUTH_REQUIRED, false)
             .apply()
     }
 
@@ -296,6 +297,13 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         authenticated = false
         error = "登录已过期，请输入验证码重新登录"
         if (captchaRequired) refreshCaptcha()
+    }
+
+    fun prepareInteractiveReauthentication() {
+        loading = false
+        authenticated = false
+        error = "登录已过期，请完成安全验证"
+        scriptLogin?.requestAutomaticPasswordSubmit()
     }
 }
 
@@ -310,6 +318,9 @@ class MainActivity : PortalActivity() {
         val requestedCaptchaReauthentication =
             intent.getBooleanExtra(EXTRA_CAPTCHA_REAUTHENTICATION, false) ||
                 preferences.getBoolean(PortalPollWorker.KEY_CAPTCHA_REAUTH_REQUIRED, false)
+        val interactiveReauthentication =
+            intent.getBooleanExtra(EXTRA_INTERACTIVE_REAUTHENTICATION, false) ||
+                preferences.getBoolean(PortalPollWorker.KEY_INTERACTIVE_REAUTH_REQUIRED, false)
         val captchaReauthentication = requestedCaptchaReauthentication &&
             model.captchaRequired && !model.webLoginOnly
         if (requestedCaptchaReauthentication && !captchaReauthentication) {
@@ -324,6 +335,13 @@ class MainActivity : PortalActivity() {
             PortalSessionCoordinator.clear()
             PortalHttp.clearSession()
             model.prepareCaptchaReauthentication()
+        } else if (interactiveReauthentication) {
+            preferences.edit()
+                .putBoolean(PortalPollWorker.KEY_INTERACTIVE_REAUTH_REQUIRED, false)
+                .apply()
+            PortalSessionCoordinator.clear()
+            PortalHttp.clearSession()
+            model.prepareInteractiveReauthentication()
         }
         if (openedFromNotification) {
             @Suppress("DEPRECATION")
@@ -331,7 +349,8 @@ class MainActivity : PortalActivity() {
         }
         useContinuousSystemBars()
         PortalPollWorker.ensureChannel(this)
-        val resumeExistingSession = !captchaReauthentication && PortalHttp.hasSessionCookie()
+        val resumeExistingSession = !captchaReauthentication && !interactiveReauthentication &&
+            PortalHttp.hasSessionCookie()
         if (resumeExistingSession) {
             PortalSessionCoordinator.validate(application)
             openHome(
@@ -402,6 +421,7 @@ class MainActivity : PortalActivity() {
     companion object {
         const val EXTRA_NOTIFICATION_ENTRY = "notification_entry"
         const val EXTRA_CAPTCHA_REAUTHENTICATION = "captcha_reauthentication"
+        const val EXTRA_INTERACTIVE_REAUTHENTICATION = "interactive_reauthentication"
     }
 }
 

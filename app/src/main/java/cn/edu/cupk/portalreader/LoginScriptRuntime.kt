@@ -9,9 +9,11 @@ import android.os.Looper
 import android.util.Base64
 import android.webkit.WebView
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -48,6 +50,7 @@ class LoginScriptRuntime(
     private val sessionCookieNames: List<String>,
     private val successUrlPrefixes: List<String>,
     private val loginUrl: String?,
+    initialCookies: List<PersistedCookie> = emptyList(),
     private val uiListener: (LoginUiEvent) -> Unit
 ) {
     private val appContext = context.applicationContext
@@ -56,7 +59,7 @@ class LoginScriptRuntime(
     private val allowedHosts = allowedHosts.mapTo(linkedSetOf()) { it.lowercase() }
 
     /** 单次登录专用 cookie 罐：与全局 WebView 完全隔离，成功后才持久化。 */
-    internal val cookieJar = LoginCookieJar()
+    internal val cookieJar = LoginCookieJar(initialCookies)
     private val httpClient: OkHttpClient =
         PortalHttp.client.newBuilder()
             .cookieJar(cookieJar)
@@ -120,7 +123,21 @@ class LoginScriptRuntime(
         val message: String,
         /** kind=="captcha" 时由脚本提供的动态验证码图片地址（页面非常驻验证码字段）。 */
         val captchaUrl: String?,
-        val captchaRefreshParam: String?
+        val captchaRefreshParam: String?,
+        /** kind=="mfa" 时由 App 渲染的通用二次认证弹窗。 */
+        val challenge: Challenge?
+    )
+
+    data class Challenge(
+        val id: String,
+        val title: String,
+        val message: String,
+        val inputLabel: String,
+        val placeholder: String,
+        val sendCode: Boolean,
+        val sendLabel: String,
+        val rememberLabel: String?,
+        val rememberDefault: Boolean
     )
 
     // ---- 生命周期 ----
@@ -234,17 +251,35 @@ class LoginScriptRuntime(
             // Keep the real password only for the duration of one adapter invocation.
             password = ""
         }
+        return parseSubmitResult(raw)
+    }
+
+    private fun parseSubmitResult(raw: String): SubmitResult {
         val json = JSONObject(raw)
         val ok = json.optBoolean("ok", false)
         val kind = json.optString("kind", if (ok) "success" else "rejected")
         val message = json.optString("message", "")
         val cap = json.optJSONObject("captcha")
+        val challenge = json.optJSONObject("challenge")?.let { value ->
+            Challenge(
+                id = value.optString("id", "mfa"),
+                title = value.optString("title", "安全验证"),
+                message = value.optString("message", message),
+                inputLabel = value.optString("inputLabel", "验证码"),
+                placeholder = value.optString("placeholder", "请输入验证码"),
+                sendCode = value.optBoolean("sendCode", false),
+                sendLabel = value.optString("sendLabel", "获取验证码"),
+                rememberLabel = value.optString("rememberLabel").takeIf(String::isNotBlank),
+                rememberDefault = value.optBoolean("rememberDefault", true)
+            )
+        }
         val result = SubmitResult(
             ok = ok,
             kind = kind,
             message = message,
             captchaUrl = cap?.optString("url")?.takeIf(String::isNotBlank),
-            captchaRefreshParam = cap?.optString("refreshParam")?.takeIf(String::isNotBlank)
+            captchaRefreshParam = cap?.optString("refreshParam")?.takeIf(String::isNotBlank),
+            challenge = challenge
         )
         if (ok) verifySession()
         return result
@@ -266,6 +301,49 @@ class LoginScriptRuntime(
         return JSONObject(raw)
     }
 
+    /** 触发当前二次认证挑战的验证码发送动作。 */
+    suspend fun sendChallenge(
+        methodId: String,
+        values: Map<String, String>,
+        checkboxes: Map<String, Boolean>,
+        challengeId: String,
+        secretPassword: String
+    ): JSONObject {
+        password = secretPassword
+        val raw = try {
+            callAdapter(
+                "sendChallenge",
+                methodPayload(methodId, values, checkboxes).put("challengeId", challengeId)
+            )
+        } finally {
+            password = ""
+        }
+        return JSONObject(raw)
+    }
+
+    /** 提交 App 二次认证弹窗中的验证码，并复用原登录运行时的 cookie 会话。 */
+    suspend fun submitChallenge(
+        methodId: String,
+        values: Map<String, String>,
+        checkboxes: Map<String, Boolean>,
+        challengeId: String,
+        code: String,
+        remember: Boolean,
+        secretPassword: String
+    ): SubmitResult {
+        password = secretPassword
+        val payload = methodPayload(methodId, values, checkboxes)
+            .put("challengeId", challengeId)
+            .put("code", code)
+            .put("remember", remember)
+        val raw = try {
+            callAdapter("submitChallenge", payload)
+        } finally {
+            password = ""
+        }
+        return parseSubmitResult(raw)
+    }
+
     private fun methodPayload(
         methodId: String,
         values: Map<String, String>,
@@ -278,25 +356,63 @@ class LoginScriptRuntime(
     /**
      * 拉取图形验证码。首次取图前先 GET 一次登录页，建立服务端预会话（金智等系统的
      * 验证码依赖会话 cookie），与后续 submit 共用同一个 cookie 罐。
+     * 部分防护设备会对“不像浏览器”的请求返回拦截页（HTML 200），因此要校验
+     * 返回的确实是图片；首轮被拦时重新建立预会话再试一次。
      */
-    suspend fun fetchCaptcha(rawUrl: String, refreshParam: String?): ByteArray {
-        ensurePrimed()
+    suspend fun fetchCaptcha(rawUrl: String, refreshParam: String?): ByteArray = withContext(Dispatchers.IO) {
         var url = substitute(rawUrl).toHttpUrl()
         require(url.scheme == "https" && url.host in allowedHosts) { "验证码地址未授权" }
-        if (!refreshParam.isNullOrBlank()) {
-            url = url.newBuilder()
-                .setQueryParameter(refreshParam, System.currentTimeMillis().toString())
-                .build()
-        }
-        return httpClient.newCall(
-            Request.Builder().url(url)
-                .header("Referer", loginUrl ?: url.toString())
+
+        fun buildRequest(): Request {
+            var u = url
+            if (!refreshParam.isNullOrBlank()) {
+                u = u.newBuilder()
+                    .setQueryParameter(refreshParam, System.currentTimeMillis().toString())
+                    .build()
+            }
+            url = u
+            return Request.Builder().url(u)
+                .header("User-Agent", LOGIN_USER_AGENT)
+                .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+                .header("Accept-Language", "zh-CN,zh;q=0.9")
+                .header("Referer", loginUrl ?: u.toString())
                 .header("Cache-Control", "no-cache")
                 .get().build()
-        ).execute().use { resp ->
-            if (!resp.isSuccessful) error("验证码加载失败（${resp.code}）")
-            resp.body?.bytes()?.takeIf(ByteArray::isNotEmpty) ?: error("验证码图片为空")
         }
+
+        ensurePrimed()
+        var firstError: String? = null
+        repeat(2) { round ->
+            val bytes: ByteArray = httpClient.newCall(buildRequest()).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    throw java.io.IOException("验证码加载失败（${resp.code}）")
+                }
+                resp.body?.bytes() ?: ByteArray(0)
+            }
+            if (isImageBytes(bytes)) return@withContext bytes
+            // 拿到的是 HTML 拦截页/空响应：清掉该主机的预会话标记再补一次登录页请求，
+            // 让服务端重新下发会话，然后只再重试一轮。
+            firstError = "验证码响应被安全防护拦截"
+            if (round == 0) {
+                loginUrl?.toHttpUrl()?.host?.let(primedHosts::remove)
+                runCatching { ensurePrimed() }
+            }
+        }
+        error(firstError ?: "验证码图片无效，请点击刷新重试")
+    }
+
+    /** 嗅探常见图片格式魔数，避免把拦截页 HTML 当作验证码渲染。 */
+    private fun isImageBytes(bytes: ByteArray): Boolean {
+        if (bytes.size < 12) return false
+        // JPEG FF D8 FF | PNG 89 50 4E 47 | GIF 47 49 46 | WEBP RIFF....WEBP | BMP BM
+        return (bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()) ||
+            (bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() &&
+                bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()) ||
+            (bytes[0] == 0x47.toByte() && bytes[1] == 0x49.toByte() && bytes[2] == 0x46.toByte()) ||
+            (bytes[0] == 0x42.toByte() && bytes[1] == 0x4D.toByte()) ||
+            (bytes.size >= 12 && bytes[0] == 0x52.toByte() && bytes[1] == 0x49.toByte() &&
+                bytes[8] == 0x57.toByte() && bytes[9] == 0x45.toByte() &&
+                bytes[10] == 0x42.toByte() && bytes[11] == 0x50.toByte())
     }
 
     private val primedHosts = java.util.Collections.synchronizedSet(HashSet<String>())
@@ -307,8 +423,10 @@ class LoginScriptRuntime(
         if (url.host !in allowedHosts || !primedHosts.add(url.host)) return
         httpClient.newCall(
             Request.Builder().url(url)
-                .header("Accept", "text/html,application/xhtml+xml")
+                .header("User-Agent", LOGIN_USER_AGENT)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", "zh-CN,zh;q=0.9")
+                .header("Upgrade-Insecure-Requests", "1")
                 .get().build()
         ).execute().use { it.body?.close() }
     }
@@ -587,6 +705,9 @@ class LoginScriptRuntime(
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private const val KEYBOARD_CHARS =
             "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678"
+        private const val LOGIN_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
 
         private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
@@ -636,4 +757,94 @@ sealed class LoginUiEvent {
     data class Qr(val state: String, val message: String, val image: Bitmap?) : LoginUiEvent()
     data class Toast(val message: String) : LoginUiEvent()
     data class Phase(val state: String, val message: String) : LoginUiEvent()
+}
+
+internal enum class ScriptSilentLoginState { SUCCESS, INTERACTION_REQUIRED, REJECTED, RETRY }
+
+internal data class ScriptSilentLoginResult(
+    val state: ScriptSilentLoginState,
+    val message: String = ""
+)
+
+/**
+ * 使用脚本默认的 password method 做一次无界面重登。只有网络/运行时异常返回 RETRY；
+ * MFA/图形验证码返回 INTERACTION_REQUIRED，明确拒绝返回 REJECTED，避免后台无限转圈。
+ */
+internal object ScriptSilentLogin {
+    suspend fun attempt(
+        context: Context,
+        definition: SchoolDefinition,
+        credential: SavedPasswordCredential
+    ): ScriptSilentLoginResult {
+        val auth = definition.auth
+        val scriptPath = auth.loginScript ?: definition.adapterAsset
+        val script = runCatching {
+            SchoolAdapterRepository.readLoginScript(context, scriptPath)
+        }.getOrElse {
+            return ScriptSilentLoginResult(ScriptSilentLoginState.RETRY, it.message.orEmpty())
+        }
+        // 过期会话 cookie 会让金智直接返回“当前会话已失效”；只携带设备授信等长效 cookie。
+        val volatileNames = (auth.sessionCookieNames + listOf("JSESSIONID", "CASTGC"))
+            .map(String::uppercase)
+            .toSet()
+        val initialCookies = PortalSessionStore.persistedCookies().filter { cookie ->
+            cookie.name.uppercase() !in volatileNames &&
+                !cookie.name.uppercase().contains("TICKET")
+        }
+        val runtime = LoginScriptRuntime(
+            context = context,
+            adapterScript = script,
+            allowedHosts = auth.allowedHosts(definition.baseUrl),
+            sessionCookieNames = auth.sessionCookieNames,
+            successUrlPrefixes = auth.successUrlPrefixes,
+            loginUrl = auth.loginUrl,
+            initialCookies = initialCookies,
+            uiListener = {}
+        )
+        return try {
+            runtime.start()
+            val schema = runtime.describe()
+            val method = schema.methods.firstOrNull { it.kind == "password" && it.isDefault }
+                ?: schema.methods.firstOrNull { it.kind == "password" }
+                ?: return ScriptSilentLoginResult(
+                    ScriptSilentLoginState.INTERACTION_REQUIRED,
+                    "当前学校未提供可自动重登的密码方式"
+                )
+            val usernameField = method.fields.firstOrNull { it.id == "username" }
+                ?: method.fields.firstOrNull { it.type == "text" || it.type == "tel" }
+            val passwordField = method.fields.firstOrNull { it.type == "password" }
+            if (usernameField == null || passwordField == null || method.fields.any {
+                    it.required && it.id != usernameField.id && it.id != passwordField.id
+                }) {
+                return ScriptSilentLoginResult(
+                    ScriptSilentLoginState.INTERACTION_REQUIRED,
+                    "自动登录需要补充安全验证"
+                )
+            }
+            val values = method.fields.associate { field ->
+                field.id to when (field.id) {
+                    usernameField.id -> credential.username
+                    passwordField.id -> LoginScriptRuntime.PASSWORD_TOKEN
+                    else -> ""
+                }
+            }
+            val checks = method.checkboxes.associate { it.id to it.defaultChecked }
+            val result = runtime.submit(method.id, values, checks, credential.password)
+            when {
+                result.ok -> ScriptSilentLoginResult(ScriptSilentLoginState.SUCCESS)
+                result.kind == "mfa" || result.kind == "captcha" -> ScriptSilentLoginResult(
+                    ScriptSilentLoginState.INTERACTION_REQUIRED,
+                    result.message.ifBlank { "登录需要完成安全验证" }
+                )
+                else -> ScriptSilentLoginResult(
+                    ScriptSilentLoginState.REJECTED,
+                    result.message.ifBlank { "保存的密码已失效" }
+                )
+            }
+        } catch (error: Throwable) {
+            ScriptSilentLoginResult(ScriptSilentLoginState.RETRY, error.message.orEmpty())
+        } finally {
+            runtime.close()
+        }
+    }
 }

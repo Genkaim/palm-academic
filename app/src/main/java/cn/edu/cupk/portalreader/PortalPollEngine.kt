@@ -31,6 +31,7 @@ internal data class PollRunResult(
  * [PortalPollWorker], and the notification settings screen runs the same engine for "立即检查".
  */
 internal class PortalPollEngine(private val appContext: Context) {
+    private var silentInteractionMessage: String? = null
 
     suspend fun run(manual: Boolean = false): PollRunResult = withContext(Dispatchers.IO) {
         val preferences = PortalNotificationPreferences.preferences(appContext)
@@ -59,10 +60,20 @@ internal class PortalPollEngine(private val appContext: Context) {
         suspend fun prepareSilentPasswordRetry(reason: String): Boolean {
             if (!usesSilentPasswordReauthentication()) return false
             val renewed = attemptSilentPasswordReauthentication()
+            val interaction = silentInteractionMessage
+            val interactionNotified = if (interaction != null) {
+                notifyInteractiveAuthentication(preferences, interaction)
+            } else false
             details += PortalPollHistoryDetail(
                 category = "登录状态",
-                summary = if (renewed) "已静默恢复密码登录" else "正在静默重试密码登录",
-                technicalDetails = "$reason；将在下一次检查中使用更新后的会话。"
+                summary = when {
+                    renewed -> "已静默恢复密码登录"
+                    interaction != null -> "自动登录需要安全验证"
+                    else -> "正在静默重试密码登录"
+                },
+                technicalDetails = if (interaction != null) "$reason；$interaction" else
+                    "$reason；将在下一次检查中使用更新后的会话。",
+                notificationTriggered = interactionNotified
             )
             return true
         }
@@ -71,6 +82,16 @@ internal class PortalPollEngine(private val appContext: Context) {
                 if (attemptSilentPasswordReauthentication()) {
                     // Continue this same comparison pass with the renewed cookie jar.
                 } else {
+                    silentInteractionMessage?.let { message ->
+                        val notified = notifyInteractiveAuthentication(preferences, message)
+                        details += PortalPollHistoryDetail(
+                            category = "登录状态",
+                            summary = "自动登录需要安全验证",
+                            technicalDetails = message,
+                            notificationTriggered = notified
+                        )
+                        return@withContext finish("需要安全验证")
+                    }
                     details += PortalPollHistoryDetail(
                         category = "登录状态",
                         summary = "正在静默重试密码登录",
@@ -588,11 +609,48 @@ internal class PortalPollEngine(private val appContext: Context) {
     }
 
     private suspend fun attemptSilentPasswordReauthentication(): Boolean {
+        silentInteractionMessage = null
         val credential = PasswordCredentialStore.load(appContext) ?: return false
+        val definition = runCatching { SchoolAdapterRepository.load(appContext) }.getOrNull() ?: return false
+        if (definition.auth.usesScript) {
+            val result = ScriptSilentLogin.attempt(appContext, definition, credential)
+            if (result.state == ScriptSilentLoginState.INTERACTION_REQUIRED ||
+                result.state == ScriptSilentLoginState.REJECTED
+            ) {
+                silentInteractionMessage = result.message.ifBlank { "请打开 App 完成安全验证" }
+            }
+            return result.state == ScriptSilentLoginState.SUCCESS
+        }
         return AuthRepository().login(credential.username, credential.password).isSuccess
     }
 
-    private fun notify(id: Int, title: String, text: String): Boolean {
+    private fun notifyInteractiveAuthentication(
+        preferences: android.content.SharedPreferences,
+        message: String
+    ): Boolean {
+        preferences.edit()
+            .putBoolean(PortalPollWorker.KEY_INTERACTIVE_REAUTH_REQUIRED, true)
+            .apply()
+        if (preferences.getBoolean(PortalPollWorker.KEY_AUTH_FAILURE_NOTIFIED, false)) return false
+        if (notify(
+                3003,
+                "登录需要安全验证",
+                message.ifBlank { "请打开掌上教务完成安全验证。" },
+                interactiveReauthentication = true
+            )
+        ) {
+            preferences.edit().putBoolean(PortalPollWorker.KEY_AUTH_FAILURE_NOTIFIED, true).apply()
+            return true
+        }
+        return false
+    }
+
+    private fun notify(
+        id: Int,
+        title: String,
+        text: String,
+        interactiveReauthentication: Boolean = false
+    ): Boolean {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
                 appContext, Manifest.permission.POST_NOTIFICATIONS
             ) != PackageManager.PERMISSION_GRANTED
@@ -603,7 +661,12 @@ internal class PortalPollEngine(private val appContext: Context) {
         val intent = Intent(appContext, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(MainActivity.EXTRA_NOTIFICATION_ENTRY, true)
-            if (id == 3003) putExtra(MainActivity.EXTRA_CAPTCHA_REAUTHENTICATION, true)
+            if (id == 3003 && !interactiveReauthentication) {
+                putExtra(MainActivity.EXTRA_CAPTCHA_REAUTHENTICATION, true)
+            }
+            if (interactiveReauthentication) {
+                putExtra(MainActivity.EXTRA_INTERACTIVE_REAUTHENTICATION, true)
+            }
         }
         val pendingIntent = PendingIntent.getActivity(
             appContext, id, intent,

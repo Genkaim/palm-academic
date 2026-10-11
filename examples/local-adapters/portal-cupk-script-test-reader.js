@@ -85,10 +85,22 @@
     return value ? decodeEntities(value[1]) : '';
   }
 
+  // 错误文案容器（#msg/#showErrorTip/#formErrorTip）内部常再套一层标签，
+  // 截取元素片段后剥掉标签取纯文本。
   function extractError(html) {
-    var match = String(html || '').match(/id=["']msg["'][^>]*>([\s\S]*?)<\/[^>]+>/i);
-    if (!match) return '';
-    return decodeEntities(match[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '));
+    var source = String(html || '');
+    var patterns = [
+      /id=["']showErrorTip["'][^>]*>([\s\S]*?)<\/(?:span|div)>/i,
+      /id=["']formErrorTip["'][^>]*>([\s\S]*?)<\/(?:span|div)>/i,
+      /id=["']msg["'][^>]*>([\s\S]*?)<\/(?:span|div)>/i
+    ];
+    for (var i = 0; i < patterns.length; i++) {
+      var block = source.match(patterns[i]);
+      if (!block) continue;
+      var text = decodeEntities(block[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '));
+      if (text) return text;
+    }
+    return '';
   }
 
   async function openLoginPage() {

@@ -35,6 +35,7 @@ class PortalPollWorker(appContext: Context, params: WorkerParameters) :
         internal const val KEY_MONITOR_ENABLED = "enabled"
         internal const val KEY_AUTH_FAILURE_NOTIFIED = "auth_failure_notified"
         internal const val KEY_CAPTCHA_REAUTH_REQUIRED = "captcha_reauth_required"
+        internal const val KEY_INTERACTIVE_REAUTH_REQUIRED = "interactive_reauth_required"
 
         fun ensureChannel(context: Context) {
             val channel = NotificationChannel(

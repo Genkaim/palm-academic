@@ -65,6 +65,9 @@ final class SessionStore {
         return records.compactMap(\.cookie)
     }
 
+    /// Seeds an isolated script-login cookie jar with durable device-trust cookies.
+    var cookiesForScriptLogin: [HTTPCookie] { persistedCookies }
+
     var persistedCookieHeader: String? {
         lock.lock()
         defer { lock.unlock() }

@@ -368,22 +368,31 @@
   var LOGIN_ACTION = AUTH + '/login?service=' + encodeURIComponent(SERVICE);
   var QR_ACTION = AUTH + '/login?display=qrLogin&service=' + encodeURIComponent(SERVICE);
   var CAPTCHA_URL = AUTH + '/getCaptcha.htl';
+  var MFA_SEND_ACTION = AUTH + '/dynamicCode/getDynamicCodeByReauth.do';
+  var MFA_SUBMIT_ACTION = AUTH + '/reAuthCheck/reAuthSubmit.do';
   // 与 login.js 中硬编码的 DEFAULT_SALT 保持一致（用于手机号加密）。
   var DEFAULT_SALT = 'rjBFAaHsNkKAhpoi';
+  var USER_AGENT = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36';
   var BROWSER_HEADERS = {
+    'User-Agent': USER_AGENT,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9',
     'Upgrade-Insecure-Requests': '1'
   };
   var AJAX_HEADERS = {
+    'User-Agent': USER_AGENT,
     'Accept': 'application/json, text/javascript, */*; q=0.01',
     'Accept-Language': 'zh-CN,zh;q=0.9',
-    'X-Requested-With': 'XMLHttpRequest'
+    'X-Requested-With': 'XMLHttpRequest',
+    'Origin': 'https://authserver.hznu.edu.cn',
+    'Referer': LOGIN_PAGE
   };
   var SUCCESS_PREFIXES = [
     'https://jwxt.hznu.edu.cn/jwglxt/',
     'https://jwxt.hznu.edu.cn/sso/'
   ];
+  var pendingMfa = null;
 
   function decodeEntities(value) {
     return String(value || '')
@@ -404,16 +413,23 @@
     return valueMatch ? decodeEntities(valueMatch[1]) : '';
   }
 
-  // 失败页中的错误文案：新版主题写入 #showErrorTip，老版在 #msg/.auth_error。
+  // 失败页中的错误文案：新版主题写入 #showErrorTip/#formErrorTip（内部常再套一层
+  // <span>，如 <span id="showErrorTip"><span>验证码错误</span></span>），
+  // 老版在 #msg/.auth_error。先截取元素片段，再抓其中第一段文本，兼容嵌套标签。
   function extractError(html) {
-    var patterns = [
-      /id=["']msg["'][^>]*>\s*([^<]+?)\s*</i,
-      /id=["']showErrorTip["'][^>]*>\s*([^<]+?)\s*</i,
-      /class=["'][^"']*auth_error[^"']*["'][^>]*>\s*([^<]+?)\s*</i
+    var containers = [
+      /id=["']showErrorTip["'][^>]*>([\s\S]*?)<\/span>/i,
+      /id=["']formErrorTip["'][^>]*>([\s\S]*?)<\/div>/i,
+      /id=["']msg["'][^>]*>([\s\S]*?)<\/span>/i,
+      /class=["'][^"']*auth_error[^"']*["'][^>]*>([\s\S]*?)<\/(?:span|div)>/i
     ];
-    for (var i = 0; i < patterns.length; i++) {
-      var m = html.match(patterns[i]);
-      if (m && decodeEntities(m[1])) return decodeEntities(m[1]);
+    for (var i = 0; i < containers.length; i++) {
+      var block = html.match(containers[i]);
+      if (!block) continue;
+      var text = block[1].match(/>\s*([^<>]+?)\s*</);
+      if (text && decodeEntities(text[1])) return decodeEntities(text[1]);
+      var plain = decodeEntities(block[1].replace(/<[^>]*>/g, ''));
+      if (plain) return plain;
     }
     return '';
   }
@@ -428,6 +444,38 @@
     return {
       ok: false, kind: 'captcha', message: message || '需要输入图形验证码',
       captcha: { url: CAPTCHA_URL, refreshParam: 'ts' }
+    };
+  }
+
+  function queryValue(url, name) {
+    var match = String(url || '').match(new RegExp('[?&]' + name + '=([^&#]*)'));
+    if (!match) return '';
+    try { return decodeURIComponent(match[1].replace(/\+/g, ' ')); } catch (e) { return match[1]; }
+  }
+
+  function isMfaResponse(resp) {
+    var url = resp.finalUrl || '';
+    var html = resp.text || '';
+    return /(?:reAuthLoginView\.do|isMultifactor=true)/i.test(url) ||
+      /(?:reAuthCheck\/reAuthSubmit\.do|reAuthDynamicCodeType|isMultifactor)/i.test(html);
+  }
+
+  function mfaChallenge(message) {
+    return {
+      ok: false,
+      kind: 'mfa',
+      message: message || '账号密码已通过，请完成安全验证',
+      challenge: {
+        id: 'hznu-reauth-sms',
+        title: '多因子认证',
+        message: message || '首次在此设备登录需要短信验证码。',
+        inputLabel: '短信验证码',
+        placeholder: '请输入短信验证码',
+        sendCode: true,
+        sendLabel: '获取验证码',
+        rememberLabel: '信任此设备，减少后续验证',
+        rememberDefault: true
+      }
     };
   }
 
@@ -485,6 +533,14 @@
       }
     });
     if (isSuccess(resp)) return { ok: true, kind: 'success' };
+    if (isMfaResponse(resp)) {
+      pendingMfa = {
+        username: v.username || '',
+        execution: queryValue(resp.finalUrl, 'execution') ||
+          pickInput(resp.text || '', 'execution') || page.execution
+      };
+      return mfaChallenge('账号密码已通过，请获取短信验证码完成安全验证。');
+    }
 
     var message = extractError(resp.text || '') || '账号或密码错误';
     if (/验证码/.test(message)) return captchaChallenge(message);
@@ -652,6 +708,58 @@
         };
       }
       return { ok: false, message: parsed.message || '短信验证码发送失败' };
+    },
+
+    // 密码登录通过后，App 使用通用 challenge 弹窗调用这两个接口；整个过程
+    // 继续复用第一阶段的原生 cookie 罐，JS 不接触任何 cookie。
+    sendChallenge: async function () {
+      if (!pendingMfa || !pendingMfa.username) {
+        return { ok: false, message: '安全验证会话已失效，请重新进行账号密码登录' };
+      }
+      var resp = await H.http({
+        method: 'POST', url: MFA_SEND_ACTION, headers: AJAX_HEADERS,
+        form: {
+          userName: pendingMfa.username,
+          authCodeTypeName: 'reAuthDynamicCodeType'
+        }
+      });
+      var parsed = null;
+      try { parsed = JSON.parse(resp.text || ''); } catch (e) {}
+      var failed = parsed && /^(?:error|fail|captchaError)$/i.test(String(parsed.code || ''));
+      if (resp.status < 200 || resp.status >= 300 || failed) {
+        return { ok: false, message: (parsed && parsed.message) || '短信验证码发送失败' };
+      }
+      return {
+        ok: true,
+        cooldownSeconds: Number(parsed && (parsed.intervalTime || parsed.time)) || 60,
+        message: (parsed && parsed.message) || '验证码已发送'
+      };
+    },
+
+    submitChallenge: async function (arg) {
+      if (!pendingMfa) return mfaChallenge('安全验证会话已失效，请重新进行账号密码登录。');
+      var resp = await H.http({
+        method: 'POST', url: MFA_SUBMIT_ACTION, headers: BROWSER_HEADERS,
+        form: {
+          service: SERVICE,
+          reAuthType: '3',
+          isMultifactor: 'true',
+          password: '',
+          dynamicCode: arg.code || '',
+          uuid: '',
+          answer1: '',
+          answer2: '',
+          otpCode: '',
+          execution: pendingMfa.execution || '',
+          skipTmpReAuth: arg.remember ? 'true' : 'false'
+        }
+      });
+      if (isSuccess(resp)) {
+        pendingMfa = null;
+        return { ok: true, kind: 'success' };
+      }
+      var message = extractError(resp.text || '') || '安全验证码错误或已过期，请重试';
+      return mfaChallenge(message);
     }
   };
 })();

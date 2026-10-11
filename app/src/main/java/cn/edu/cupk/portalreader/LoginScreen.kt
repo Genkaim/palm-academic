@@ -57,6 +57,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -1146,6 +1147,92 @@ private fun ScriptStatusSurface(message: String) {
 
 @Composable
 private fun ScriptLoginDialogs(script: ScriptLoginController) {
+    script.mfaChallenge?.let { challenge ->
+        AlertDialog(
+            onDismissRequest = { if (!script.mfaBusy) script.dismissMfaChallenge() },
+            title = { Text(challenge.title) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (challenge.message.isNotBlank()) {
+                        Text(challenge.message, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    OutlinedTextField(
+                        value = script.mfaCode,
+                        onValueChange = script::typeMfaCode,
+                        enabled = !script.mfaBusy,
+                        singleLine = true,
+                        label = { Text(challenge.inputLabel) },
+                        placeholder = { Text(challenge.placeholder) },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = { script.confirmMfaChallenge() }
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (challenge.sendCode) {
+                        TextButton(
+                            onClick = { script.sendMfaCode() },
+                            enabled = !script.mfaBusy && script.mfaCooldown == 0,
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text(
+                                if (script.mfaCooldown > 0) "${script.mfaCooldown}s 后重发"
+                                else challenge.sendLabel
+                            )
+                        }
+                    }
+                    challenge.rememberLabel?.let { label ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !script.mfaBusy) { script.toggleMfaRemember() },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = script.mfaRemember,
+                                onCheckedChange = { script.toggleMfaRemember() },
+                                enabled = !script.mfaBusy
+                            )
+                            Text(label, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    script.mfaError?.let { message ->
+                        Text(
+                            message,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    if (script.mfaBusy) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.size(8.dp))
+                            Text("正在验证…", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { script.confirmMfaChallenge() },
+                    enabled = script.mfaCode.isNotBlank() && !script.mfaBusy
+                ) { Text("验证") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { script.dismissMfaChallenge() },
+                    enabled = !script.mfaBusy
+                ) { Text("取消") }
+            }
+        )
+    }
     script.captchaChallenge?.let {
         AlertDialog(
             onDismissRequest = { script.dismissCaptchaDialog() },
@@ -1215,7 +1302,8 @@ private fun ScriptLoginDialogs(script: ScriptLoginController) {
             title = { Text("登录失败") },
             text = { Text(message, style = MaterialTheme.typography.bodyMedium) },
             confirmButton = {
-                TextButton(onClick = { script.retryAfterFailure() }) { Text("重试") }
+                // 回到登录表单重新填写（一次性验证码清空并换新），而非重放旧请求。
+                TextButton(onClick = { script.retryAfterFailure() }) { Text("重新登录") }
             },
             dismissButton = {
                 TextButton(onClick = { script.dismissFailure() }) { Text("取消") }

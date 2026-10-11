@@ -54,12 +54,15 @@ struct ScriptLoginSection: View {
             presenting: controller.failureDialog
         ) { _ in
             Button("取消", role: .cancel) { controller.dismissFailure() }
-            Button("重试") { controller.retryAfterFailure() }
+            // 回到登录表单重新填写（一次性验证码清空并换新），而非重放旧请求。
+            Button("重新登录") { controller.retryAfterFailure() }
         } message: { message in
             Text(message)
         }
         .overlay(alignment: .center) {
-            if controller.captchaChallenge != nil {
+            if controller.mfaChallenge != nil {
+                mfaChallengeCard
+            } else if controller.captchaChallenge != nil {
                 captchaChallengeCard
             }
         }
@@ -338,6 +341,96 @@ struct ScriptLoginSection: View {
     }
 
     // MARK: - Captcha challenge modal
+
+    private var mfaChallengeCard: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    if !controller.mfaBusy { controller.dismissMfaChallenge() }
+                }
+            if let challenge = controller.mfaChallenge {
+                VStack(spacing: 14) {
+                    Text(challenge.title)
+                        .font(.headline)
+                        .foregroundStyle(PortalPalette.onSurface)
+                    if !challenge.message.isEmpty {
+                        Text(challenge.message)
+                            .font(.subheadline)
+                            .foregroundStyle(PortalPalette.secondaryText)
+                            .multilineTextAlignment(.center)
+                    }
+                    TextField(challenge.placeholder, text: $controller.mfaCode)
+                        .textContentType(.oneTimeCode)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.center)
+                        .frame(height: 44)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(PortalPalette.page)
+                        )
+                        .disabled(controller.mfaBusy)
+
+                    if challenge.sendCode {
+                        Button {
+                            controller.sendMfaCode()
+                        } label: {
+                            Text(controller.mfaCooldown > 0
+                                 ? "\(controller.mfaCooldown)s 后重发"
+                                 : challenge.sendLabel)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 40)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(controller.mfaBusy || controller.mfaCooldown > 0)
+                    }
+
+                    if let rememberLabel = challenge.rememberLabel {
+                        Toggle(rememberLabel, isOn: $controller.mfaRemember)
+                            .font(.subheadline)
+                            .disabled(controller.mfaBusy)
+                    }
+
+                    if let error = controller.mfaError {
+                        Text(error)
+                            .font(.subheadline)
+                            .foregroundStyle(PortalPalette.error)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    if controller.mfaBusy {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("正在验证…").font(.subheadline)
+                        }
+                    }
+
+                    HStack(spacing: 12) {
+                        Button("取消") { controller.dismissMfaChallenge() }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            .disabled(controller.mfaBusy)
+                        Button("验证") { controller.confirmMfaChallenge() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(PortalPalette.primary)
+                            .frame(maxWidth: .infinity)
+                            .disabled(
+                                controller.mfaBusy || controller.mfaCode
+                                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            )
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: 320)
+                .background(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(PortalPalette.surface)
+                )
+                .shadow(color: .black.opacity(0.18), radius: 24, y: 8)
+                .padding(28)
+            }
+        }
+    }
 
     private var captchaChallengeCard: some View {
         ZStack {

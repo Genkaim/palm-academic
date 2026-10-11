@@ -39,6 +39,12 @@ final class ScriptLoginController: ObservableObject {
     @Published private(set) var captchaDialogImage: Data?
     /// 短信/扫码等方式登录失败时的模态弹窗消息（nil=不显示）。
     @Published var failureDialog: String?
+    @Published private(set) var mfaChallenge: LoginScriptRuntime.Challenge?
+    @Published var mfaCode = ""
+    @Published var mfaRemember = true
+    @Published private(set) var mfaBusy = false
+    @Published private(set) var mfaError: String?
+    @Published private(set) var mfaCooldown = 0
 
     @Published var values: [String: String] = [:]
     @Published var checkboxes: [String: Bool] = [:]
@@ -48,6 +54,8 @@ final class ScriptLoginController: ObservableObject {
     private var runtime: LoginScriptRuntime?
     private var submitTask: Task<Void, Never>?
     private var cooldownTask: Task<Void, Never>?
+    private var mfaCooldownTask: Task<Void, Never>?
+    private var automaticPasswordSubmitRequested = false
 
     private let onAuthenticated: () -> Void
     private let onRemember: (_ username: String, _ password: String) -> Void
@@ -79,12 +87,20 @@ final class ScriptLoginController: ObservableObject {
         }
         let scriptPath = auth.loginScript ?? definition.readerAdapter
         let script = SchoolCatalog.shared.readAdapterScript(assetPath: scriptPath)
+        let volatileNames = Set((auth.resolvedCookieNames + ["JSESSIONID", "CASTGC"]).map {
+            $0.uppercased()
+        })
+        let initialCookies = SessionStore.shared.cookiesForScriptLogin.filter { cookie in
+            !volatileNames.contains(cookie.name.uppercased()) &&
+                !cookie.name.uppercased().contains("TICKET")
+        }
         let runtime = LoginScriptRuntime(
             adapterScript: script,
             allowedHosts: auth.allowedHosts(baseURL: definition.baseUrl),
             sessionCookieNames: auth.sessionCookieNames ?? ["SESSION"],
             successUrlPrefixes: auth.resolvedSuccessPrefixes,
             loginUrl: auth.loginUrl,
+            initialCookies: initialCookies,
             onEvent: { [weak self] event in
                 Task { @MainActor in self?.applyUIEvent(event) }
             }
@@ -99,7 +115,12 @@ final class ScriptLoginController: ObservableObject {
                 let defaultMethod = schema.methods.first(where: \.isDefault) ?? schema.methods[0]
                 bindMethod(defaultMethod)
                 phase = .ready
-                if defaultMethod.kind == "qrcode" { launchQr(defaultMethod) }
+                if automaticPasswordSubmitRequested && defaultMethod.kind == "password" {
+                    automaticPasswordSubmitRequested = false
+                    submit()
+                } else if defaultMethod.kind == "qrcode" {
+                    launchQr(defaultMethod)
+                }
             } catch {
                 initError = error.localizedDescription
                 phase = .ready
@@ -110,8 +131,19 @@ final class ScriptLoginController: ObservableObject {
     func close() {
         submitTask?.cancel()
         cooldownTask?.cancel()
+        mfaCooldownTask?.cancel()
         runtime?.close()
         runtime = nil
+    }
+
+    /// Replays saved credentials once so an expired background session opens the native MFA
+    /// challenge directly instead of making the user press the password-login button again.
+    func requestAutomaticPasswordSubmit() {
+        automaticPasswordSubmitRequested = true
+        if phase == .ready, currentMethod()?.kind == "password" {
+            automaticPasswordSubmitRequested = false
+            submit()
+        }
     }
 
     // MARK: - Methods
@@ -156,6 +188,10 @@ final class ScriptLoginController: ObservableObject {
         captchaChallenge = nil
         captchaDialogInput = ""
         captchaDialogImage = nil
+        mfaChallenge = nil
+        mfaCode = ""
+        mfaError = nil
+        mfaBusy = false
         for field in method.fields where field.type == "captcha" {
             refreshCaptcha(field)
         }
@@ -185,8 +221,11 @@ final class ScriptLoginController: ObservableObject {
                 captchaImages[field.id] = try await runtime.fetchCaptcha(
                     url, refreshParam: field.captchaRefreshParam
                 )
+                error = nil
             } catch {
                 captchaImages[field.id] = nil
+                // 给出可见原因，用户可点击尾部图片区域直接重试。
+                self.error = "图形验证码加载失败，请点击验证码图片重试"
             }
         }
     }
@@ -255,7 +294,9 @@ final class ScriptLoginController: ObservableObject {
         submitTask?.cancel()
         submitTask = Task {
             var attempt = 0
-            while !Task.isCancelled {
+            // 密码方式的网络异常无限静默重试；短信/扫码是短交互，最多 3 轮后弹“登录失败”。
+            let maxAttempts = method.kind == "password" ? Int.max : 3
+            while !Task.isCancelled, attempt < maxAttempts {
                 busy = true
                 error = nil
                 status = attempt == 0
@@ -280,10 +321,13 @@ final class ScriptLoginController: ObservableObject {
                     handleDefinitiveFailure(method, result)
                     return
                 } catch {
-                    // 网络类异常对所有方式都持续重试，不打断用户。
                     busy = false
                     status = nil
                     attempt += 1
+                    if attempt >= maxAttempts {
+                        failureDialog = "网络异常，登录失败，请重新登录"
+                        return
+                    }
                     let backoff = min(1 << min(attempt - 1, 4), 16)
                     try? await Task.sleep(nanoseconds: UInt64(backoff) * 1_000_000_000)
                 }
@@ -299,6 +343,13 @@ final class ScriptLoginController: ObservableObject {
         _ method: LoginScriptRuntime.Method,
         _ result: LoginScriptRuntime.SubmitResult
     ) {
+        if result.kind == "mfa", let challenge = result.challenge {
+            mfaChallenge = challenge
+            mfaCode = ""
+            mfaRemember = challenge.rememberDefault
+            mfaError = nil
+            return
+        }
         if method.kind != "password" {
             failureDialog = result.message.isEmpty ? "登录失败，请检查后重试" : result.message
             return
@@ -313,8 +364,8 @@ final class ScriptLoginController: ObservableObject {
            let url = field.captchaImageUrl, !url.isEmpty {
             openCaptchaChallenge(url, refreshParam: field.captchaRefreshParam, targetKey: field.id)
         } else {
-            // 无验证码密码登录：直接重试。
-            submit()
+            // 明确拒绝是终态；只有真正抛出的网络异常才由 submit() 自动重试。
+            error = result.message.isEmpty ? "账号或密码错误" : result.message
         }
     }
 
@@ -356,14 +407,116 @@ final class ScriptLoginController: ObservableObject {
         captchaDialogImage = nil
     }
 
+    /// “登录失败”弹窗的“重新登录”：清空一次性输入并换新图形验证码，把用户引导回
+    /// 登录表单重新填写提交（扫码方式重新生成二维码），不直接重放旧请求。
     func retryAfterFailure() {
         failureDialog = nil
         guard let method = currentMethod() else { return }
-        if method.kind == "qrcode" { launchQr(method) } else { submit() }
+        busy = false
+        error = nil
+        status = nil
+        if method.kind == "qrcode" {
+            qrImage = nil
+            qrState = ""
+            qrMessage = ""
+            launchQr(method)
+            return
+        }
+        for field in method.fields where field.type == "captcha" || field.type == "smsCode" {
+            values[field.id] = ""
+        }
+        for field in method.fields where field.type == "captcha" {
+            refreshCaptcha(field)
+        }
     }
 
     func dismissFailure() {
         failureDialog = nil
+    }
+
+    func sendMfaCode() {
+        guard let method = currentMethod(), let runtime, let challenge = mfaChallenge,
+              !mfaBusy, mfaCooldown == 0 else { return }
+        Task {
+            mfaBusy = true
+            mfaError = nil
+            do {
+                let result = try await runtime.sendChallenge(
+                    methodId: method.id,
+                    values: publicValues(),
+                    checkboxes: checkboxes,
+                    challengeId: challenge.id,
+                    secretPassword: secretPassword()
+                )
+                mfaBusy = false
+                if (result["ok"] as? Bool) == true {
+                    let seconds = max((result["cooldownSeconds"] as? NSNumber)?.intValue ?? 60, 1)
+                    startMfaCooldown(seconds)
+                } else {
+                    mfaError = (result["message"] as? String) ?? "验证码发送失败"
+                }
+            } catch {
+                mfaBusy = false
+                mfaError = error.localizedDescription
+            }
+        }
+    }
+
+    private func startMfaCooldown(_ seconds: Int) {
+        mfaCooldownTask?.cancel()
+        mfaCooldown = seconds
+        mfaCooldownTask = Task {
+            var remaining = seconds
+            while remaining > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { return }
+                remaining -= 1
+                mfaCooldown = remaining
+            }
+        }
+    }
+
+    func confirmMfaChallenge() {
+        guard let method = currentMethod(), let runtime, let challenge = mfaChallenge,
+              !mfaBusy,
+              !mfaCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        Task {
+            mfaBusy = true
+            mfaError = nil
+            do {
+                let result = try await runtime.submitChallenge(
+                    methodId: method.id,
+                    values: publicValues(),
+                    checkboxes: checkboxes,
+                    challengeId: challenge.id,
+                    code: mfaCode.trimmingCharacters(in: .whitespacesAndNewlines),
+                    remember: mfaRemember,
+                    secretPassword: secretPassword()
+                )
+                mfaBusy = false
+                if result.ok {
+                    mfaChallenge = nil
+                    await persistAndFinish(sessionCookies: result.sessionCookies)
+                } else {
+                    if let challenge = result.challenge {
+                        mfaChallenge = challenge
+                    }
+                    mfaError = result.message.isEmpty ? "安全验证码错误，请重试" : result.message
+                }
+            } catch {
+                mfaBusy = false
+                mfaError = error.localizedDescription
+            }
+        }
+    }
+
+    func dismissMfaChallenge() {
+        mfaChallenge = nil
+        mfaCode = ""
+        mfaError = nil
+        mfaBusy = false
+        mfaCooldownTask?.cancel()
+        mfaCooldown = 0
     }
 
     // MARK: - QR code
@@ -372,7 +525,8 @@ final class ScriptLoginController: ObservableObject {
         submitTask?.cancel()
         submitTask = Task {
             var attempt = 0
-            while !Task.isCancelled {
+            // JS 内部轮询本身会容错；外层网络整体不可用时最多重启 3 轮，随后弹失败框。
+            while !Task.isCancelled, attempt < 3 {
                 // 只有首张二维码尚未到达时才显示忙碌提示。submit 内部包含 JS 轮询循环，
                 // 会持续到扫码成功/失败，期间不能一直占用 busy；轮询中的状态
                 // （已扫码/已刷新/失效）由二维码面板的 qrMessage 展示。
@@ -395,12 +549,17 @@ final class ScriptLoginController: ObservableObject {
                         await persistAndFinish(sessionCookies: result.sessionCookies)
                         return
                     }
-                    failureDialog = result.message.isEmpty ? "二维码登录失败，请重试" : result.message
+                    failureDialog = result.message.isEmpty
+                        ? "二维码登录失败，请重新登录" : result.message
                     return
                 } catch {
                     busy = false
                     status = nil
                     attempt += 1
+                    if attempt >= 3 {
+                        failureDialog = "网络异常，二维码登录失败，请重新登录"
+                        return
+                    }
                     let backoff = min(1 << min(attempt - 1, 4), 16)
                     try? await Task.sleep(nanoseconds: UInt64(backoff) * 1_000_000_000)
                 }
@@ -460,13 +619,16 @@ final class ScriptLoginController: ObservableObject {
             status = nil
             return
         }
-        // local/request 作用域的“记住账号/密码”复选框，id 统一为 rememberCredential。
-        let remember = checkboxes["rememberCredential"] ?? false
-        let username = values["username"] ?? ""
-        if remember && !username.trimmingCharacters(in: .whitespaces).isEmpty {
-            onRemember(username, secretPassword())
-        } else {
-            onForget()
+        // 保存密码关键词只由密码方式维护：勾选则用本次账号密码覆盖旧记录，未勾选则清除；
+        // 短信/扫码方式没有密码字段，绝不能顺手删掉已保存的密码。
+        if currentMethod()?.kind == "password" {
+            let remember = checkboxes["rememberCredential"] ?? false
+            let username = values["username"] ?? ""
+            if remember && !username.trimmingCharacters(in: .whitespaces).isEmpty {
+                onRemember(username, secretPassword())
+            } else {
+                onForget()
+            }
         }
         busy = false
         status = nil

@@ -437,8 +437,15 @@ private fun Request.Builder.portalAjaxHeaders(referer: String): Request.Builder 
         .header("X-Requested-With", "XMLHttpRequest")
         .header("Accept-Language", "zh-CN,zh;q=0.9")
 
-internal class LoginCookieJar : CookieJar {
+internal class LoginCookieJar(initialCookies: List<PersistedCookie> = emptyList()) : CookieJar {
     private val cookies = linkedMapOf<String, Cookie>()
+
+    init {
+        initialCookies.forEach { cookie ->
+            val restored = cookie.toOkHttpCookie()
+            cookies["${restored.domain}|${restored.path}|${restored.name}"] = restored
+        }
+    }
 
     @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {

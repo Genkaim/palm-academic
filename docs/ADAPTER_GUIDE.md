@@ -198,8 +198,16 @@ my-school-reader.js
 - 成功：`{ok: true, kind: 'success'}`。
 - 明确拒绝：`{ok: false, kind: 'rejected', message}`。
 - 需要动态验证码：`{ok: false, kind: 'captcha', message, captcha: {url, refreshParam}}`。
+- 密码校验后需要多因子认证：`{ok: false, kind: 'mfa', message, challenge}`。`challenge` 至少包含稳定的 `id`，还可声明 `title`、`message`、`inputLabel`、`placeholder`、`sendCode`、`sendLabel`、`rememberLabel`、`rememberDefault`。App 会显示原生弹窗；该流程仍属于原密码登录方式。
 
 短信方式可额外实现 `sendSms(arg)`，返回 `{ok, message, cooldownSeconds?}`。扫码方式在 `submit()` 内轮询，并用 `H.ui({type:'qr', state, message, imageUrl? | imageBase64?})` 更新二维码；`state` 常用 `waiting`、`scanned`、`expired`。`toast` 事件使用 `{type:'toast', message}`，阶段事件使用 `{type:'state', state, message}`。
+
+多因子认证适配器必须成对实现以下接口：
+
+- `sendChallenge(arg)`：接收原 `methodId`、`values`、`checkboxes` 与 `challengeId`，发送验证码并返回 `{ok, message, cooldownSeconds?}`。
+- `submitChallenge(arg)`：在上述参数之外接收 `code` 与 `remember`，校验后返回与 `submit()` 相同结构的结果。成功时仍返回 `{ok: true, kind: 'success'}`；服务端要求重试时可再次返回 `kind: 'mfa'` 和更新后的 `challenge`。
+
+脚本可在 `submit()` 中保存这次握手所需的非敏感临时状态（例如 execution），供挑战接口使用，但不得把密码、Cookie 或 Token 放入返回值。App 只会在最终挑战成功后保存密码凭据与会话。会话过期后，App 会在后台用已保存的密码重新执行同一 `password` 方法；若服务端不再要求验证则静默恢复，若仍返回 `mfa` 或 `captcha` 才通知用户进入验证界面。明确拒绝不会自动循环提交。
 
 ### `web`：应用内网页登录
 
@@ -216,7 +224,7 @@ my-school-reader.js
 
 用户在应用内 WebView 完成登录。Cookie 过期时，应用引导重新进入登录页。跨 CAS/门户域名时，把实际使用的主机都写入 `sessionCookieHosts`。
 
-`salted-sha1` 与 `engine` 仍用于兼容已有规则，但新学校不要再把复杂握手堆进 JSON；迁移到 `script` 后可直接使用上面的统一 API。当前脚本登录不走旧 `AuthRepository` 的后台静默重登；会话失效后由用户回到脚本登录界面重新认证，避免以错误协议误报恢复成功。
+`salted-sha1` 与 `engine` 仍用于兼容已有规则，但新学校不要再把复杂握手堆进 JSON；迁移到 `script` 后可直接使用上面的统一 API。脚本密码登录的后台静默重登会复用脚本协议和可持久化的设备信任 Cookie，不会走旧 `AuthRepository`；短信、扫码和网页方式仍需用户交互。
 
 ## 4. 配置后台检查
 
@@ -317,9 +325,10 @@ window.PalmAcademicHost = {
 4. 首次登录后不手动点击，四个重绘页面仍会在后台预取并建立基线。
 5. 再次打开已有缓存的重绘页，缓存立即显示，同时后台刷新且刷新图标旋转。
 6. 手动刷新不闪退；异步页面最终能重新发布完整数据。
-7. 让 Cookie 失效，确认脚本密码/短信登录和网页登录分别回到正确的重新认证流程。
-8. 导出课表，核对节次的实际开始/结束时间。
-9. 用相同 ID 重新导入，确认覆盖弹窗和覆盖后的规则生效。
+7. 让 Cookie 失效，确认脚本密码登录先在后台静默重试；仅当服务端仍要求验证码或多因子认证时通知并打开验证界面，短信登录和网页登录则回到各自的交互式重新认证流程。
+8. 对支持多因子的学校分别验证首次密码登录、发送验证码、错误验证码、信任设备和挑战成功后的会话保存；确认整个过程始终归属密码登录。
+9. 导出课表，核对节次的实际开始/结束时间。
+10. 用相同 ID 重新导入，确认覆盖弹窗和覆盖后的规则生效。
 
 若失败，优先记录最终 URL、HTTP 状态、重定向链、Cookie 所属域、页面是否异步渲染，以及 `monitor` 正则是否在真实响应中命中。日志中不要保留真实凭据和学生数据。
 
@@ -366,7 +375,7 @@ iosApp/Resources/schools/index.json
 node tools/validate-adapters.mjs
 ```
 
-校验器会检查索引、HTTPS、ID、作者信息、四个快捷入口、监控模板、作息时间、登录配置、适配器引用和 JavaScript 语法，并核对 Android/iOS 随包资源一致性；对于 `type: "script"`，还会在隔离上下文中加载脚本并校验 `describe()`、`submit()` 和短信方式协议。校验通过不代表真实站点可用，真机双端验收仍是合并前提。
+校验器会检查索引、HTTPS、ID、作者信息、四个快捷入口、监控模板、作息时间、登录配置、适配器引用和 JavaScript 语法，并核对 Android/iOS 随包资源一致性；对于 `type: "script"`，还会在隔离上下文中加载脚本并校验 `describe()`、`submit()`、短信方式协议，以及多因子 `sendChallenge()` / `submitChallenge()` 是否成对实现。校验通过不代表真实站点可用，真机双端验收仍是合并前提。
 
 ## 8. 提交检查清单
 

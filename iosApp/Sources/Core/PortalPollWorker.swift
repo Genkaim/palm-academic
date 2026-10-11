@@ -38,6 +38,7 @@ actor PortalPollWorker {
     }
 
     private init() {}
+    private var silentInteractionMessage: String?
 
     /// Port of `PortalPollWorker.doWork`.
     @discardableResult
@@ -122,6 +123,16 @@ actor PortalPollWorker {
         if !(await MainActor.run(body: { PortalHTTP.hasSessionCookie })) {
             if await usesSilentPasswordReauthentication() {
                 guard await attemptSilentPasswordReauthentication() else {
+                    if let message = silentInteractionMessage {
+                        let notified = await notifyInteractiveAuthentication(message: message)
+                        details.append(PortalPollHistoryDetail(
+                            category: "登录状态",
+                            summary: "自动登录需要安全验证",
+                            notificationTriggered: notified,
+                            technicalDetails: message
+                        ))
+                        return PollOutcome(status: "需要安全验证", details: details)
+                    }
                     details.append(PortalPollHistoryDetail(
                         category: "登录状态",
                         summary: "正在静默重试密码登录",
@@ -489,16 +500,39 @@ actor PortalPollWorker {
     private func usesSilentPasswordReauthentication() async -> Bool {
         await MainActor.run {
             guard let auth = SchoolCatalog.shared.loadDefinition()?.auth else { return false }
-            return !auth.isWebOnly && !auth.usesScript && auth.captcha?.required != true &&
+            return !auth.isWebOnly && auth.captcha?.required != true &&
                 CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID) != nil
         }
     }
 
     private func attemptSilentPasswordReauthentication() async -> Bool {
-        await Task { @MainActor in
-            guard let credential = CredentialStore.load(
-                schoolID: SchoolCatalog.shared.selectedSchoolID
-            ) else { return false }
+        silentInteractionMessage = nil
+        let context = await MainActor.run { () -> (SchoolDefinition, (username: String, password: String))? in
+            guard let definition = SchoolCatalog.shared.loadDefinition(),
+                  let credential = CredentialStore.load(
+                    schoolID: SchoolCatalog.shared.selectedSchoolID
+                  ) else { return nil }
+            return (definition, credential)
+        }
+        guard let (definition, credential) = context else { return false }
+        if definition.auth?.usesScript == true {
+            let result = await ScriptSilentLogin.attempt(
+                definition: definition,
+                credential: credential
+            )
+            switch result.state {
+            case .success:
+                return true
+            case .interactionRequired, .rejected:
+                silentInteractionMessage = result.message.isEmpty
+                    ? "请打开 App 完成安全验证"
+                    : result.message
+                return false
+            case .retry:
+                return false
+            }
+        }
+        return await Task { @MainActor in
             do {
                 try await AuthRepository().login(
                     username: credential.username,
@@ -514,11 +548,50 @@ actor PortalPollWorker {
     private func prepareSilentPasswordRetry(reason: String) async -> PortalPollHistoryDetail? {
         guard await usesSilentPasswordReauthentication() else { return nil }
         let renewed = await attemptSilentPasswordReauthentication()
+        if let message = silentInteractionMessage {
+            let notified = await notifyInteractiveAuthentication(message: message)
+            return PortalPollHistoryDetail(
+                category: "登录状态",
+                summary: "自动登录需要安全验证",
+                notificationTriggered: notified,
+                technicalDetails: "\(reason)；\(message)"
+            )
+        }
         return PortalPollHistoryDetail(
             category: "登录状态",
             summary: renewed ? "已静默恢复密码登录" : "正在静默重试密码登录",
             technicalDetails: "\(reason)；将在下一次检查中使用更新后的会话。"
         )
+    }
+
+    private func notifyInteractiveAuthentication(message: String) async -> Bool {
+        await MainActor.run {
+            NotificationPreferences.shared.markInteractiveReauthenticationRequired()
+        }
+        let shouldNotify = await MainActor.run {
+            NotificationPreferences.shared.shouldNotifyAuthenticationFailure()
+        }
+        guard shouldNotify, await notificationsAvailable() else { return false }
+        let content = UNMutableNotificationContent()
+        content.title = "登录需要安全验证"
+        content.body = message.isEmpty ? "请打开掌上教务完成安全验证。" : message
+        content.sound = .default
+        content.categoryIdentifier = "PORTAL_CHANGE"
+        content.userInfo = ["source": "interactive_reauthentication"]
+        let request = UNNotificationRequest(
+            identifier: "portal_auth_failure",
+            content: content,
+            trigger: nil
+        )
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            await MainActor.run {
+                NotificationPreferences.shared.markAuthenticationFailureNotified()
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func authenticationDetail(notified: Bool, reason: String) -> PortalPollHistoryDetail {
