@@ -435,7 +435,14 @@ class LoginScriptRuntime(
         val urlOk = successUrlPrefixes.isEmpty() ||
             successUrlPrefixes.any { lastFinalUrl.startsWith(it) }
         val cookieOk = cookieJar.hasAnyCookie(sessionCookieNames)
-        if (!urlOk || !cookieOk) error("登录脚本回报成功，但未建立有效会话")
+        // 未配置具体会话 cookie 名的学校（sessionCookieNames 为空，如前置零信任网关
+        // 的 hznu）：沙箱无头请求到不了业务页，finalUrl 可能停在认证/网关地址，
+        // 认证成功与否由脚本按学校协议（如 reAuth_success）判定，这里只要求 cookie
+        // 罐已建立非空会话；配置了具体 cookie 名的学校仍严格要求 URL 与 cookie 同时命中。
+        val requireBusinessUrl = sessionCookieNames.isNotEmpty()
+        if ((requireBusinessUrl && !urlOk) || !cookieOk) {
+            error("登录脚本回报成功，但未建立有效会话")
+        }
         cookieJar.persistSession()
     }
 

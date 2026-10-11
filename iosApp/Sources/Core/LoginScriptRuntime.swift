@@ -653,7 +653,12 @@ final class LoginScriptRuntime: @unchecked Sendable {
         let urlOK = successUrlPrefixes.isEmpty ||
             successUrlPrefixes.contains { lastFinalURLString.hasPrefix($0) }
         let cookieOK = hasAnyCookie(sessionCookieNames)
-        guard urlOK && cookieOK else {
+        // 未配置具体会话 cookie 名的学校（空数组，如前置零信任网关的 hznu）：沙箱
+        // 无头请求到不了业务页，finalURL 可能停在认证/网关地址，认证成功与否由脚本
+        // 按学校协议（如 reAuth_success）判定，这里只要求 cookie 罐非空；配置了具体
+        // cookie 名的学校仍严格要求业务 URL 与 cookie 同时命中。
+        let requireBusinessURL = !sessionCookieNames.isEmpty
+        guard cookieOK && (!requireBusinessURL || urlOK) else {
             throw RuntimeError.generic("登录脚本回报成功，但未建立有效会话")
         }
         return cookieStorage.cookies ?? []
