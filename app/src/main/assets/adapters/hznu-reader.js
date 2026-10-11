@@ -522,10 +522,22 @@
     return {
       html: html,
       salt: pickInput(html, 'pwdEncryptSalt'),
+      // execution 由服务端按当前会话 Webflow 渲染（实测可能是 e1s1/e2s1），
+      // 必须用本次页面的真实值，不能写死；仅在页面确实缺失时兜底 e1s1。
       execution: pickInput(html, 'execution') || 'e1s1',
       lt: pickInput(html, 'lt')
     };
   }
+
+  // 与真实浏览器一致：登录页只加载一次，发码与最终提交共用同一份 hidden
+  // （execution）和同一预会话。中途再次 GET 登录页会刷新服务端 Webflow，
+  // 使已发送的短信码/图形码绑定失效（表现为正确验证码也报错）。
+  var loginPagePromise = null;
+  function ensureLoginPage() {
+    if (!loginPagePromise) loginPagePromise = openLoginPage();
+    return loginPagePromise;
+  }
+  function resetLoginPage() { loginPagePromise = null; }
 
   async function needCaptcha(username) {
     try {
@@ -541,7 +553,7 @@
   }
 
   async function passwordLogin(v, checks) {
-    var page = await openLoginPage();
+    var page = await ensureLoginPage();
     if (!page.salt) return { ok: false, kind: 'rejected', message: '未能加载登录所需信息，请重试' };
 
     if ((await needCaptcha(v.username)) && !v.captcha) {
@@ -584,13 +596,18 @@
       return mfaChallenge('账号密码已通过，请获取验证码完成安全认证。');
     }
 
+    // 账密被拒/要验证码：本次 execution 票据已消费，下一轮（含验证码弹窗确认）
+    // 重新走 passwordLogin 时重新加载登录页取新 salt/execution。MFA 分支不重置。
+    resetLoginPage();
     var message = extractError(resp.text || '') || '账号或密码错误';
     if (/验证码/.test(message)) return captchaChallenge(message);
     return { ok: false, kind: 'rejected', message: message };
   }
 
   async function smsLogin(v) {
-    var page = await openLoginPage();
+    // 复用发码阶段的同一份登录页 hidden/会话，绝不重新 GET（否则 Webflow 刷新、
+    // 已发送的短信码失效）。
+    var page = await ensureLoginPage();
     var resp = await H.http({
       method: 'POST', url: LOGIN_ACTION, headers: BROWSER_HEADERS,
       form: {
@@ -605,6 +622,8 @@
       }
     });
     if (isSuccess(resp)) return { ok: true, kind: 'success' };
+    // 提交后本次 Webflow 票据即被消费，下一轮需重新加载登录页。
+    resetLoginPage();
     var message = extractError(resp.text || '') || '短信验证登录失败，请检查后重试';
     // 图形验证码一次性使用：提示用户换一张再登录。
     if (/验证码/.test(message)) message += '，请点击图形验证码更换后重试';
@@ -726,10 +745,12 @@
     },
 
     // 发送短信动态码：手机号按金智规则用 DEFAULT_SALT 做 AES 加密。
+    // 先确保登录页上下文已建立（与图形码、后续短信提交共享同一会话与 execution）。
     sendSms: async function (arg) {
       var v = arg.values || {};
       if (!v.username) return { ok: false, message: '请先输入手机号/学号' };
       if (!v.captcha) return { ok: false, message: '请先输入图形验证码' };
+      await ensureLoginPage();
       var mobile = await H.crypto({
         op: 'aes-cbc-pkcs7', key: DEFAULT_SALT, data: v.username, prefixLength: 64
       });
