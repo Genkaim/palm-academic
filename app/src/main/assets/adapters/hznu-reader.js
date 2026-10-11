@@ -392,6 +392,10 @@
     'https://jwxt.hznu.edu.cn/jwglxt/',
     'https://jwxt.hznu.edu.cn/sso/'
   ];
+  // jwxt 前置深信服零信任网关：CAS 验票成功后会 302 到 atrust 的 verify/shortcut，
+  // 无头 HTTP 到此为止（零信任 JS 校验只能由系统 WebView 完成）。能落到 atrust
+  // 即代表账密/短信已通过 CAS 认证（密码错误时停在 authserver 401，不会到此）。
+  var ATRUST_PREFIX = 'https://atrust.hznu.edu.cn/';
   var pendingMfa = null;
 
   function decodeEntities(value) {
@@ -436,8 +440,12 @@
 
   function isSuccess(resp) {
     var url = resp.finalUrl || '';
-    return resp.status >= 200 && resp.status < 400 &&
-      SUCCESS_PREFIXES.some(function (prefix) { return url.indexOf(prefix) === 0; });
+    if (!(resp.status >= 200 && resp.status < 400)) return false;
+    if (SUCCESS_PREFIXES.some(function (prefix) { return url.indexOf(prefix) === 0; })) {
+      return true;
+    }
+    // 零信任接管：认证已通过，业务页后续由 WebView 进入。
+    return url.indexOf(ATRUST_PREFIX) === 0;
   }
 
   function captchaChallenge(message) {
@@ -841,31 +849,16 @@
           // 验证码错/过期：保留 MFA 弹窗让用户换码重试。
           return mfaChallenge(parsed.msg || '验证码错误或已过期，请重新获取');
         }
-        // 其它 code（成功）落到下面的 CAS 完成步骤。
-      } else if (!isSuccess(submitResp)) {
-        // 非 JSON 且未直接跳转成功：按页面错误处理。
-        var msg = extractError(submitResp.text || '') || '安全验证失败，请重试';
-        return mfaChallenge(msg);
-      }
-
-      // 与页面 handleDoLoginInterface 一致：跳到 /login?service=…，CAS 用 TGC 换票，
-      // OkHttp 自动跟随整串重定向，成功时 finalUrl 应落在 jwxt 系统。
-      var finishUrl = AUTH + '/login?service=' +
-        encodeURIComponent(pendingMfa.service || SERVICE);
-      var finishResp = await H.http({
-        method: 'GET', url: finishUrl, headers: BROWSER_HEADERS
-      });
-      if (isSuccess(finishResp)) {
+        // reAuth_success：多因子已通过，认证票据（CASTGC/可信会话）已写入同一
+        // cookie 罐。此处不能再用 HTTP 跟随 /login?service= 去校验业务页——
+        // jwxt 前置零信任网关(atrust)会把无头请求拦在 verify 页，永远到不了
+        // /jwglxt/；业务页访问交给系统 WebView（可执行零信任校验）完成。
         pendingMfa = null;
         return { ok: true, kind: 'success' };
       }
-      // CAS 又把用户打回多因子页：会话未真正建立，保留弹窗继续验证。
-      if (isMfaResponse(finishResp)) {
-        pendingMfa = Object.assign(pendingMfa, parseReAuthParams(finishResp.text || ''));
-        return mfaChallenge('安全验证未完成，请重新获取验证码');
-      }
-      var message = extractError(finishResp.text || '') || '安全验证后未能进入教务系统，请重试';
-      return { ok: false, kind: 'rejected', message: message };
+      // 非 JSON 响应：按页面错误处理并保留弹窗。
+      var msg = extractError(submitResp.text || '') || '安全验证失败，请重试';
+      return mfaChallenge(msg);
     }
   };
 })();
