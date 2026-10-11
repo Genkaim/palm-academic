@@ -84,6 +84,7 @@ final class LoginScriptRuntime: @unchecked Sendable {
     private let successUrlPrefixes: [String]
     private let loginUrl: String?
     private let onEvent: (UIEvent) -> Void
+    private let redirectGuard: LoginScriptRedirectGuard
 
     private let jsQueue = DispatchQueue(label: "cn.edu.cupk.palmacademic.login-script")
     private var context: JSContext?
@@ -109,11 +110,14 @@ final class LoginScriptRuntime: @unchecked Sendable {
         onEvent: @escaping (UIEvent) -> Void
     ) {
         self.adapterScript = adapterScript
-        self.allowedHosts = allowedHosts
+        let normalizedHosts = Set(allowedHosts.map { $0.lowercased() })
+        self.allowedHosts = normalizedHosts
         self.sessionCookieNames = sessionCookieNames
         self.successUrlPrefixes = successUrlPrefixes
         self.loginUrl = loginUrl
         self.onEvent = onEvent
+        let redirectGuard = LoginScriptRedirectGuard(allowedHosts: normalizedHosts)
+        self.redirectGuard = redirectGuard
 
         let jar = HTTPCookieStorage()
         jar.cookieAcceptPolicy = .always
@@ -126,7 +130,11 @@ final class LoginScriptRuntime: @unchecked Sendable {
         configuration.timeoutIntervalForResource = 45
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpMaximumConnectionsPerHost = 6
-        session = URLSession(configuration: configuration)
+        session = URLSession(
+            configuration: configuration,
+            delegate: redirectGuard,
+            delegateQueue: nil
+        )
         bridge.attach(self)
     }
 
@@ -346,6 +354,9 @@ final class LoginScriptRuntime: @unchecked Sendable {
     }
 
     fileprivate func deliverAdapterResult(reqId: Int, ok: Bool, json: String) {
+        // The adapter Promise has settled, so no later host call from this invocation may need
+        // the secret. Clear it before resuming native code.
+        password = ""
         guard let continuation = adapterCalls.removeValue(forKey: reqId) else { return }
         if ok {
             continuation.resume(returning: json)
@@ -361,6 +372,7 @@ final class LoginScriptRuntime: @unchecked Sendable {
     }
 
     private func failPendingAdapterCalls(message: String) {
+        password = ""
         let pending = Array(adapterCalls.values)
         adapterCalls.removeAll()
         pending.forEach { $0.resume(throwing: RuntimeError.generic(message)) }
@@ -516,19 +528,18 @@ final class LoginScriptRuntime: @unchecked Sendable {
         let urlOK = successUrlPrefixes.isEmpty ||
             successUrlPrefixes.contains { lastFinalURLString.hasPrefix($0) }
         let cookieOK = hasAnyCookie(sessionCookieNames)
-        guard urlOK || cookieOK else {
+        guard urlOK && cookieOK else {
             throw RuntimeError.generic("登录脚本回报成功，但未建立有效会话")
         }
         return cookieStorage.cookies ?? []
     }
 
     private func hasAnyCookie(_ names: [String]) -> Bool {
-        guard !names.isEmpty else { return true }
         let cookies = cookieStorage.cookies ?? []
         return cookies.contains { cookie in
-            !cookie.value.isEmpty && names.contains {
+            !cookie.value.isEmpty && (names.isEmpty || names.contains {
                 $0.caseInsensitiveCompare(cookie.name) == .orderedSame
-            }
+            })
         }
     }
 
@@ -784,6 +795,33 @@ private final class ScriptNativeBridge: NSObject, ScriptNativeBridgeProtocol {
 
     func result(_ reqId: Int, _ ok: Bool, _ json: String) {
         runtime?.deliverAdapterResult(reqId: reqId, ok: ok, json: json)
+    }
+}
+
+/// URLSession follows redirects before returning a response to the runtime. Enforce the same
+/// HTTPS school-host allowlist on every hop so 307/308 cannot forward credentials off-site.
+private final class LoginScriptRedirectGuard: NSObject, URLSessionTaskDelegate {
+    private let allowedHosts: Set<String>
+
+    init(allowedHosts: Set<String>) {
+        self.allowedHosts = allowedHosts
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let url = request.url,
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              allowedHosts.contains(host) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }
 

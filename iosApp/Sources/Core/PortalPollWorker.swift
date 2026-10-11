@@ -489,7 +489,7 @@ actor PortalPollWorker {
     private func usesSilentPasswordReauthentication() async -> Bool {
         await MainActor.run {
             guard let auth = SchoolCatalog.shared.loadDefinition()?.auth else { return false }
-            return !auth.isWebOnly && auth.captcha?.required != true &&
+            return !auth.isWebOnly && !auth.usesScript && auth.captcha?.required != true &&
                 CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID) != nil
         }
     }

@@ -95,7 +95,8 @@ final class AppState: ObservableObject {
     var isSignedIn: Bool { phase == .signedIn }
     var captchaRequired: Bool { definition?.auth?.captcha?.required == true }
     var supportsSilentPasswordReauthentication: Bool {
-        definition?.auth?.isWebOnly != true && !captchaRequired &&
+        definition?.auth?.isWebOnly != true && definition?.auth?.usesScript != true &&
+            !captchaRequired &&
             CredentialStore.load(schoolID: SchoolCatalog.shared.selectedSchoolID) != nil
     }
 

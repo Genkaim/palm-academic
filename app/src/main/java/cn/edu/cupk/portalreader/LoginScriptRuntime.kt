@@ -44,7 +44,7 @@ import kotlin.coroutines.resumeWithException
 class LoginScriptRuntime(
     context: Context,
     private val adapterScript: String,
-    private val allowedHosts: Set<String>,
+    allowedHosts: Set<String>,
     private val sessionCookieNames: List<String>,
     private val successUrlPrefixes: List<String>,
     private val loginUrl: String?,
@@ -53,11 +53,24 @@ class LoginScriptRuntime(
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val random = SecureRandom()
+    private val allowedHosts = allowedHosts.mapTo(linkedSetOf()) { it.lowercase() }
 
     /** 单次登录专用 cookie 罐：与全局 WebView 完全隔离，成功后才持久化。 */
     internal val cookieJar = LoginCookieJar()
     private val httpClient: OkHttpClient =
-        PortalHttp.client.newBuilder().cookieJar(cookieJar).build()
+        PortalHttp.client.newBuilder()
+            .cookieJar(cookieJar)
+            // OkHttp follows redirects internally. Validate every network hop, not only the URL
+            // supplied by the adapter, otherwise an allowed school endpoint could redirect a
+            // credential POST (307/308) to an arbitrary host.
+            .addNetworkInterceptor { chain ->
+                val url = chain.request().url
+                require(url.scheme == "https" && url.host.lowercase() in this.allowedHosts) {
+                    "登录重定向到未授权地址：$url"
+                }
+                chain.proceed(chain.request())
+            }
+            .build()
 
     private lateinit var webView: WebView
     private val boot = CompletableDeferred<Unit>()
@@ -215,7 +228,12 @@ class LoginScriptRuntime(
         secretPassword: String
     ): SubmitResult {
         password = secretPassword
-        val raw = callAdapter("submit", methodPayload(methodId, values, checkboxes))
+        val raw = try {
+            callAdapter("submit", methodPayload(methodId, values, checkboxes))
+        } finally {
+            // Keep the real password only for the duration of one adapter invocation.
+            password = ""
+        }
         val json = JSONObject(raw)
         val ok = json.optBoolean("ok", false)
         val kind = json.optString("kind", if (ok) "success" else "rejected")
@@ -240,7 +258,11 @@ class LoginScriptRuntime(
         secretPassword: String
     ): JSONObject {
         password = secretPassword
-        val raw = callAdapter("sendSms", methodPayload(methodId, values, checkboxes))
+        val raw = try {
+            callAdapter("sendSms", methodPayload(methodId, values, checkboxes))
+        } finally {
+            password = ""
+        }
         return JSONObject(raw)
     }
 
@@ -295,7 +317,7 @@ class LoginScriptRuntime(
         val urlOk = successUrlPrefixes.isEmpty() ||
             successUrlPrefixes.any { lastFinalUrl.startsWith(it) }
         val cookieOk = cookieJar.hasAnyCookie(sessionCookieNames)
-        if (!urlOk && !cookieOk) error("登录脚本回报成功，但未建立有效会话")
+        if (!urlOk || !cookieOk) error("登录脚本回报成功，但未建立有效会话")
         cookieJar.persistSession()
     }
 

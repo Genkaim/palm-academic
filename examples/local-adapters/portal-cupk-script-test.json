@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "portal-cupk-script-test",
-  "name": "CUPK 门户（脚本登录·全方式测试）",
+  "name": "CUPK 门户（脚本登录测试）",
   "author": {
     "name": "Genkaim",
     "email": "genkaim@outlook.com"
@@ -10,12 +10,13 @@
   "readerAdapter": "adapters/portal-cupk-script-test-reader.js",
   "auth": {
     "type": "script",
-    "loginUrl": "https://portal.cupk.edu.cn/portal/login",
+    "loginUrl": "https://cas.cupk.edu.cn/cas/login?service=https%3A%2F%2Fportal.cupk.edu.cn%2Fportal%2F",
     "homePath": "/r/w?cmd=CLIENT_USER_HOME",
     "successUrlPrefixes": [
-      "https://portal.cupk.edu.cn/portal/home"
+      "https://portal.cupk.edu.cn/portal/"
     ],
     "sessionCookieHosts": [
+      "cas.cupk.edu.cn",
       "portal.cupk.edu.cn"
     ],
     "sessionCookieNames": []

@@ -7,7 +7,8 @@
 优先复制最接近目标学校的示例：
 
 - `examples/local-adapters/genkaim-top.json` 与对应 JS：常规教务页面示例。
-- `examples/local-adapters/portal-cupk-test.json` 与对应 JS：跨域 CAS、密码加验证码、门户页面示例。
+- `examples/local-adapters/portal-cupk-script-test.json` 与对应 JS：真实 CAS 表单的 RSA 密码、短信和跨域门户示例。
+- `app/src/main/assets/schools/hznu.json` 与对应 JS：密码、短信、扫码三方式脚本登录参考。
 - `app/src/main/assets/schools/cupk.json` 与 `app/src/main/assets/adapters/cupk-reader.js`：完整生产适配器参考。
 
 本地调试时保留两个文件，文件名可自定义：
@@ -21,7 +22,7 @@ my-school-reader.js
 
 ## 2. 编写学校定义 JSON
 
-下面是适合开始调试的骨架。示例省略了具体登录字段，下一节按登录方式补齐。
+下面是适合开始调试的完整配置骨架；登录界面的字段和握手逻辑由下一节的 JS 提供。
 
 ```json
 {
@@ -35,10 +36,12 @@ my-school-reader.js
   "baseUrl": "https://jw.example.edu.cn",
   "readerAdapter": "adapters/my-school-reader.js",
   "auth": {
-    "type": "web",
+    "type": "script",
     "loginUrl": "https://sso.example.edu.cn/login",
     "homePath": "/home",
-    "successUrlPrefixes": ["https://jw.example.edu.cn/"]
+    "successUrlPrefixes": ["https://jw.example.edu.cn/home"],
+    "sessionCookieHosts": ["sso.example.edu.cn", "jw.example.edu.cn"],
+    "sessionCookieNames": ["SESSION"]
   },
   "monitor": {
     "coursePagePath": "/course-table",
@@ -104,23 +107,99 @@ my-school-reader.js
 
 可追加更具体的 `locationPattern` 覆盖不同校区。缺少作息时间时页面可能仍能显示，但日历和 WakeUp 导出会缺少正确时间。
 
-## 3. 选择登录方式
+## 3. 编写登录适配器
 
-只选择与学校实际流程一致的一种类型。
+新适配优先使用 `auth.type: "script"`。App 负责受限网络、Cookie、加密和原生界面，学校 JS 只描述字段并编排登录握手。为兼容本地导入的“JSON + 一个 JS”流程，登录段通常与阅读段放在同一个 `<id>-reader.js` 中，并分别用运行环境作入口保护：
 
-### `salted-sha1`：旧式盐值密码登录
+```js
+(function () {
+  if (!window.PalmAcademic || window.PalmAcademicLoginAdapter) return;
+  const H = window.PalmAcademic;
+
+  window.PalmAcademicLoginAdapter = {
+    describe() {
+      return {
+        methods: [{
+          id: 'password', kind: 'password', label: '账号密码', default: true,
+          fields: [
+            {id: 'username', type: 'text', label: '账号', required: true},
+            {id: 'password', type: 'password', label: '密码', required: true}
+          ],
+          checkboxes: [
+            {id: 'rememberCredential', label: '记住密码', defaultChecked: true, scope: 'local'}
+          ]
+        }]
+      };
+    },
+
+    async submit(arg) {
+      const v = arg.values || {};
+      const response = await H.http({
+        method: 'POST',
+        url: 'https://sso.example.edu.cn/login',
+        form: {username: v.username, password: v.password}
+      });
+      if (response.finalUrl.startsWith('https://jw.example.edu.cn/home')) {
+        return {ok: true, kind: 'success'};
+      }
+      return {ok: false, kind: 'rejected', message: '账号或密码错误'};
+    }
+  };
+})();
+```
+
+### JSON 配置
 
 ```json
 "auth": {
-  "type": "salted-sha1",
-  "captcha": {"required": false},
-  "loginPath": "/login",
-  "saltPath": "/login-salt",
-  "homePath": "/home"
+  "type": "script",
+  "loginUrl": "https://sso.example.edu.cn/login",
+  "homePath": "/home",
+  "successUrlPrefixes": ["https://jw.example.edu.cn/home"],
+  "sessionCookieHosts": ["sso.example.edu.cn", "jw.example.edu.cn"],
+  "sessionCookieNames": ["SESSION"]
 }
 ```
 
-适用于项目已支持的盐值 SHA-1 表单。无验证码且保存了凭据时，Cookie 过期会在后台静默重新登录。
+`loginScript` 可为仓库内置规则指定单独的 `adapters/<id>-login.js`；省略时使用 `readerAdapter`。学校选择页的本地导入只接收一个 JS，因此本地调试必须省略 `loginScript`，把两个适配器合并在同一文件中。
+
+所有 `H.http()` 请求及其重定向都必须是白名单内的 HTTPS。白名单由 `baseUrl`、`loginUrl`、`successUrlPrefixes` 和 `sessionCookieHosts` 的主机共同生成；跨 CAS、VPN、门户或教务域名时必须完整填写。脚本拿不到 Cookie，Cookie 由本次登录独立的原生容器管理，校验成功后才写入应用会话。
+
+登录成功必须同时满足：最后一次请求的 `finalUrl` 命中 `successUrlPrefixes`，并且存在 `sessionCookieNames` 指定的非空 Cookie。`sessionCookieNames: []` 表示接受任意名称的非空 Cookie，不表示跳过 Cookie 校验。前缀应尽量写到登录后的具体路径，不要只写域名根路径。脚本也只能在服务端响应明确可判定时返回 `ok: true`。
+
+### App 提供的 `PalmAcademic` API
+
+| API | 输入 | 返回/行为 |
+| --- | --- | --- |
+| `H.http(req)` | `method`、`url`、可选 `headers`，以及 `form` / `json` / `body` 三选一 | `{status, finalUrl, text}`；自动维护 Cookie，但不向 JS 暴露 Cookie。 |
+| `H.crypto(spec)` | `op` 与算法参数 | 直接返回字符串。支持 `sha1`、`md5`、`rsa-pkcs1`、`aes-cbc-pkcs7`。 |
+| `H.sleep(ms)` | `0..120000` 毫秒 | 用于扫码轮询等短暂等待。 |
+| `H.ui(event)` | 原生 UI 事件 | `qr`、`toast`、`state`；详见下文。 |
+
+密码字段不会以明文进入 JS。`type: "password"` 的字段值会被替换为 `__PA_PASSWORD__`；该占位符出现在 `http` 的 URL、header、form、JSON、body 或 `crypto` 参数中时，原生才临时替换真实密码，并在一次适配器调用结束后清除。不要把密码写入日志、返回值、二维码事件或其他普通字段。
+
+`crypto` 参数：
+
+- `{op: 'sha1'|'md5', data}`：返回小写十六进制摘要。
+- `{op: 'rsa-pkcs1', data, publicKey}`：使用 Base64 X.509 公钥，返回 Base64 密文。
+- `{op: 'aes-cbc-pkcs7', data, key, iv?, prefixLength?}`：UTF-8 key 必须为 16/24/32 字节，返回 Base64 密文；`prefixLength` 可用于金智类协议的随机前缀。
+
+### `describe()` 界面协议
+
+`describe()` 返回 `{methods, methodSwitch?}`。只有显式设置 `methodSwitch: true` 才显示多方式切换；否则即使声明多个方式，也只显示 `default: true` 的方式（没有默认项时取第一项）。
+
+- `method.kind`：`password`、`sms` 或 `qrcode`。
+- `fields[].type`：`text`、`password`、`tel`、`captcha`、`smsCode`。
+- 图形验证码字段可带 `captcha: {url, refreshParam}`；图片由 App 拉取，不经过 JS。
+- `checkboxes[].scope: "local"` 只控制 App 本地行为；`scope: "request"` 的值通过 `arg.checkboxes` 交给脚本。保存凭据复选框统一使用 `id: "rememberCredential"`。
+
+`submit(arg)` 接收 `{methodId, values, checkboxes}`，返回：
+
+- 成功：`{ok: true, kind: 'success'}`。
+- 明确拒绝：`{ok: false, kind: 'rejected', message}`。
+- 需要动态验证码：`{ok: false, kind: 'captcha', message, captcha: {url, refreshParam}}`。
+
+短信方式可额外实现 `sendSms(arg)`，返回 `{ok, message, cooldownSeconds?}`。扫码方式在 `submit()` 内轮询，并用 `H.ui({type:'qr', state, message, imageUrl? | imageBase64?})` 更新二维码；`state` 常用 `waiting`、`scanned`、`expired`。`toast` 事件使用 `{type:'toast', message}`，阶段事件使用 `{type:'state', state, message}`。
 
 ### `web`：应用内网页登录
 
@@ -135,51 +214,9 @@ my-school-reader.js
 }
 ```
 
-用户在应用内 WebView 完成登录。Cookie 过期时，应用弹窗引导进入登录页。跨 CAS/门户域名时，把登录链真正使用的主机都写入 `sessionCookieHosts`。Cookie 名稳定时优先显式填写；确实无法固定名称时才使用空数组接受有效 Cookie。
+用户在应用内 WebView 完成登录。Cookie 过期时，应用引导重新进入登录页。跨 CAS/门户域名时，把实际使用的主机都写入 `sessionCookieHosts`。
 
-### `engine`：声明式密码或验证码登录
-
-`engine.steps` 由三类步骤组成：
-
-- `request`：GET/POST 页面或接口；表单使用 `contentType: "form"` 与 `form`。
-- `extract`：从前一步响应中用正则提取动态字段。
-- `transform`：转换密码，目前支持 `rsa-pkcs1-base64`、`sha1`、`md5`。
-
-步骤中可引用 `{username}`、`{password}`、`{captcha}`、`{loginUrl}` 和此前步骤的结果。完整 CAS 示例见 `examples/local-adapters/portal-cupk-test.json`。
-
-验证码登录需明确声明：
-
-```json
-"captcha": {
-  "required": true,
-  "imageUrl": "https://sso.example.edu.cn/captcha.jpg",
-  "refreshQueryParameter": "id"
-}
-```
-
-同时在 `engine.outcome` 中给出可判定的结果：
-
-```json
-"outcome": {
-  "captcha": {
-    "bodyContains": ["验证码错误", "请输入验证码"],
-    "message": "验证码错误，请刷新后重试"
-  },
-  "rejected": {
-    "bodyContains": ["账号或密码错误"],
-    "message": "账号或密码错误"
-  },
-  "success": {
-    "finalUrlPrefixes": ["https://jw.example.edu.cn/"]
-  }
-}
-```
-
-当前会话恢复策略如下，适配时必须逐项验证：
-
-- `captcha.required: false` 的密码登录：过期后静默重试，不打扰用户。
-- `captcha.required: true` 的密码登录：发出通知；用户进入应用后输入验证码即可恢复。
-- `web` 登录：弹窗引导用户重新打开登录页。
+`salted-sha1` 与 `engine` 仍用于兼容已有规则，但新学校不要再把复杂握手堆进 JSON；迁移到 `script` 后可直接使用上面的统一 API。当前脚本登录不走旧 `AuthRepository` 的后台静默重登；会话失效后由用户回到脚本登录界面重新认证，避免以错误协议误报恢复成功。
 
 ## 4. 配置后台检查
 
@@ -280,7 +317,7 @@ window.PalmAcademicHost = {
 4. 首次登录后不手动点击，四个重绘页面仍会在后台预取并建立基线。
 5. 再次打开已有缓存的重绘页，缓存立即显示，同时后台刷新且刷新图标旋转。
 6. 手动刷新不闪退；异步页面最终能重新发布完整数据。
-7. 让 Cookie 失效，确认无验证码、验证码、网页登录分别走预期恢复流程。
+7. 让 Cookie 失效，确认脚本密码/短信登录和网页登录分别回到正确的重新认证流程。
 8. 导出课表，核对节次的实际开始/结束时间。
 9. 用相同 ID 重新导入，确认覆盖弹窗和覆盖后的规则生效。
 
@@ -301,6 +338,8 @@ iosApp/Resources/schools/index.json
 ```
 
 两个平台的学校定义、JS 和索引条目应保持一致。索引为 `schemaVersion: 2`，在 `builtIn` 中登记：
+
+若内置规则显式使用独立的 `auth.loginScript`，还要在 Android 与 iOS 对应的 `adapters/` 目录各同步一份登录 JS；通常仍建议与 reader 合并，减少双文件漂移。
 
 ```json
 {
@@ -327,7 +366,7 @@ iosApp/Resources/schools/index.json
 node tools/validate-adapters.mjs
 ```
 
-校验器会检查索引、HTTPS、ID、作者信息、四个快捷入口、监控模板、作息时间、登录引擎结构、适配器引用和 JavaScript 语法。校验通过不代表真实站点可用，真机双端验收仍是合并前提。
+校验器会检查索引、HTTPS、ID、作者信息、四个快捷入口、监控模板、作息时间、登录配置、适配器引用和 JavaScript 语法，并核对 Android/iOS 随包资源一致性；对于 `type: "script"`，还会在隔离上下文中加载脚本并校验 `describe()`、`submit()` 和短信方式协议。校验通过不代表真实站点可用，真机双端验收仍是合并前提。
 
 ## 8. 提交检查清单
 

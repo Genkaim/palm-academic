@@ -310,6 +310,14 @@ object SchoolAdapterRepository {
 
         val definition = JSONObject(definitionText)
         validateDefinition(definition)
+        definition.optJSONObject("auth")?.takeIf { it.optString("type") == "script" }?.let { auth ->
+            require(auth.optString("loginScript").isBlank()) {
+                "本地导入仅接收一个 JS；请把登录适配器与阅读适配器合并并移除 auth.loginScript"
+            }
+            require("PalmAcademicLoginAdapter" in adapterText) {
+                "脚本登录规则的 JS 缺少 PalmAcademicLoginAdapter"
+            }
+        }
         val id = definition.optString("id")
         require(id.matches(Regex("[a-z0-9-]+"))) { "学校 id 只能包含小写字母、数字和连字符" }
         val name = definition.optString("name")

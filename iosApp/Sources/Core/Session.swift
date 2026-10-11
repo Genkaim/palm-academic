@@ -1092,8 +1092,9 @@ private final class LoginCookieJar {
     }
 
     func hasAnyCookie(_ names: [String]) -> Bool {
-        names.isEmpty || values.values.contains { cookie in
-            !cookie.value.isEmpty && names.contains { $0.caseInsensitiveCompare(cookie.name) == .orderedSame }
+        values.values.contains { cookie in
+            !cookie.value.isEmpty && (names.isEmpty ||
+                names.contains { $0.caseInsensitiveCompare(cookie.name) == .orderedSame })
         }
     }
 

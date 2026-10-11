@@ -108,6 +108,16 @@ final class SchoolCatalog: ObservableObject {
             throw PortalError.invalidSchoolDefinition
         }
         try validateDefinition(root)
+        if let auth = root["auth"] as? [String: Any], auth["type"] as? String == "script" {
+            guard (auth["loginScript"] as? String)?.isEmpty != false else {
+                throw localImportError(
+                    "本地导入仅接收一个 JS；请把登录适配器与阅读适配器合并并移除 auth.loginScript"
+                )
+            }
+            guard adapterText.contains("PalmAcademicLoginAdapter") else {
+                throw localImportError("脚本登录规则的 JS 缺少 PalmAcademicLoginAdapter")
+            }
+        }
         guard let id = root["id"] as? String,
               id.range(of: "^[a-z0-9-]+$", options: .regularExpression) != nil else {
             throw localImportError("学校 id 只能包含小写字母、数字和连字符")

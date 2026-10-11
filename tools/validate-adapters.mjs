@@ -2,9 +2,12 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const assetsRoot = join(repositoryRoot, "app", "src", "main", "assets");
+const iosResourcesRoot = join(repositoryRoot, "iosApp", "Resources");
+const examplesRoot = join(repositoryRoot, "examples", "local-adapters");
 const indexPath = join(assetsRoot, "schools", "index.json");
 const errors = [];
 const warnings = [];
@@ -42,6 +45,87 @@ function isHttpsUrl(value) {
   } catch {
     return false;
   }
+}
+
+function validateLoginAdapter(source, scriptPath) {
+  const window = {
+    PalmAcademic: Object.freeze({
+      http() { throw new Error("describe() 不得发起 HTTP 请求"); },
+      crypto() { throw new Error("describe() 不得调用加密"); },
+      sleep() { throw new Error("describe() 不得等待"); },
+      ui() { throw new Error("describe() 不得触发 UI"); }
+    })
+  };
+  try {
+    runInNewContext(source, { window }, { filename: scriptPath, timeout: 1_000 });
+  } catch (error) {
+    reportError(scriptPath, `登录适配器初始化失败：${error.message}`);
+    return;
+  }
+  const adapter = window.PalmAcademicLoginAdapter;
+  if (!requireValue(adapter && typeof adapter === "object", scriptPath,
+    "auth.type=script 时必须暴露 PalmAcademicLoginAdapter")) return;
+  if (!requireValue(typeof adapter.describe === "function", scriptPath,
+    "PalmAcademicLoginAdapter.describe 必须是函数")) return;
+  requireValue(typeof adapter.submit === "function", scriptPath,
+    "PalmAcademicLoginAdapter.submit 必须是函数");
+
+  let schema;
+  try {
+    schema = adapter.describe();
+  } catch (error) {
+    reportError(scriptPath, `describe() 执行失败：${error.message}`);
+    return;
+  }
+  if (!requireValue(schema && typeof schema === "object" &&
+    !schema.then && Array.isArray(schema.methods) && schema.methods.length > 0,
+  scriptPath, "describe() 必须同步返回含非空 methods 的对象")) return;
+  if (schema.methodSwitch !== undefined) {
+    requireValue(typeof schema.methodSwitch === "boolean", scriptPath,
+      "methodSwitch 必须是布尔值");
+  }
+
+  const methodIds = new Set();
+  schema.methods.forEach((method, methodIndex) => {
+    const scope = `${scriptPath}.methods[${methodIndex}]`;
+    requireValue(typeof method?.id === "string" && method.id.trim(), scope, "id 不能为空");
+    if (typeof method?.id === "string") {
+      requireValue(!methodIds.has(method.id), scope, `登录方式 id 重复：${method.id}`);
+      methodIds.add(method.id);
+    }
+    requireValue(["password", "sms", "qrcode"].includes(method?.kind), scope,
+      "kind 仅支持 password、sms、qrcode");
+    requireValue(typeof method?.label === "string" && method.label.trim(), scope,
+      "label 不能为空");
+    requireValue(Array.isArray(method?.fields), scope, "fields 必须是数组");
+    requireValue(Array.isArray(method?.checkboxes), scope, "checkboxes 必须是数组");
+    const fieldIds = new Set();
+    method?.fields?.forEach((field, fieldIndex) => {
+      const fieldScope = `${scope}.fields[${fieldIndex}]`;
+      requireValue(typeof field?.id === "string" && field.id.trim(), fieldScope, "id 不能为空");
+      if (typeof field?.id === "string") {
+        requireValue(!fieldIds.has(field.id), fieldScope, `字段 id 重复：${field.id}`);
+        fieldIds.add(field.id);
+      }
+      requireValue(["text", "password", "tel", "captcha", "smsCode"].includes(field?.type),
+        fieldScope, "type 不受支持");
+      if (field?.captcha !== undefined) {
+        requireValue(isHttpsUrl(field.captcha?.url), fieldScope,
+          "captcha.url 必须是 HTTPS 地址");
+      }
+    });
+    method?.checkboxes?.forEach((checkbox, checkboxIndex) => {
+      const checkboxScope = `${scope}.checkboxes[${checkboxIndex}]`;
+      requireValue(typeof checkbox?.id === "string" && checkbox.id.trim(), checkboxScope,
+        "id 不能为空");
+      requireValue(checkbox?.scope === "local" || checkbox?.scope === "request", checkboxScope,
+        "scope 仅支持 local 或 request");
+    });
+    if (method?.kind === "sms") {
+      requireValue(typeof adapter.sendSms === "function", scope,
+        "短信登录必须实现 PalmAcademicLoginAdapter.sendSms");
+    }
+  });
 }
 
 function minutes(value) {
@@ -176,13 +260,20 @@ function validateDefinition(assetPath) {
     }
     if (type === "script") {
       // loginScript 可省略：省略时登录段与重绘段合并在 readerAdapter 同一文件中。
-      const loginScript = auth.loginScript;
-      if (loginScript !== undefined) {
-        if (requireValue(isSafeAssetPath(loginScript, "adapters/", ".js"), assetPath,
-          "auth.loginScript 路径无效")) {
-          referencedAdapters.add(loginScript);
-          requireValue(existsSync(join(assetsRoot, loginScript)), assetPath,
-            `找不到 ${loginScript}`);
+      const loginScript = auth.loginScript ?? definition.readerAdapter;
+      if (requireValue(isSafeAssetPath(loginScript, "adapters/", ".js"), assetPath,
+        "脚本登录需要有效的 auth.loginScript 或 readerAdapter")) {
+        referencedAdapters.add(loginScript);
+        const absoluteLoginScript = join(assetsRoot, loginScript);
+        if (requireValue(existsSync(absoluteLoginScript), assetPath, `找不到 ${loginScript}`)) {
+          try {
+            execFileSync(process.execPath, ["--check", absoluteLoginScript], { stdio: "pipe" });
+          } catch (error) {
+            reportError(loginScript,
+              `JavaScript 语法检查失败\n${error.stderr?.toString().trim() || error.message}`);
+          }
+          const source = readFileSync(absoluteLoginScript, "utf8");
+          validateLoginAdapter(source, loginScript);
         }
       }
     }
@@ -301,6 +392,37 @@ if (index) {
 for (const definitionPath of referencedDefinitions) validateDefinition(definitionPath);
 requireValue(referencedAdapters.size >= builtInSchools.length, "schools/index.json",
   "每所内置学校必须使用一个独立、完整的 readerAdapter（登录脚本可合并或独立）");
+
+// Bundled Android/iOS rules are intended to be byte-for-byte identical. Checking this in the
+// same validator prevents one platform from silently shipping an older login script.
+for (const assetPath of ["schools/index.json", ...referencedDefinitions, ...referencedAdapters]) {
+  const androidPath = join(assetsRoot, assetPath);
+  const iosPath = join(iosResourcesRoot, assetPath);
+  if (requireValue(existsSync(iosPath), assetPath, "缺少对应的 iOS 随包资源")) {
+    requireValue(readFileSync(androidPath).equals(readFileSync(iosPath)), assetPath,
+      "Android 与 iOS 随包资源内容不一致");
+  }
+}
+
+// Local examples are not referenced by the built-in index, but script-login examples still need
+// to obey the same executable interface contract.
+for (const file of readdirSync(examplesRoot)) {
+  if (!file.endsWith(".json")) continue;
+  const definition = readJson(join(examplesRoot, file), `examples/local-adapters/${file}`);
+  if (definition?.auth?.type !== "script") continue;
+  const configured = definition.auth.loginScript ?? definition.readerAdapter;
+  const scriptName = typeof configured === "string" ? configured.split("/").pop() : "";
+  const scriptPath = join(examplesRoot, scriptName);
+  const scope = `examples/local-adapters/${scriptName}`;
+  if (!requireValue(scriptName && existsSync(scriptPath), file, `找不到 ${scriptName}`)) continue;
+  try {
+    execFileSync(process.execPath, ["--check", scriptPath], { stdio: "pipe" });
+  } catch (error) {
+    reportError(scope, `JavaScript 语法检查失败\n${error.stderr?.toString().trim() || error.message}`);
+    continue;
+  }
+  validateLoginAdapter(readFileSync(scriptPath, "utf8"), scope);
+}
 
 for (const file of readdirSync(join(assetsRoot, "schools"))) {
   const assetPath = `schools/${file}`;

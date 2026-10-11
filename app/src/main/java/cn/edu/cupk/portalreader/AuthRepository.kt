@@ -459,8 +459,9 @@ internal class LoginCookieJar : CookieJar {
 
     @Synchronized
     fun hasAnyCookie(names: List<String>): Boolean =
-        names.isEmpty() || cookies.values.any { cookie ->
-            cookie.value.isNotBlank() && names.any { it.equals(cookie.name, ignoreCase = true) }
+        cookies.values.any { cookie ->
+            cookie.value.isNotBlank() && (names.isEmpty() ||
+                names.any { it.equals(cookie.name, ignoreCase = true) })
         }
 
     @Synchronized
