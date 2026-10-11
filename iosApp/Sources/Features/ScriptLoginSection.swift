@@ -96,6 +96,7 @@ struct ScriptLoginSection: View {
         .padding(.vertical, 6)
     }
 
+    /// 底部状态提示：转圈 + 次级文字，左右居中，不加底色。
     private var statusSurface: some View {
         HStack(spacing: 10) {
             if controller.busy {
@@ -104,7 +105,6 @@ struct ScriptLoginSection: View {
             Text(controller.status ?? "处理中…")
                 .font(.subheadline)
                 .foregroundStyle(PortalPalette.secondaryText)
-            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 4)
@@ -148,6 +148,13 @@ struct ScriptLoginSection: View {
                         Divider().padding(.leading, 34)
                     }
                     fieldRow(field, position: cardPosition(index: index, count: method.fields.count))
+                        // 输入框首次出现时依次淡入（切换方式时随新方法重新播放）。
+                        .transition(
+                            .opacity.animation(
+                                .easeOut(duration: 0.26)
+                                    .delay(Double(index) * 0.055)
+                            )
+                        )
                 }
             }
         }

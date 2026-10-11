@@ -373,11 +373,14 @@ final class ScriptLoginController: ObservableObject {
         submitTask = Task {
             var attempt = 0
             while !Task.isCancelled {
-                busy = true
-                error = nil
-                status = attempt == 0
-                    ? "正在生成二维码…"
-                    : "网络不稳定，正在重试（第 \(attempt) 次）…"
+                // 只有首张二维码尚未到达时才显示忙碌提示。submit 内部包含 JS 轮询循环，
+                // 会持续到扫码成功/失败，期间不能一直占用 busy；轮询中的状态
+                // （已扫码/已刷新/失效）由二维码面板的 qrMessage 展示。
+                if qrImage == nil {
+                    busy = true
+                    error = nil
+                    status = attempt == 0 ? "正在生成二维码…" : "正在重新生成二维码…"
+                }
                 do {
                     let result = try await runtime?.submit(
                         methodId: method.id,
@@ -412,7 +415,12 @@ final class ScriptLoginController: ObservableObject {
         case .qr(let state, let message, let image):
             qrState = state
             qrMessage = message
-            if let image { qrImage = image }
+            // 二维码图片一到达就结束“正在生成二维码”提示，不再等整个轮询提交返回。
+            if let image {
+                qrImage = image
+                busy = false
+                status = nil
+            }
         case .toast(let message):
             status = message
         case .phase(let state, let message):

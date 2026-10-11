@@ -309,8 +309,13 @@ class ScriptLoginController(
         submitJob = scope.launch {
             var attempt = 0
             while (true) {
-                busy = true; error = null
-                status = if (attempt == 0) "正在生成二维码…" else "网络不稳定，正在重试（第 $attempt 次）…"
+                // 只有首张二维码尚未到达时才显示忙碌提示。submit 内部包含 JS 轮询循环，
+                // 会持续到扫码成功/失败，期间不能一直占用 busy，否则切换栏会被永久禁用；
+                // 轮询中的状态（已扫码/已刷新/失效）由二维码面板的 qrMessage 展示。
+                if (qrImage == null) {
+                    busy = true; error = null
+                    status = if (attempt == 0) "正在生成二维码…" else "正在重新生成二维码…"
+                }
                 val result = runCatching {
                     runtime!!.submit(method.id, emptyMap(), checkboxes.toMap(), "")
                 }
@@ -332,7 +337,12 @@ class ScriptLoginController(
             is LoginUiEvent.Qr -> {
                 qrState = event.state
                 qrMessage = event.message
-                event.image?.let { qrImage = it }
+                // 二维码图片一到达就结束“正在生成二维码”提示，不再等整个轮询提交返回。
+                event.image?.let {
+                    qrImage = it
+                    busy = false
+                    status = null
+                }
             }
             is LoginUiEvent.Toast -> { status = event.message }
             is LoginUiEvent.Phase -> { qrState = event.state; qrMessage = event.message }

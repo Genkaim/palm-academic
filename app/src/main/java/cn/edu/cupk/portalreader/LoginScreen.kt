@@ -793,7 +793,19 @@ private fun ScriptLoginFormSection(
                                 index == current.fields.lastIndex -> ScriptFieldPosition.LAST
                                 else -> ScriptFieldPosition.MIDDLE
                             }
-                            ScriptField(script, field, position, fieldColors)
+                            // 每个输入框首次出现时依次淡入（切换方式时随新方法重新播放）。
+                            var fieldAppeared by remember(current.id, field.id) {
+                                mutableStateOf(false)
+                            }
+                            LaunchedEffect(Unit) { fieldAppeared = true }
+                            AnimatedVisibility(
+                                visible = fieldAppeared,
+                                enter = fadeIn(
+                                    animationSpec = tween(durationMillis = 260, delayMillis = index * 55)
+                                )
+                            ) {
+                                ScriptField(script, field, position, fieldColors)
+                            }
                         }
                     }
                     current.checkboxes.forEach { checkbox ->
@@ -867,9 +879,9 @@ private fun ScriptMethodTabs(script: ScriptLoginController) {
                     .height(44.dp)
                     .clip(RoundedCornerShape(percent = cornerPercent))
                     .background(containerColor)
-                    .clickable(enabled = !script.busy) {
-                        script.selectMethod(method)
-                    },
+                    // 任何时刻都允许切换：selectMethod 会取消在途登录任务并复位忙碌状态，
+                    // 不能因扫码轮询长时间占用 busy 而把切换栏锁死。
+                    .clickable { script.selectMethod(method) },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -1127,7 +1139,7 @@ private fun ScriptErrorSurface(message: String) {
     )
 }
 
-// 输入框下方的状态提示（验证码加载中、重试中等）：不加底色，仅转圈 + 次级文字。
+// 输入框下方的状态提示（验证码加载中、正在生成二维码等）：不加底色，转圈 + 次级文字，左右居中。
 @Composable
 private fun ScriptStatusSurface(message: String) {
     Row(
@@ -1135,9 +1147,10 @@ private fun ScriptStatusSurface(message: String) {
             .fillMaxWidth()
             .padding(horizontal = 4.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        horizontalArrangement = Arrangement.Center
     ) {
         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.size(10.dp))
         Text(
             message,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
