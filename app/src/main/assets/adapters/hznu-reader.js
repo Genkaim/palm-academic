@@ -453,11 +453,18 @@
     try { return decodeURIComponent(match[1].replace(/\+/g, ' ')); } catch (e) { return match[1]; }
   }
 
+  // 账密通过后服务端 302 到 reAuthLoginView.do（带 isMultifactor=true），HTML 内含
+  // reAuthParams/reAuthSubmit.do；个别主题直接返回 reAuth 页面 HTML 而不改 URL，两种都识别。
   function isMfaResponse(resp) {
     var url = resp.finalUrl || '';
     var html = resp.text || '';
-    return /(?:reAuthLoginView\.do|isMultifactor=true)/i.test(url) ||
-      /(?:reAuthCheck\/reAuthSubmit\.do|reAuthDynamicCodeType|isMultifactor)/i.test(html);
+    return /reAuthCheck\/reAuthLoginView\.do/i.test(url) ||
+      /[?&]isMultifactor=true/i.test(url) ||
+      /reAuthCheck\/reAuthSubmit\.do|reAuthParams|getDynamicCodeByReauth\.do/i.test(html);
+  }
+
+  function parseJson(text) {
+    try { return JSON.parse(text || ''); } catch (e) { return null; }
   }
 
   function mfaChallenge(message) {
@@ -468,15 +475,44 @@
       challenge: {
         id: 'hznu-reauth-sms',
         title: '多因子认证',
-        message: message || '首次在此设备登录需要短信验证码。',
-        inputLabel: '短信验证码',
-        placeholder: '请输入短信验证码',
+        message: message || '将通过钉钉或短信验证码进行再次认证，请获取验证码。',
+        inputLabel: '验证码',
+        placeholder: '请输入验证码',
         sendCode: true,
         sendLabel: '获取验证码',
-        rememberLabel: '信任此设备，减少后续验证',
+        // 对应页面可信设备弹窗的“信任此设备”，提交为 skipTmpReAuth=true。
+        rememberLabel: '信任此设备',
         rememberDefault: true
       }
     };
+  }
+
+  // 从 reAuth 页面 HTML 解析行内 reAuthParams 全局配置。逐键独立提取，避免
+  // 非贪婪块匹配在多行大对象（含嵌套/转义斜杠）上截断。
+  function reAuthValue(html, key) {
+    // 同时兼容 JSON 风格 "key":"v" 与 JS 风格 key: 'v' / key: 3。
+    var re = new RegExp('["\']?' + key + '["\']?\\s*:\\s*["\']([^"\']*)["\']');
+    var m = html.match(re);
+    return m ? m[1] : '';
+  }
+
+  function parseReAuthParams(html) {
+    var params = {
+      reAuthType: '3',
+      isMultifactor: 'true',
+      service: SERVICE,
+      reAuthUserId: ''
+    };
+    var t = reAuthValue(html, 'reAuthType');
+    var mf = reAuthValue(html, 'isMultifactor');
+    var svc = reAuthValue(html, 'service');
+    var uid = reAuthValue(html, 'reAuthUserId');
+    if (t) params.reAuthType = t;
+    if (mf) params.isMultifactor = mf;
+    // 页面 JSON 里斜杠转义为 \/，还原成普通斜杠。
+    if (svc) params.service = svc.replace(/\\\//g, '/');
+    if (uid) params.reAuthUserId = uid;
+    return params;
   }
 
   // 拉取登录页并解析 hidden 字段；同时建立 authserver 预会话。
@@ -534,12 +570,18 @@
     });
     if (isSuccess(resp)) return { ok: true, kind: 'success' };
     if (isMfaResponse(resp)) {
+      // 解析 reAuth 页面里的 reAuthParams（reAuthUserId/reAuthType/service/isMultifactor）。
+      // OkHttp 已跟随重定向，resp.text 即 reAuthLoginView 的 HTML；finalUrl 也保留备用。
+      var mfaPageHtml = resp.text || '';
+      var params = parseReAuthParams(mfaPageHtml);
       pendingMfa = {
-        username: v.username || '',
-        execution: queryValue(resp.finalUrl, 'execution') ||
-          pickInput(resp.text || '', 'execution') || page.execution
+        // 发码接口需要的是 reAuthUserId（学号），而非页面上带掩码的显示名。
+        userId: params.reAuthUserId || v.username || '',
+        reAuthType: params.reAuthType || '3',
+        isMultifactor: params.isMultifactor || 'true',
+        service: params.service || SERVICE
       };
-      return mfaChallenge('账号密码已通过，请获取短信验证码完成安全验证。');
+      return mfaChallenge('账号密码已通过，请获取验证码完成安全认证。');
     }
 
     var message = extractError(resp.text || '') || '账号或密码错误';
@@ -710,56 +752,99 @@
       return { ok: false, message: parsed.message || '短信验证码发送失败' };
     },
 
-    // 密码登录通过后，App 使用通用 challenge 弹窗调用这两个接口；整个过程
-    // 继续复用第一阶段的原生 cookie 罐，JS 不接触任何 cookie。
+    // 密码登录通过后，App 用通用 challenge 弹窗调用这两个接口；继续复用第一阶段
+    // 原生 cookie 罐（含 reAuth 会话），JS 不接触 cookie。
+    // 真实响应字段：res == success/wechat_success/cpdaily_success/other_success，
+    // 倒计时秒数为 codeTime，文案为 returnMessage（可拼接脱敏 mobile）。
     sendChallenge: async function () {
-      if (!pendingMfa || !pendingMfa.username) {
+      if (!pendingMfa || !pendingMfa.userId) {
         return { ok: false, message: '安全验证会话已失效，请重新进行账号密码登录' };
       }
+      var authCodeTypeName = pendingMfa.reAuthType === '12'
+        ? 'reAuthDingTalkDynamicCodeType'
+        : 'reAuthDynamicCodeType';
       var resp = await H.http({
         method: 'POST', url: MFA_SEND_ACTION, headers: AJAX_HEADERS,
         form: {
-          userName: pendingMfa.username,
-          authCodeTypeName: 'reAuthDynamicCodeType'
+          userName: pendingMfa.userId,
+          authCodeTypeName: authCodeTypeName
         }
       });
-      var parsed = null;
-      try { parsed = JSON.parse(resp.text || ''); } catch (e) {}
-      var failed = parsed && /^(?:error|fail|captchaError)$/i.test(String(parsed.code || ''));
-      if (resp.status < 200 || resp.status >= 300 || failed) {
-        return { ok: false, message: (parsed && parsed.message) || '短信验证码发送失败' };
+      var parsed = parseJson(resp.text);
+      if (!parsed) return { ok: false, message: '验证码服务无响应，请稍后重试' };
+      var resultCode = String(parsed.res == null ? '' : parsed.res);
+      if (/_success$/.test(resultCode) || resultCode === 'success') {
+        var text = parsed.returnMessage || '验证码已发送';
+        if (parsed.mobile) text = String(text) + String(parsed.mobile);
+        return {
+          ok: true,
+          cooldownSeconds: Number(parsed.codeTime) || 120,
+          message: text
+        };
       }
-      return {
-        ok: true,
-        cooldownSeconds: Number(parsed && (parsed.intervalTime || parsed.time)) || 60,
-        message: (parsed && parsed.message) || '验证码已发送'
-      };
+      // code_time_fail 仍进入倒计时，但提示为告警文案。
+      if (resultCode === 'code_time_fail') {
+        return {
+          ok: false,
+          cooldownSeconds: Number(parsed.codeTime) || 60,
+          message: parsed.returnMessage || '验证码发送过于频繁'
+        };
+      }
+      return { ok: false, message: parsed.returnMessage || '验证码发送失败' };
     },
 
+    // 提交真实协议：POST reAuthSubmit.do，成功返回 JSON（非 reAuth_failed/reAuth_unauthorized），
+    // 然后浏览器再 GET /login?service=… 由 CAS 凭已建立的 TGC 自动换票跳转到教务，
+    // 最终 finalUrl 落到 SUCCESS_PREFIXES，会话由此建立。
     submitChallenge: async function (arg) {
       if (!pendingMfa) return mfaChallenge('安全验证会话已失效，请重新进行账号密码登录。');
-      var resp = await H.http({
-        method: 'POST', url: MFA_SUBMIT_ACTION, headers: BROWSER_HEADERS,
+      var submitResp = await H.http({
+        method: 'POST', url: MFA_SUBMIT_ACTION, headers: AJAX_HEADERS,
         form: {
-          service: SERVICE,
-          reAuthType: '3',
-          isMultifactor: 'true',
+          service: pendingMfa.service || SERVICE,
+          reAuthType: pendingMfa.reAuthType || '3',
+          isMultifactor: pendingMfa.isMultifactor || 'true',
           password: '',
           dynamicCode: arg.code || '',
           uuid: '',
           answer1: '',
           answer2: '',
           otpCode: '',
-          execution: pendingMfa.execution || '',
           skipTmpReAuth: arg.remember ? 'true' : 'false'
         }
       });
-      if (isSuccess(resp)) {
+      var parsed = parseJson(submitResp.text);
+      if (parsed) {
+        var code = String(parsed.code == null ? '' : parsed.code);
+        if (code === 'reAuth_failed' || code === 'reAuth_unauthorized') {
+          // 验证码错/过期：保留 MFA 弹窗让用户换码重试。
+          return mfaChallenge(parsed.msg || '验证码错误或已过期，请重新获取');
+        }
+        // 其它 code（成功）落到下面的 CAS 完成步骤。
+      } else if (!isSuccess(submitResp)) {
+        // 非 JSON 且未直接跳转成功：按页面错误处理。
+        var msg = extractError(submitResp.text || '') || '安全验证失败，请重试';
+        return mfaChallenge(msg);
+      }
+
+      // 与页面 handleDoLoginInterface 一致：跳到 /login?service=…，CAS 用 TGC 换票，
+      // OkHttp 自动跟随整串重定向，成功时 finalUrl 应落在 jwxt 系统。
+      var finishUrl = AUTH + '/login?service=' +
+        encodeURIComponent(pendingMfa.service || SERVICE);
+      var finishResp = await H.http({
+        method: 'GET', url: finishUrl, headers: BROWSER_HEADERS
+      });
+      if (isSuccess(finishResp)) {
         pendingMfa = null;
         return { ok: true, kind: 'success' };
       }
-      var message = extractError(resp.text || '') || '安全验证码错误或已过期，请重试';
-      return mfaChallenge(message);
+      // CAS 又把用户打回多因子页：会话未真正建立，保留弹窗继续验证。
+      if (isMfaResponse(finishResp)) {
+        pendingMfa = Object.assign(pendingMfa, parseReAuthParams(finishResp.text || ''));
+        return mfaChallenge('安全验证未完成，请重新获取验证码');
+      }
+      var message = extractError(finishResp.text || '') || '安全验证后未能进入教务系统，请重试';
+      return { ok: false, kind: 'rejected', message: message };
     }
   };
 })();
